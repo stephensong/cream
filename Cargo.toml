@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "common",
+    "contracts/directory-contract",
+    "contracts/storefront-contract",
+    "delegates/cream-delegate",
+]
+exclude = ["ui"]
+
+[workspace.dependencies]
+# Freenet
+freenet-stdlib = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Cryptography
+ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
+rand = "0.8"
+
+# Time
+chrono = { version = "0.4", default-features = false, features = ["serde", "alloc"] }
+
+# Internal
+cream-common = { path = "common", default-features = false }
+
+[profile.release]
+lto = true
+opt-level = 's'
+debug = false
+codegen-units = 1
+panic = 'abort'
+strip = true

@@ -1,0 +1,18 @@
+[package]
+name = "cream-storefront-contract"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = ["freenet-main-contract"]
+contract = ["freenet-stdlib/contract"]
+freenet-main-contract = []
+
+[dependencies]
+cream-common = { workspace = true, default-features = false, features = [] }
+ed25519-dalek = { workspace = true }
+freenet-stdlib = { workspace = true }
+serde_json = { workspace = true }

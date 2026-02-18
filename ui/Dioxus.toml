@@ -1,0 +1,9 @@
+[application]
+name = "cream"
+default_platform = "web"
+
+[web.app]
+title = "CREAM - CURD Retail Exchange And Marketplace"
+
+[web.watcher]
+watch_path = ["src"]

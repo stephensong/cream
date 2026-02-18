@@ -1,0 +1,21 @@
+[package]
+name = "cream-delegate"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+
+[dependencies]
+cream-common = { workspace = true, default-features = false, features = [] }
+ed25519-dalek = { workspace = true }
+freenet-stdlib = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true, features = ["std", "clock"] }

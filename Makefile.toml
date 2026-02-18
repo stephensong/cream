@@ -1,0 +1,70 @@
+[config]
+default_to_workspace = false
+
+[tasks.build]
+description = "Build all contracts, delegate, and UI"
+dependencies = ["build-contracts", "build-delegate", "build-ui"]
+
+[tasks.build-contracts]
+description = "Build WASM contracts"
+dependencies = ["build-directory-contract", "build-storefront-contract"]
+
+[tasks.build-directory-contract]
+description = "Build directory contract WASM"
+command = "cargo"
+args = ["build", "-p", "cream-directory-contract", "--target", "wasm32-unknown-unknown", "--release", "--features", "contract"]
+
+[tasks.build-storefront-contract]
+description = "Build storefront contract WASM"
+command = "cargo"
+args = ["build", "-p", "cream-storefront-contract", "--target", "wasm32-unknown-unknown", "--release", "--features", "contract"]
+
+[tasks.build-delegate]
+description = "Build CREAM delegate"
+command = "cargo"
+args = ["build", "-p", "cream-delegate", "--release"]
+
+[tasks.build-ui]
+description = "Build UI with dx"
+cwd = "ui"
+command = "dx"
+args = ["build", "--release"]
+
+[tasks.dev]
+description = "Run UI development server"
+cwd = "ui"
+command = "dx"
+args = ["serve"]
+
+[tasks.dev-example-no-sync]
+description = "Run UI dev server with example data and no sync"
+cwd = "ui"
+command = "dx"
+args = ["serve"]
+[tasks.dev-example-no-sync.env]
+CARGO_FEATURE_EXAMPLE_DATA = "1"
+CARGO_FEATURE_NO_SYNC = "1"
+
+[tasks.test]
+description = "Run all tests"
+command = "cargo"
+args = ["test", "--workspace"]
+
+[tasks.check]
+description = "Check all code compiles"
+command = "cargo"
+args = ["check", "--workspace"]
+
+[tasks.fmt]
+description = "Format all code"
+command = "cargo"
+args = ["fmt", "--all"]
+
+[tasks.clippy]
+description = "Run clippy on all code"
+command = "cargo"
+args = ["clippy", "--all-targets"]
+
+[tasks.lint]
+description = "Format and lint"
+dependencies = ["fmt", "clippy"]
