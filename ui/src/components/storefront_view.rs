@@ -1,9 +1,11 @@
 use dioxus::prelude::*;
 
 use super::order_form::OrderForm;
+use super::user_state::use_user_state;
 
 #[component]
 pub fn StorefrontView(supplier_name: String) -> Element {
+    let user_state = use_user_state();
     let mut selected_product = use_signal(|| None::<(String, u64)>);
 
     if let Some((product_name, price)) = selected_product.read().clone() {
@@ -20,13 +22,41 @@ pub fn StorefrontView(supplier_name: String) -> Element {
         };
     }
 
+    // Check if this is the current user's storefront
+    let state = user_state.read();
+    let is_own = state.moniker.as_ref() == Some(&supplier_name);
+    let user_products: Vec<_> = if is_own {
+        state
+            .products
+            .iter()
+            .map(|p| (p.name.clone(), p.category.clone(), p.price_curd, p.quantity_available))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    drop(state);
+
+    let products: Vec<(String, String, u64, u32)> = if is_own {
+        user_products
+    } else if cfg!(feature = "example-data") {
+        example_products()
+    } else {
+        Vec::new()
+    };
+
     rsx! {
         div { class: "storefront-view",
             h2 { "{supplier_name}" }
+            if is_own {
+                p { class: "own-storefront-note", "(This is your storefront)" }
+            }
             div { class: "product-list",
-                if cfg!(feature = "example-data") {
-                    {example_products().into_iter().map(|(name, category, price, qty)| {
+                if products.is_empty() {
+                    p { class: "empty-state", "No products available." }
+                } else {
+                    {products.into_iter().map(|(name, category, price, qty)| {
                         let name_clone = name.clone();
+                        let is_own_store = is_own;
                         rsx! {
                             div { class: "product-card",
                                 key: "{name}",
@@ -34,15 +64,15 @@ pub fn StorefrontView(supplier_name: String) -> Element {
                                 span { class: "category", "{category}" }
                                 p { class: "price", "{price} CURD" }
                                 p { class: "quantity", "Available: {qty}" }
-                                button {
-                                    onclick: move |_| selected_product.set(Some((name_clone.clone(), price))),
-                                    "Order"
+                                if !is_own_store {
+                                    button {
+                                        onclick: move |_| selected_product.set(Some((name_clone.clone(), price))),
+                                        "Order"
+                                    }
                                 }
                             }
                         }
                     })}
-                } else {
-                    p { "Connect to Freenet to view products." }
                 }
             }
         }

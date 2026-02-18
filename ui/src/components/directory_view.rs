@@ -1,9 +1,23 @@
 use dioxus::prelude::*;
 
+use cream_common::postcode::{distance_between_postcodes, format_postcode};
+
 use super::storefront_view::StorefrontView;
+use super::user_state::use_user_state;
+
+/// A supplier entry for display in the directory.
+#[derive(Clone, Debug)]
+struct SupplierEntry {
+    name: String,
+    description: String,
+    postcode: String,
+    distance_km: Option<f64>,
+    product_count: usize,
+}
 
 #[component]
 pub fn DirectoryView() -> Element {
+    let user_state = use_user_state();
     let mut selected_supplier = use_signal(|| None::<String>);
     let mut search_query = use_signal(|| String::new());
 
@@ -17,6 +31,62 @@ pub fn DirectoryView() -> Element {
         };
     }
 
+    let state = user_state.read();
+    let user_postcode = state.postcode.clone().unwrap_or_default();
+
+    // Build supplier list from example data + current user if they're a supplier
+    let mut suppliers: Vec<SupplierEntry> = Vec::new();
+
+    // Add current user if they're a supplier with products
+    if state.is_supplier && !state.products.is_empty() {
+        let moniker = state.moniker.clone().unwrap_or_default();
+        let desc = state
+            .supplier_description
+            .clone()
+            .unwrap_or("Local supplier".into());
+        let postcode = state.postcode.clone().unwrap_or_default();
+        suppliers.push(SupplierEntry {
+            name: moniker,
+            description: desc,
+            postcode: postcode.clone(),
+            distance_km: Some(0.0),
+            product_count: state.products.len(),
+        });
+    }
+    drop(state);
+
+    if cfg!(feature = "example-data") {
+        for (name, desc, postcode) in example_suppliers() {
+            let dist = distance_between_postcodes(&user_postcode, &postcode);
+            suppliers.push(SupplierEntry {
+                name,
+                description: desc,
+                postcode,
+                distance_km: dist,
+                product_count: 5,
+            });
+        }
+    }
+
+    // Sort by distance (closest first), unknowns at the end
+    suppliers.sort_by(|a, b| {
+        let da = a.distance_km.unwrap_or(f64::MAX);
+        let db = b.distance_km.unwrap_or(f64::MAX);
+        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Filter by search query
+    let query = search_query.read().to_lowercase();
+    let filtered: Vec<_> = suppliers
+        .into_iter()
+        .filter(|s| {
+            query.is_empty()
+                || s.name.to_lowercase().contains(&query)
+                || s.description.to_lowercase().contains(&query)
+                || s.postcode.contains(&query)
+        })
+        .collect();
+
     rsx! {
         div { class: "directory-view",
             h2 { "Supplier Directory" }
@@ -29,16 +99,26 @@ pub fn DirectoryView() -> Element {
                 }
             }
             div { class: "supplier-list",
-                if cfg!(feature = "example-data") {
-                    // Example suppliers for development
-                    {example_suppliers().into_iter().map(|(name, desc, location)| {
-                        let name_clone = name.clone();
+                if filtered.is_empty() {
+                    p { class: "empty-state", "No suppliers found." }
+                } else {
+                    {filtered.into_iter().map(|supplier| {
+                        let name_clone = supplier.name.clone();
+                        let distance_text = match supplier.distance_km {
+                            Some(d) if d < 1.0 => "< 1 km away".to_string(),
+                            Some(d) => format!("{:.0} km away", d),
+                            None => "Distance unknown".to_string(),
+                        };
                         rsx! {
                             div { class: "supplier-card",
-                                key: "{name}",
-                                h3 { "{name}" }
-                                p { "{desc}" }
-                                p { class: "location", "{location}" }
+                                key: "{supplier.name}",
+                                h3 { "{supplier.name}" }
+                                p { "{supplier.description}" }
+                                {
+                                    let location_name = format_postcode(&supplier.postcode);
+                                    rsx! { p { class: "location", "{location_name} - {distance_text}" } }
+                                }
+                                p { class: "product-count", "{supplier.product_count} products" }
                                 button {
                                     onclick: move |_| selected_supplier.set(Some(name_clone.clone())),
                                     "View Storefront"
@@ -46,30 +126,39 @@ pub fn DirectoryView() -> Element {
                             }
                         }
                     })}
-                } else {
-                    p { "Connect to Freenet to browse suppliers, or enable example-data feature." }
                 }
             }
         }
     }
 }
 
+/// Example suppliers with Australian postcodes for development.
 fn example_suppliers() -> Vec<(String, String, String)> {
     vec![
         (
             "Green Valley Farm".into(),
             "Organic raw dairy from pastured cows".into(),
-            "Portland, OR".into(),
+            "2480".into(), // Lismore, NSW
         ),
         (
             "Mountain Creamery".into(),
             "Artisan cheese and butter".into(),
-            "Burlington, VT".into(),
+            "3741".into(), // Bright, VIC
         ),
         (
             "Sunrise Dairy".into(),
             "Fresh raw milk and kefir".into(),
-            "Lancaster, PA".into(),
+            "4370".into(), // Warwick, QLD
+        ),
+        (
+            "South Coast Organics".into(),
+            "Certified organic dairy products".into(),
+            "2546".into(), // Moruya, NSW
+        ),
+        (
+            "Tasmania Pure".into(),
+            "Heritage breed dairy, small batch".into(),
+            "7250".into(), // Launceston, TAS
         ),
     ]
 }
