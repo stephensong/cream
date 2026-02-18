@@ -1,26 +1,35 @@
 use dioxus::prelude::*;
 
-#[component]
-pub fn OrderForm(product_name: String) -> Element {
-    let mut quantity = use_signal(|| 1u32);
-    let mut deposit_tier = use_signal(|| "reserve2days".to_string());
-    let mut submitted = use_signal(|| false);
+use super::user_state::use_user_state;
 
-    if *submitted.read() {
+#[component]
+pub fn OrderForm(supplier_name: String, product_name: String, price_per_unit: u64) -> Element {
+    let mut user_state = use_user_state();
+    let mut quantity = use_signal(|| 1u32);
+    let mut deposit_tier = use_signal(|| "2-Day Reserve (10%)".to_string());
+    let mut submitted_id = use_signal(|| None::<u32>);
+
+    if let Some(order_id) = *submitted_id.read() {
         return rsx! {
             div { class: "order-confirmation",
                 h3 { "Order Submitted!" }
+                p { "Order #{order_id}" }
                 p { "Product: {product_name}" }
                 p { "Quantity: {quantity}" }
                 p { "Deposit tier: {deposit_tier}" }
-                p { "Your reservation has been placed." }
+                p { "Total: {price_per_unit * *quantity.read() as u64} CURD" }
+                p { "Your reservation has been placed. View it in My Orders." }
             }
         };
     }
 
+    let total = price_per_unit * *quantity.read() as u64;
+
     rsx! {
         div { class: "order-form",
             h2 { "Order: {product_name}" }
+            p { "From: {supplier_name}" }
+            p { "Price: {price_per_unit} CURD each" }
             div { class: "form-group",
                 label { "Quantity:" }
                 input {
@@ -39,13 +48,27 @@ pub fn OrderForm(product_name: String) -> Element {
                 select {
                     value: "{deposit_tier}",
                     onchange: move |evt| deposit_tier.set(evt.value()),
-                    option { value: "reserve2days", "2-Day Reserve (10% deposit)" }
-                    option { value: "reserve1week", "1-Week Reserve (20% deposit)" }
-                    option { value: "fullpayment", "Full Payment (100%)" }
+                    option { value: "2-Day Reserve (10%)", "2-Day Reserve (10% deposit)" }
+                    option { value: "1-Week Reserve (20%)", "1-Week Reserve (20% deposit)" }
+                    option { value: "Full Payment (100%)", "Full Payment (100%)" }
                 }
             }
+            p { class: "order-total", "Total: {total} CURD" }
             button {
-                onclick: move |_| submitted.set(true),
+                onclick: {
+                    let supplier = supplier_name.clone();
+                    let product = product_name.clone();
+                    move |_| {
+                        let id = user_state.write().place_order(
+                            supplier.clone(),
+                            product.clone(),
+                            *quantity.read(),
+                            deposit_tier.read().clone(),
+                            price_per_unit,
+                        );
+                        submitted_id.set(Some(id));
+                    }
+                },
                 "Place Order"
             }
         }

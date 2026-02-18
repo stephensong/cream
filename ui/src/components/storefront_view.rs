@@ -4,15 +4,19 @@ use super::order_form::OrderForm;
 
 #[component]
 pub fn StorefrontView(supplier_name: String) -> Element {
-    let mut selected_product = use_signal(|| None::<String>);
+    let mut selected_product = use_signal(|| None::<(String, u64)>);
 
-    if let Some(product_name) = selected_product.read().clone() {
+    if let Some((product_name, price)) = selected_product.read().clone() {
         return rsx! {
             button {
                 onclick: move |_| selected_product.set(None),
                 "Back to Products"
             }
-            OrderForm { product_name }
+            OrderForm {
+                supplier_name: supplier_name.clone(),
+                product_name,
+                price_per_unit: price,
+            }
         };
     }
 
@@ -31,7 +35,7 @@ pub fn StorefrontView(supplier_name: String) -> Element {
                                 p { class: "price", "{price} CURD" }
                                 p { class: "quantity", "Available: {qty}" }
                                 button {
-                                    onclick: move |_| selected_product.set(Some(name_clone.clone())),
+                                    onclick: move |_| selected_product.set(Some((name_clone.clone(), price))),
                                     "Order"
                                 }
                             }
