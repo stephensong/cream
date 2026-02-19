@@ -15,8 +15,12 @@ pub struct SharedState {
     pub directory: DirectoryState,
     /// Subscribed storefronts keyed by supplier name.
     pub storefronts: HashMap<String, StorefrontState>,
+    /// Map from supplier name to their storefront contract key (as string).
+    pub storefront_keys: HashMap<String, String>,
     /// Whether we're connected to a Freenet node.
     pub connected: bool,
+    /// Directory contract key (set after PUT or GET).
+    pub directory_contract_key: Option<String>,
     /// Last error message from node communication.
     pub last_error: Option<String>,
 }

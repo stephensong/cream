@@ -4,6 +4,8 @@ use cream_common::postcode::{format_postcode, is_valid_au_postcode};
 
 use super::directory_view::DirectoryView;
 use super::my_orders::MyOrders;
+#[cfg(feature = "use-node")]
+use super::node_api::{use_node_action, NodeAction};
 use super::node_api::use_node_coroutine;
 use super::shared_state::SharedState;
 use super::supplier_dashboard::SupplierDashboard;
@@ -119,13 +121,31 @@ fn UserSetup() -> Element {
             return;
         }
 
+        let is_sup = *is_supplier.read();
+        let desc = supplier_desc.read().trim().to_string();
+
         let mut state = user_state.write();
-        state.moniker = Some(name);
-        state.postcode = Some(postcode);
-        state.is_supplier = *is_supplier.read();
-        if *is_supplier.read() {
-            let desc = supplier_desc.read().trim().to_string();
-            state.supplier_description = if desc.is_empty() { None } else { Some(desc) };
+        state.moniker = Some(name.clone());
+        state.postcode = Some(postcode.clone());
+        state.is_supplier = is_sup;
+        if is_sup {
+            state.supplier_description = if desc.is_empty() {
+                None
+            } else {
+                Some(desc.clone())
+            };
+        }
+        drop(state);
+
+        // Register supplier with the Freenet network
+        #[cfg(feature = "use-node")]
+        if is_sup {
+            let node = use_node_action();
+            node.send(NodeAction::RegisterSupplier {
+                name,
+                postcode,
+                description: desc,
+            });
         }
     };
 

@@ -61,11 +61,10 @@ CARGO_FEATURE_NO_SYNC = "1"
 
 [tasks.dev-connected]
 description = "Run UI dev server connected to local Freenet node"
+dependencies = ["build-contracts-dev"]
 cwd = "ui"
 command = "dx"
-args = ["serve"]
-[tasks.dev-connected.env]
-CARGO_FEATURE_USE_NODE = "1"
+args = ["serve", "--features", "use-node"]
 
 [tasks.local-network]
 description = "Start local Freenet network (1 gateway + 2 nodes)"
