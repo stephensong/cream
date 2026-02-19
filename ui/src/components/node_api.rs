@@ -116,9 +116,11 @@ mod wasm_impl {
         let mut shared = use_shared_state();
 
         // ── Connect to node via WebSocket ───────────────────────────────
-        let conn = match web_sys::WebSocket::new(
-            "ws://localhost:3001/v1/contract/command?encodingProtocol=native",
-        ) {
+        const DEFAULT_NODE_URL: &str =
+            "ws://localhost:3001/v1/contract/command?encodingProtocol=native";
+        let node_url = option_env!("CREAM_NODE_URL").unwrap_or(DEFAULT_NODE_URL);
+
+        let conn = match web_sys::WebSocket::new(node_url) {
             Ok(c) => c,
             Err(e) => {
                 shared.write().last_error =

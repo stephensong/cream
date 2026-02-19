@@ -78,6 +78,42 @@ script = ["make -f ${FREENET_CORE}/scripts/local-network.mk stop FREENET_CORE_PA
 [tasks.local-network-stop.env]
 FREENET_CORE = { value = "${HOME}/dev/freenet-core", condition = { env_not_set = ["FREENET_CORE"] } }
 
+[tasks.dev-android]
+description = "Run UI dev server for Android with remote Freenet node"
+dependencies = ["build-contracts-dev"]
+cwd = "ui"
+command = "dx"
+args = ["serve", "--platform", "android", "--features", "mobile,use-node", "--no-default-features"]
+[tasks.dev-android.env]
+CREAM_NODE_URL = { value = "${CREAM_NODE_URL}", condition = { env_set = ["CREAM_NODE_URL"] } }
+
+[tasks.dev-ios]
+description = "Run UI dev server for iOS with remote Freenet node"
+dependencies = ["build-contracts-dev"]
+cwd = "ui"
+command = "dx"
+args = ["serve", "--platform", "ios", "--features", "mobile,use-node", "--no-default-features"]
+[tasks.dev-ios.env]
+CREAM_NODE_URL = { value = "${CREAM_NODE_URL}", condition = { env_set = ["CREAM_NODE_URL"] } }
+
+[tasks.build-android]
+description = "Build release APK for Android"
+dependencies = ["build-contracts"]
+cwd = "ui"
+command = "dx"
+args = ["build", "--release", "--platform", "android", "--features", "mobile,use-node", "--no-default-features"]
+[tasks.build-android.env]
+CREAM_NODE_URL = { value = "${CREAM_NODE_URL}", condition = { env_set = ["CREAM_NODE_URL"] } }
+
+[tasks.build-ios]
+description = "Build release for iOS"
+dependencies = ["build-contracts"]
+cwd = "ui"
+command = "dx"
+args = ["build", "--release", "--platform", "ios", "--features", "mobile,use-node", "--no-default-features"]
+[tasks.build-ios.env]
+CREAM_NODE_URL = { value = "${CREAM_NODE_URL}", condition = { env_set = ["CREAM_NODE_URL"] } }
+
 [tasks.test]
 description = "Run all tests"
 command = "cargo"
