@@ -68,13 +68,13 @@ args = ["serve", "--features", "use-node"]
 
 [tasks.local-network]
 description = "Start local Freenet network (1 gateway + 2 nodes)"
-script = ["make -f ${FREENET_CORE}/scripts/local-network.mk setup start N_GATEWAYS=1 N_NODES=2"]
+script = ["make -f ${FREENET_CORE}/scripts/local-network.mk setup start N_GATEWAYS=1 N_NODES=2 FREENET_CORE_PATH=${FREENET_CORE}/crates/core"]
 [tasks.local-network.env]
 FREENET_CORE = { value = "${HOME}/dev/freenet-core", condition = { env_not_set = ["FREENET_CORE"] } }
 
 [tasks.local-network-stop]
 description = "Stop local Freenet network"
-script = ["make -f ${FREENET_CORE}/scripts/local-network.mk stop"]
+script = ["make -f ${FREENET_CORE}/scripts/local-network.mk stop FREENET_CORE_PATH=${FREENET_CORE}/crates/core"]
 [tasks.local-network-stop.env]
 FREENET_CORE = { value = "${HOME}/dev/freenet-core", condition = { env_not_set = ["FREENET_CORE"] } }
 

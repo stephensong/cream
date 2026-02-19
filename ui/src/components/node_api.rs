@@ -163,32 +163,30 @@ mod wasm_impl {
         }
         shared.write().connected = true;
 
-        // ── Deploy directory contract ───────────────────────────────────
+        // ── Set up directory contract ─────────────────────────────────
         let directory_contract =
             make_contract(DIRECTORY_CONTRACT_WASM, Parameters::from(vec![]));
         let directory_key = directory_contract.key();
-        let _directory_instance_id = *directory_key.id();
+        let directory_instance_id = *directory_key.id();
 
         tracing::info!("Directory contract key: {:?}", directory_key);
         shared.write().directory_contract_key =
             Some(format!("{}", directory_key));
 
-        // PUT the directory contract with empty initial state, and subscribe
-        let empty_dir = DirectoryState::default();
-        let initial_state = serde_json::to_vec(&empty_dir).unwrap();
-        let put_request = ClientRequest::ContractOp(ContractRequest::Put {
-            contract: directory_contract.clone(),
-            state: WrappedState::new(initial_state),
-            related_contracts: RelatedContracts::default(),
+        // Try to GET the existing directory + subscribe.
+        // If it doesn't exist yet, we'll PUT it when we get NotFound.
+        let get_request = ClientRequest::ContractOp(ContractRequest::Get {
+            key: directory_instance_id,
+            return_contract_code: false,
             subscribe: true,
             blocking_subscribe: false,
         });
 
-        tracing::info!("Putting directory contract...");
-        if let Err(e) = api.send(put_request).await {
-            tracing::error!("Failed to PUT directory contract: {:?}", e);
+        tracing::info!("Getting directory contract (will PUT if not found)...");
+        if let Err(e) = api.send(get_request).await {
+            tracing::error!("Failed to GET directory contract: {:?}", e);
             shared.write().last_error =
-                Some(format!("Failed to deploy directory contract: {:?}", e));
+                Some(format!("Failed to get directory contract: {:?}", e));
         }
 
         // ── Main event loop ─────────────────────────────────────────────
@@ -208,7 +206,13 @@ mod wasm_impl {
                     let Some(response) = response else { break };
                     match response {
                         Ok(HostResponse::ContractResponse(cr)) => {
-                            handle_contract_response(&mut shared, cr);
+                            if let Some(follow_up) = handle_contract_response(
+                                &mut shared, cr, directory_instance_id,
+                            ) {
+                                if let Err(e) = api.send(follow_up).await {
+                                    tracing::error!("Failed to send follow-up: {:?}", e);
+                                }
+                            }
                         }
                         Ok(HostResponse::Ok) => {
                             tracing::debug!("Node OK");
@@ -313,7 +317,6 @@ mod wasm_impl {
                     .insert(name.clone(), format!("{}", sf_key));
 
                 // Now register in the directory
-                let mut entries = BTreeMap::new();
                 let entry = DirectoryEntry {
                     supplier: supplier_id,
                     name: name.clone(),
@@ -324,6 +327,15 @@ mod wasm_impl {
                     updated_at: chrono::Utc::now(),
                     signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
                 };
+
+                // Update local state immediately so this tab sees its own supplier
+                shared
+                    .write()
+                    .directory
+                    .entries
+                    .insert(entry.supplier.clone(), entry.clone());
+
+                let mut entries = BTreeMap::new();
                 entries.insert(entry.supplier.clone(), entry);
                 let dir_update = DirectoryState { entries };
                 let delta_bytes = serde_json::to_vec(&dir_update).unwrap();
@@ -504,15 +516,17 @@ mod wasm_impl {
     }
 
     /// Handle contract responses from the node.
+    /// Returns an optional request to send back (e.g. PUT after NotFound).
     fn handle_contract_response(
         shared: &mut Signal<crate::components::shared_state::SharedState>,
         response: ContractResponse,
-    ) {
+        directory_instance_id: ContractInstanceId,
+    ) -> Option<ClientRequest<'static>> {
         match response {
             ContractResponse::GetResponse { state, .. } => {
                 let bytes = state.as_ref();
                 if bytes.is_empty() {
-                    return;
+                    return None;
                 }
                 if let Ok(directory) =
                     serde_json::from_slice::<DirectoryState>(bytes)
@@ -539,10 +553,10 @@ mod wasm_impl {
                 let bytes = match &update {
                     UpdateData::State(s) => s.as_ref(),
                     UpdateData::Delta(d) => d.as_ref(),
-                    _ => return,
+                    _ => return None,
                 };
                 if bytes.is_empty() {
-                    return;
+                    return None;
                 }
                 if let Ok(dir_update) =
                     serde_json::from_slice::<DirectoryState>(bytes)
@@ -582,13 +596,39 @@ mod wasm_impl {
             }
 
             ContractResponse::NotFound { instance_id } => {
-                tracing::warn!("Contract not found: {:?}", instance_id);
+                if instance_id == directory_instance_id {
+                    // Directory contract doesn't exist yet — we're the first tab.
+                    // PUT it with empty state + subscribe.
+                    tracing::info!("Directory not found, creating it...");
+                    let directory_contract = make_contract(
+                        DIRECTORY_CONTRACT_WASM,
+                        Parameters::from(vec![]),
+                    );
+                    let empty_dir = DirectoryState::default();
+                    let initial_state =
+                        serde_json::to_vec(&empty_dir).unwrap();
+                    return Some(ClientRequest::ContractOp(
+                        ContractRequest::Put {
+                            contract: directory_contract,
+                            state: WrappedState::new(initial_state),
+                            related_contracts: RelatedContracts::default(),
+                            subscribe: true,
+                            blocking_subscribe: false,
+                        },
+                    ));
+                } else {
+                    tracing::warn!(
+                        "Contract not found: {:?}",
+                        instance_id
+                    );
+                }
             }
 
             _ => {
                 tracing::debug!("Unhandled contract response");
             }
         }
+        None
     }
 }
 
