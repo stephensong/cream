@@ -2,11 +2,15 @@ use dioxus::prelude::*;
 
 use cream_common::postcode::format_postcode;
 
+#[cfg(feature = "use-node")]
+use super::node_api::{use_node_action, NodeAction};
+use super::shared_state::use_shared_state;
 use super::user_state::use_user_state;
 
 #[component]
 pub fn SupplierDashboard() -> Element {
     let mut user_state = use_user_state();
+    let shared_state = use_shared_state();
     let mut show_add_product = use_signal(|| false);
 
     let state = user_state.read();
@@ -17,6 +21,8 @@ pub fn SupplierDashboard() -> Element {
         .clone()
         .unwrap_or("No description set".into());
     let products = state.products.clone();
+
+    // Get orders from both local state and SharedState
     let orders_for_me: Vec<_> = state
         .orders
         .iter()
@@ -24,6 +30,21 @@ pub fn SupplierDashboard() -> Element {
         .cloned()
         .collect();
     drop(state);
+
+    // Also check SharedState for network-sourced orders
+    {
+        let shared = shared_state.read();
+        if let Some(storefront) = shared.storefronts.get(&moniker) {
+            let network_order_count = storefront.orders.len();
+            if network_order_count > 0 {
+                tracing::debug!(
+                    "{} network orders for {}",
+                    network_order_count,
+                    moniker
+                );
+            }
+        }
+    }
 
     rsx! {
         div { class: "supplier-dashboard",
@@ -175,13 +196,32 @@ fn AddProductForm(on_added: EventHandler<()>) -> Element {
                 onclick: move |_| {
                     let p = price.read().trim().parse::<u64>().unwrap_or(0);
                     let q = quantity.read().trim().parse::<u32>().unwrap_or(0);
+                    let prod_name = name.read().trim().to_string();
+                    let prod_cat = category.read().clone();
+                    let prod_desc = description.read().trim().to_string();
+
+                    // Add to local state
                     user_state.write().add_product(
-                        name.read().trim().to_string(),
-                        category.read().clone(),
-                        description.read().trim().to_string(),
+                        prod_name.clone(),
+                        prod_cat.clone(),
+                        prod_desc.clone(),
                         p,
                         q,
                     );
+
+                    // Send to node if connected
+                    #[cfg(feature = "use-node")]
+                    {
+                        let node = use_node_action();
+                        node.send(NodeAction::AddProduct {
+                            name: prod_name,
+                            category: prod_cat,
+                            description: prod_desc,
+                            price_curd: p,
+                            quantity_available: q,
+                        });
+                    }
+
                     on_added.call(());
                 },
                 "Save Product"

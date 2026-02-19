@@ -126,6 +126,9 @@ mod tests {
     #[test]
     fn test_nearby_postcodes() {
         let dist = distance_between_postcodes("2000", "2010").expect("both should exist");
-        assert!(dist < 5.0, "Sydney CBD to Surry Hills should be < 5km, got {dist}");
+        assert!(
+            dist < 5.0,
+            "Sydney CBD to Surry Hills should be < 5km, got {dist}"
+        );
     }
 }

@@ -7,6 +7,7 @@ edition = "2021"
 default = []
 example-data = []
 no-sync = []
+use-node = []
 
 [dependencies]
 cream-common = { path = "../common" }
@@ -15,3 +16,20 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde", "wasmbind"] }
 ed25519-dalek = { version = "2", features = ["serde"] }
+futures = "0.3"
+tracing = "0.1"
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+freenet-stdlib = { version = "0.1", features = ["net"] }
+web-sys = { version = "0.3", features = [
+    "BinaryType",
+    "Blob",
+    "console",
+    "ErrorEvent",
+    "WebSocket",
+    "Window",
+] }
+serde-wasm-bindgen = "0.5"
+getrandom = { version = "0.2", features = ["js"] }

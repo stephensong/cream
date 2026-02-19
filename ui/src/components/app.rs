@@ -4,6 +4,8 @@ use cream_common::postcode::{format_postcode, is_valid_au_postcode};
 
 use super::directory_view::DirectoryView;
 use super::my_orders::MyOrders;
+use super::node_api::use_node_coroutine;
+use super::shared_state::SharedState;
 use super::supplier_dashboard::SupplierDashboard;
 use super::user_state::{use_user_state, UserState};
 use super::wallet_view::WalletView;
@@ -20,6 +22,10 @@ enum View {
 pub fn App() -> Element {
     // Provide shared user state to all child components
     use_context_provider(|| Signal::new(UserState::new()));
+    use_context_provider(|| Signal::new(SharedState::new()));
+
+    // Start node communication coroutine
+    use_node_coroutine();
 
     let user_state = use_user_state();
     let mut current_view = use_signal(|| View::Directory);

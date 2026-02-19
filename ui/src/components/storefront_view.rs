@@ -1,11 +1,15 @@
 use dioxus::prelude::*;
 
+#[cfg(feature = "use-node")]
+use super::node_api::{use_node_action, NodeAction};
 use super::order_form::OrderForm;
+use super::shared_state::use_shared_state;
 use super::user_state::use_user_state;
 
 #[component]
 pub fn StorefrontView(supplier_name: String) -> Element {
     let user_state = use_user_state();
+    let shared_state = use_shared_state();
     let mut selected_product = use_signal(|| None::<(String, u64)>);
 
     if let Some((product_name, price)) = selected_product.read().clone() {
@@ -36,13 +40,44 @@ pub fn StorefrontView(supplier_name: String) -> Element {
     };
     drop(state);
 
+    // Build product list from local state or SharedState or example data
     let products: Vec<(String, String, u64, u32)> = if is_own {
         user_products
-    } else if cfg!(feature = "example-data") {
-        example_products()
     } else {
-        Vec::new()
+        // Try to get from SharedState (network-sourced storefronts)
+        let shared = shared_state.read();
+        if let Some(storefront) = shared.storefronts.get(&supplier_name) {
+            storefront
+                .products
+                .values()
+                .map(|sp| {
+                    let cat = format!("{:?}", sp.product.category);
+                    (
+                        sp.product.name.clone(),
+                        cat,
+                        sp.product.price_curd,
+                        sp.product.quantity_available,
+                    )
+                })
+                .collect()
+        } else if cfg!(feature = "example-data") {
+            example_products()
+        } else {
+            Vec::new()
+        }
     };
+
+    // Subscribe to this storefront's updates when viewing it
+    #[cfg(feature = "use-node")]
+    {
+        let name = supplier_name.clone();
+        use_effect(move || {
+            let node = use_node_action();
+            node.send(NodeAction::SubscribeStorefront {
+                supplier_name: name.clone(),
+            });
+        });
+    }
 
     rsx! {
         div { class: "storefront-view",

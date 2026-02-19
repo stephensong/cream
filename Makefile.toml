@@ -19,6 +19,20 @@ description = "Build storefront contract WASM"
 command = "cargo"
 args = ["build", "-p", "cream-storefront-contract", "--target", "wasm32-unknown-unknown", "--release", "--features", "contract"]
 
+[tasks.build-contracts-dev]
+description = "Build WASM contracts with dev feature (no signature checks)"
+dependencies = ["build-directory-contract-dev", "build-storefront-contract-dev"]
+
+[tasks.build-directory-contract-dev]
+description = "Build directory contract WASM with dev feature"
+command = "cargo"
+args = ["build", "-p", "cream-directory-contract", "--target", "wasm32-unknown-unknown", "--release", "--features", "contract,dev"]
+
+[tasks.build-storefront-contract-dev]
+description = "Build storefront contract WASM with dev feature"
+command = "cargo"
+args = ["build", "-p", "cream-storefront-contract", "--target", "wasm32-unknown-unknown", "--release", "--features", "contract,dev"]
+
 [tasks.build-delegate]
 description = "Build CREAM delegate"
 command = "cargo"
@@ -44,6 +58,26 @@ args = ["serve"]
 [tasks.dev-example-no-sync.env]
 CARGO_FEATURE_EXAMPLE_DATA = "1"
 CARGO_FEATURE_NO_SYNC = "1"
+
+[tasks.dev-connected]
+description = "Run UI dev server connected to local Freenet node"
+cwd = "ui"
+command = "dx"
+args = ["serve"]
+[tasks.dev-connected.env]
+CARGO_FEATURE_USE_NODE = "1"
+
+[tasks.local-network]
+description = "Start local Freenet network (1 gateway + 2 nodes)"
+script = ["make -f ${FREENET_CORE}/scripts/local-network.mk setup start N_GATEWAYS=1 N_NODES=2"]
+[tasks.local-network.env]
+FREENET_CORE = { value = "${HOME}/dev/freenet-core", condition = { env_not_set = ["FREENET_CORE"] } }
+
+[tasks.local-network-stop]
+description = "Stop local Freenet network"
+script = ["make -f ${FREENET_CORE}/scripts/local-network.mk stop"]
+[tasks.local-network-stop.env]
+FREENET_CORE = { value = "${HOME}/dev/freenet-core", condition = { env_not_set = ["FREENET_CORE"] } }
 
 [tasks.test]
 description = "Run all tests"

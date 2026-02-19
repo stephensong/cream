@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 default = ["freenet-main-contract"]
 contract = ["freenet-stdlib/contract"]
 freenet-main-contract = []
+dev = ["cream-common/dev"]
 
 [dependencies]
 cream-common = { workspace = true, default-features = false, features = [] }

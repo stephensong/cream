@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = ["std"]
 std = ["chrono/std", "chrono/clock"]
+dev = []
 
 [dependencies]
 chrono = { workspace = true }
