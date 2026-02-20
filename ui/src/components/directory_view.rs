@@ -39,8 +39,8 @@ pub fn DirectoryView() -> Element {
     // Build supplier list from multiple sources
     let mut suppliers: Vec<SupplierEntry> = Vec::new();
 
-    // Add current user if they're a supplier with products
-    if state.is_supplier && !state.products.is_empty() {
+    // Add current user if they're a supplier
+    if state.is_supplier {
         let moniker = state.moniker.clone().unwrap_or_default();
         let desc = state
             .supplier_description

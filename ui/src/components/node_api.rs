@@ -223,8 +223,41 @@ mod wasm_impl {
                             tracing::debug!("Unhandled response: {:?}", other);
                         }
                         Err(e) => {
-                            tracing::error!("Node error: {:?}", e);
-                            shared.write().last_error = Some(format!("{:?}", e));
+                            // Check if this is a MissingContract error for the
+                            // directory — treat it like NotFound and PUT.
+                            let is_missing_directory = matches!(
+                                e.kind(),
+                                freenet_stdlib::client_api::ErrorKind::RequestError(
+                                    freenet_stdlib::client_api::RequestError::ContractError(
+                                        freenet_stdlib::client_api::ContractError::MissingContract { key }
+                                    )
+                                ) if *key == directory_instance_id
+                            );
+                            if is_missing_directory {
+                                tracing::info!("Directory contract missing, creating it...");
+                                let dir_contract = make_contract(
+                                    DIRECTORY_CONTRACT_WASM,
+                                    Parameters::from(vec![]),
+                                );
+                                let empty_dir = DirectoryState::default();
+                                let initial_state =
+                                    serde_json::to_vec(&empty_dir).unwrap();
+                                let put_req = ClientRequest::ContractOp(
+                                    ContractRequest::Put {
+                                        contract: dir_contract,
+                                        state: WrappedState::new(initial_state),
+                                        related_contracts: RelatedContracts::default(),
+                                        subscribe: true,
+                                        blocking_subscribe: false,
+                                    },
+                                );
+                                if let Err(e) = api.send(put_req).await {
+                                    tracing::error!("Failed to PUT directory: {:?}", e);
+                                }
+                            } else {
+                                tracing::error!("Node error: {:?}", e);
+                                shared.write().last_error = Some(format!("{:?}", e));
+                            }
                         }
                     }
                 }

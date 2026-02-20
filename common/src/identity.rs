@@ -1,12 +1,48 @@
 use std::cmp::Ordering;
+use std::fmt;
 use std::hash::{Hash, Hasher};
 
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 /// A supplier's public identity.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Custom serde impl encodes the 32-byte key as a hex string so it works as a
+/// JSON map key (JSON requires string keys).
+#[derive(Debug, Clone)]
 pub struct SupplierId(pub VerifyingKey);
+
+impl fmt::Display for SupplierId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in self.0.as_bytes() {
+            write!(f, "{:02x}", byte)?;
+        }
+        Ok(())
+    }
+}
+
+impl Serialize for SupplierId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for SupplierId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        if s.len() != 64 {
+            return Err(serde::de::Error::custom("SupplierId hex must be 64 chars"));
+        }
+        let mut bytes = [0u8; 32];
+        for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
+            let hex = std::str::from_utf8(chunk).map_err(serde::de::Error::custom)?;
+            bytes[i] = u8::from_str_radix(hex, 16).map_err(serde::de::Error::custom)?;
+        }
+        VerifyingKey::from_bytes(&bytes)
+            .map(SupplierId)
+            .map_err(serde::de::Error::custom)
+    }
+}
 
 impl PartialEq for SupplierId {
     fn eq(&self, other: &Self) -> bool {

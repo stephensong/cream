@@ -102,6 +102,9 @@ fn UserSetup() -> Element {
     let mut supplier_desc = use_signal(|| String::new());
     let mut postcode_error = use_signal(|| None::<String>);
 
+    #[cfg(feature = "use-node")]
+    let node = use_node_action();
+
     let can_submit = use_memo(move || {
         let name_ok = !name_input.read().trim().is_empty();
         let postcode_ok = is_valid_au_postcode(postcode_input.read().trim());
@@ -140,7 +143,6 @@ fn UserSetup() -> Element {
         // Register supplier with the Freenet network
         #[cfg(feature = "use-node")]
         if is_sup {
-            let node = use_node_action();
             node.send(NodeAction::RegisterSupplier {
                 name,
                 postcode,
