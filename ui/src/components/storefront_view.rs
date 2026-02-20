@@ -70,9 +70,9 @@ pub fn StorefrontView(supplier_name: String) -> Element {
     // Subscribe to this storefront's updates when viewing it
     #[cfg(feature = "use-node")]
     {
+        let node = use_node_action();
         let name = supplier_name.clone();
         use_effect(move || {
-            let node = use_node_action();
             node.send(NodeAction::SubscribeStorefront {
                 supplier_name: name.clone(),
             });
@@ -83,7 +83,9 @@ pub fn StorefrontView(supplier_name: String) -> Element {
         div { class: "storefront-view",
             h2 { "{supplier_name}" }
             if is_own {
-                p { class: "own-storefront-note", "(This is your storefront)" }
+                p { class: "own-storefront-note",
+                    "(This is your storefront — use the \"My Storefront\" tab to add products)"
+                }
             }
             div { class: "product-list",
                 if products.is_empty() {

@@ -191,6 +191,9 @@ mod wasm_impl {
                 Some(format!("Failed to get directory contract: {:?}", e));
         }
 
+        // Local map of supplier name -> ContractKey for storefront updates
+        let mut sf_contract_keys: BTreeMap<String, ContractKey> = BTreeMap::new();
+
         // ── Main event loop ─────────────────────────────────────────────
         loop {
             futures::select! {
@@ -201,6 +204,7 @@ mod wasm_impl {
                         &mut api,
                         &mut shared,
                         &directory_key,
+                        &mut sf_contract_keys,
                     ).await;
                 }
 
@@ -282,6 +286,7 @@ mod wasm_impl {
         api: &mut freenet_stdlib::client_api::WebApi,
         shared: &mut Signal<crate::components::shared_state::SharedState>,
         directory_key: &ContractKey,
+        sf_contract_keys: &mut BTreeMap<String, ContractKey>,
     ) {
         match action {
             NodeAction::RegisterSupplier {
@@ -345,11 +350,15 @@ mod wasm_impl {
                     return;
                 }
 
-                // Store the storefront key
-                shared
-                    .write()
-                    .storefront_keys
-                    .insert(name.clone(), format!("{}", sf_key));
+                // Store the storefront key and initial state
+                sf_contract_keys.insert(name.clone(), sf_key);
+                {
+                    let mut state = shared.write();
+                    state.storefront_keys
+                        .insert(name.clone(), format!("{}", sf_contract_keys[&name]));
+                    state.storefronts
+                        .insert(name.clone(), sf_state);
+                }
 
                 // Now register in the directory
                 let entry = DirectoryEntry {
@@ -411,12 +420,7 @@ mod wasm_impl {
                     return;
                 };
 
-                let sf_key_str = {
-                    let state = shared.read();
-                    state.storefront_keys.get(&supplier_name).cloned()
-                };
-
-                let Some(_sf_key_str) = sf_key_str else {
+                let Some(sf_key) = sf_contract_keys.get(&supplier_name).cloned() else {
                     tracing::warn!("Storefront key not found for {}", supplier_name);
                     return;
                 };
@@ -459,26 +463,17 @@ mod wasm_impl {
                 };
 
                 if let Some(mut sf) = existing_sf {
-                    sf.products.insert(product_id, signed_product);
+                    sf.products.insert(product_id.clone(), signed_product.clone());
                     let sf_bytes = serde_json::to_vec(&sf).unwrap();
-
-                    // Find the actual ContractKey to send the update
-                    // We need to reconstruct it from the storefront params
-                    let dummy_key =
-                        ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
-                    let verifying = ed25519_dalek::VerifyingKey::from(&dummy_key);
-                    let params = StorefrontParameters { owner: verifying };
-                    let params_bytes = serde_json::to_vec(&params).unwrap();
-                    let sf_contract = make_contract(
-                        STOREFRONT_CONTRACT_WASM,
-                        Parameters::from(params_bytes),
-                    );
 
                     let update =
                         ClientRequest::ContractOp(ContractRequest::Update {
-                            key: sf_contract.key(),
+                            key: sf_key,
                             data: UpdateData::State(State::from(sf_bytes)),
                         });
+
+                    // Update local SharedState immediately so the supplier sees their product
+                    shared.write().storefronts.insert(supplier_name.clone(), sf);
 
                     tracing::info!("Adding product to storefront");
                     if let Err(e) = api.send(update).await {
