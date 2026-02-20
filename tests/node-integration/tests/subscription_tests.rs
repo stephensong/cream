@@ -104,7 +104,7 @@ async fn storefront_subscribe_notifies_on_product_add() {
     let initial_sf = StorefrontState {
         info: cream_common::storefront::StorefrontInfo {
             owner: supplier_id,
-            name: "Test Farm".to_string(),
+            name: "Notify Farm".to_string(),
             description: "A test farm".to_string(),
             location: cream_common::location::GeoLocation::new(-33.87, 151.21),
         },

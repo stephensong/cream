@@ -1,5 +1,6 @@
 pub mod app;
 pub mod directory_view;
+pub mod key_manager;
 pub mod my_orders;
 pub mod node_api;
 pub mod order_form;

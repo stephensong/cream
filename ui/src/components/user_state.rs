@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(target_family = "wasm")]
 const STORAGE_KEY: &str = "cream_user_state";
-#[cfg(target_family = "wasm")]
-const SESSION_INIT_KEY: &str = "cream_session_init";
 
 /// A placed order tracked in the UI.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -59,48 +57,27 @@ impl UserState {
         }
     }
 
-    /// Save current state to sessionStorage (per-tab, survives refresh).
+    /// Save current state to localStorage (persists across tabs and restarts).
     pub fn save(&self) {
         #[cfg(target_family = "wasm")]
         {
             if let Ok(json) = serde_json::to_string(self) {
                 if let Some(storage) = web_sys::window()
-                    .and_then(|w| w.session_storage().ok())
+                    .and_then(|w| w.local_storage().ok())
                     .flatten()
                 {
                     let _ = storage.set_item(STORAGE_KEY, &json);
-                    let _ = storage.set_item(SESSION_INIT_KEY, "1");
                 }
             }
         }
     }
 
-    /// Load state from sessionStorage, but only if this tab previously saved
-    /// (the init marker distinguishes a refresh from a new/duplicated tab that
-    /// inherited stale sessionStorage).
+    /// Load state from localStorage.
     fn load() -> Option<Self> {
         #[cfg(target_family = "wasm")]
         {
-            let window = web_sys::window()?;
-
-            // Clean up any old localStorage data from before the switch
-            if let Ok(Some(local)) = window.local_storage() {
-                let _ = local.remove_item(STORAGE_KEY);
-            }
-
-            let session = window.session_storage().ok()??;
-
-            // Only restore if this tab's own save() wrote the init marker.
-            // A fresh tab (or one duplicated by the browser) won't have it
-            // because we clear it on first load.
-            let has_marker = session.get_item(SESSION_INIT_KEY).ok().flatten().is_some();
-            if !has_marker {
-                // First load in this tab — wipe any inherited session data
-                let _ = session.remove_item(STORAGE_KEY);
-                return None;
-            }
-
-            let json = session.get_item(STORAGE_KEY).ok()??;
+            let storage = web_sys::window()?.local_storage().ok()??;
+            let json = storage.get_item(STORAGE_KEY).ok()??;
             serde_json::from_str(&json).ok()
         }
         #[cfg(not(target_family = "wasm"))]

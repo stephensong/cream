@@ -54,9 +54,9 @@ pub fn make_storefront_contract(
     (contract, key)
 }
 
-/// Create a unique supplier identity per call (dev mode, no real keys needed).
-/// Each call generates a random signing key so that tests running in parallel
-/// get distinct storefront contract keys.
+/// Create a unique supplier identity (random keys).
+/// The `test-node` task resets the node before each run, so random keys
+/// don't accumulate stale entries across runs.
 pub fn make_dummy_supplier() -> (SupplierId, ed25519_dalek::VerifyingKey) {
     use rand::RngCore;
     let mut seed = [0u8; 32];
@@ -66,7 +66,7 @@ pub fn make_dummy_supplier() -> (SupplierId, ed25519_dalek::VerifyingKey) {
     (SupplierId(verifying_key), verifying_key)
 }
 
-/// Create a unique customer identity per call (dev mode, no real keys needed).
+/// Create a unique customer identity (random keys).
 pub fn make_dummy_customer() -> (CustomerId, ed25519_dalek::VerifyingKey) {
     use rand::RngCore;
     let mut seed = [0u8; 32];

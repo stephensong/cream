@@ -75,7 +75,6 @@ mod wasm_impl {
     use futures::{SinkExt, StreamExt};
 
     use cream_common::directory::{DirectoryEntry, DirectoryState};
-    use cream_common::identity::SupplierId;
     use cream_common::location::GeoLocation;
     #[allow(unused_imports)]
     use cream_common::order::OrderId;
@@ -89,6 +88,7 @@ mod wasm_impl {
     use freenet_stdlib::prelude::*;
 
     use super::NodeAction;
+    use crate::components::key_manager::KeyManager;
     use crate::components::shared_state::use_shared_state;
 
     /// Embedded directory contract WASM (built with `cargo make build-contracts-dev`).
@@ -114,6 +114,7 @@ mod wasm_impl {
     /// Main node communication loop.
     pub async fn node_comms(mut rx: UnboundedReceiver<NodeAction>) {
         let mut shared = use_shared_state();
+        let key_manager_signal: Signal<Option<KeyManager>> = use_context();
 
         // ── Connect to node via WebSocket ───────────────────────────────
         const DEFAULT_NODE_URL: &str =
@@ -212,12 +213,18 @@ mod wasm_impl {
             futures::select! {
                 action = rx.next() => {
                     let Some(action) = action else { break };
+                    let km = key_manager_signal.read().clone();
+                    let Some(km) = km else {
+                        tracing::warn!("Action received but no KeyManager available, dropping: {:?}", action);
+                        continue;
+                    };
                     handle_action(
                         action,
                         &mut api,
                         &mut shared,
                         &directory_key,
                         &mut sf_contract_keys,
+                        &km,
                     ).await;
                 }
 
@@ -302,6 +309,7 @@ mod wasm_impl {
         shared: &mut Signal<crate::components::shared_state::SharedState>,
         directory_key: &ContractKey,
         sf_contract_keys: &mut BTreeMap<String, ContractKey>,
+        key_manager: &KeyManager,
     ) {
         match action {
             NodeAction::RegisterSupplier {
@@ -309,27 +317,16 @@ mod wasm_impl {
                 postcode,
                 description,
             } => {
-                // First, deploy a storefront contract for this supplier.
-                // Use a dummy verifying key for dev mode (signature checks are bypassed).
-                let dummy_key = ed25519_dalek::VerifyingKey::from_bytes(&[0u8; 32]);
-                let dummy_key = match dummy_key {
-                    Ok(k) => k,
-                    Err(_) => {
-                        // Use a valid point on the curve
-                        let signing_key =
-                            ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
-                        ed25519_dalek::VerifyingKey::from(&signing_key)
-                    }
-                };
-
-                let supplier_id = SupplierId(dummy_key);
+                // Deploy a storefront contract for this supplier using real keys.
+                let supplier_id = key_manager.supplier_id();
+                let owner_key = key_manager.supplier_verifying_key();
 
                 // Look up postcode to get coordinates
                 let location =
                     cream_common::postcode::lookup_au_postcode(&postcode)
                         .unwrap_or(GeoLocation::new(-33.87, 151.21)); // Default to Sydney
 
-                let storefront_params = StorefrontParameters { owner: dummy_key };
+                let storefront_params = StorefrontParameters { owner: owner_key };
                 let params_bytes = serde_json::to_vec(&storefront_params).unwrap();
                 let sf_contract = make_contract(
                     STOREFRONT_CONTRACT_WASM,
@@ -375,8 +372,8 @@ mod wasm_impl {
                         .insert(name.clone(), sf_state);
                 }
 
-                // Now register in the directory
-                let entry = DirectoryEntry {
+                // Now register in the directory with a real signature
+                let mut entry = DirectoryEntry {
                     supplier: supplier_id,
                     name: name.clone(),
                     description,
@@ -386,6 +383,7 @@ mod wasm_impl {
                     updated_at: chrono::Utc::now(),
                     signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
                 };
+                key_manager.sign_directory_entry(&mut entry);
 
                 // Update local state immediately so this tab sees its own supplier
                 shared
@@ -463,9 +461,10 @@ mod wasm_impl {
                     updated_at: now,
                     created_at: now,
                 };
+                let signature = key_manager.sign_product(&product);
                 let signed_product = SignedProduct {
                     product,
-                    signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+                    signature,
                 };
 
                 // Get the current storefront state and add the product
