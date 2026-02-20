@@ -6,10 +6,12 @@ use freenet_stdlib::prelude::*;
 use tokio::time::Instant;
 
 use cream_common::directory::DirectoryEntry;
-use cream_common::identity::SupplierId;
+use cream_common::identity::{CustomerId, SupplierId};
 use cream_common::location::GeoLocation;
 use cream_common::product::{Product, ProductCategory, ProductId};
 use cream_common::storefront::{SignedProduct, StorefrontParameters};
+
+pub mod harness;
 
 const NODE_URL: &str = "ws://localhost:3001/v1/contract/command?encodingProtocol=native";
 
@@ -62,6 +64,16 @@ pub fn make_dummy_supplier() -> (SupplierId, ed25519_dalek::VerifyingKey) {
     let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
     let verifying_key = ed25519_dalek::VerifyingKey::from(&signing_key);
     (SupplierId(verifying_key), verifying_key)
+}
+
+/// Create a unique customer identity per call (dev mode, no real keys needed).
+pub fn make_dummy_customer() -> (CustomerId, ed25519_dalek::VerifyingKey) {
+    use rand::RngCore;
+    let mut seed = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut seed);
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let verifying_key = ed25519_dalek::VerifyingKey::from(&signing_key);
+    (CustomerId(verifying_key), verifying_key)
 }
 
 /// Create a dummy directory entry for a supplier.
@@ -156,6 +168,14 @@ pub fn is_put_response(resp: &HostResponse) -> bool {
     matches!(
         resp,
         HostResponse::ContractResponse(ContractResponse::PutResponse { .. })
+    )
+}
+
+/// Check if a HostResponse is an UpdateResponse.
+pub fn is_update_response(resp: &HostResponse) -> bool {
+    matches!(
+        resp,
+        HostResponse::ContractResponse(ContractResponse::UpdateResponse { .. })
     )
 }
 
