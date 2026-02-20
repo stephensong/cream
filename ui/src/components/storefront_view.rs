@@ -1,7 +1,5 @@
 use dioxus::prelude::*;
 
-#[cfg(feature = "use-node")]
-use super::node_api::{use_node_action, NodeAction};
 use super::order_form::OrderForm;
 use super::shared_state::use_shared_state;
 use super::user_state::use_user_state;
@@ -66,18 +64,6 @@ pub fn StorefrontView(supplier_name: String) -> Element {
             Vec::new()
         }
     };
-
-    // Subscribe to this storefront's updates when viewing it
-    #[cfg(feature = "use-node")]
-    {
-        let node = use_node_action();
-        let name = supplier_name.clone();
-        use_effect(move || {
-            node.send(NodeAction::SubscribeStorefront {
-                supplier_name: name.clone(),
-            });
-        });
-    }
 
     rsx! {
         div { class: "storefront-view",

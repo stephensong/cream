@@ -67,7 +67,7 @@ pub fn use_node_coroutine() {
 
 #[cfg(all(target_family = "wasm", feature = "use-node"))]
 mod wasm_impl {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashSet};
     use std::sync::Arc;
 
     use dioxus::prelude::*;
@@ -175,12 +175,12 @@ mod wasm_impl {
         shared.write().directory_contract_key =
             Some(format!("{}", directory_key));
 
-        // Try to GET the existing directory + subscribe.
+        // Try to GET the existing directory.
         // If it doesn't exist yet, we'll PUT it when we get NotFound.
         let get_request = ClientRequest::ContractOp(ContractRequest::Get {
             key: directory_instance_id,
             return_contract_code: false,
-            subscribe: true,
+            subscribe: false,
             blocking_subscribe: false,
         });
 
@@ -191,8 +191,21 @@ mod wasm_impl {
                 Some(format!("Failed to get directory contract: {:?}", e));
         }
 
+        // Explicitly subscribe to directory updates
+        let subscribe_dir = ClientRequest::ContractOp(ContractRequest::Subscribe {
+            key: directory_instance_id,
+            summary: None,
+        });
+        tracing::info!("Subscribing to directory contract...");
+        if let Err(e) = api.send(subscribe_dir).await {
+            tracing::error!("Failed to subscribe to directory: {:?}", e);
+        }
+
         // Local map of supplier name -> ContractKey for storefront updates
         let mut sf_contract_keys: BTreeMap<String, ContractKey> = BTreeMap::new();
+
+        // Track which storefronts we've already subscribed to
+        let mut subscribed_storefronts: HashSet<ContractInstanceId> = HashSet::new();
 
         // ── Main event loop ─────────────────────────────────────────────
         loop {
@@ -212,9 +225,11 @@ mod wasm_impl {
                     let Some(response) = response else { break };
                     match response {
                         Ok(HostResponse::ContractResponse(cr)) => {
-                            if let Some(follow_up) = handle_contract_response(
+                            let follow_ups = handle_contract_response(
                                 &mut shared, cr, directory_instance_id,
-                            ) {
+                                &mut subscribed_storefronts,
+                            );
+                            for follow_up in follow_ups {
                                 if let Err(e) = api.send(follow_up).await {
                                     tracing::error!("Failed to send follow-up: {:?}", e);
                                 }
@@ -546,17 +561,19 @@ mod wasm_impl {
     }
 
     /// Handle contract responses from the node.
-    /// Returns an optional request to send back (e.g. PUT after NotFound).
+    /// Returns follow-up requests to send back (e.g. PUT after NotFound,
+    /// or GET+subscribe for newly discovered storefronts).
     fn handle_contract_response(
         shared: &mut Signal<crate::components::shared_state::SharedState>,
         response: ContractResponse,
         directory_instance_id: ContractInstanceId,
-    ) -> Option<ClientRequest<'static>> {
+        subscribed: &mut HashSet<ContractInstanceId>,
+    ) -> Vec<ClientRequest<'static>> {
         match response {
             ContractResponse::GetResponse { state, .. } => {
                 let bytes = state.as_ref();
                 if bytes.is_empty() {
-                    return None;
+                    return vec![];
                 }
                 if let Ok(directory) =
                     serde_json::from_slice::<DirectoryState>(bytes)
@@ -565,7 +582,10 @@ mod wasm_impl {
                         "Got directory state: {} entries",
                         directory.entries.len()
                     );
+                    let follow_ups =
+                        subscribe_new_storefronts(&directory, subscribed);
                     shared.write().directory = directory;
+                    return follow_ups;
                 } else if let Ok(storefront) =
                     serde_json::from_slice::<StorefrontState>(bytes)
                 {
@@ -583,10 +603,10 @@ mod wasm_impl {
                 let bytes = match &update {
                     UpdateData::State(s) => s.as_ref(),
                     UpdateData::Delta(d) => d.as_ref(),
-                    _ => return None,
+                    _ => return vec![],
                 };
                 if bytes.is_empty() {
-                    return None;
+                    return vec![];
                 }
                 if let Ok(dir_update) =
                     serde_json::from_slice::<DirectoryState>(bytes)
@@ -595,7 +615,10 @@ mod wasm_impl {
                         "Directory update: {} entries",
                         dir_update.entries.len()
                     );
+                    let follow_ups =
+                        subscribe_new_storefronts(&dir_update, subscribed);
                     shared.write().directory.merge(dir_update);
+                    return follow_ups;
                 } else if let Ok(sf_update) =
                     serde_json::from_slice::<StorefrontState>(bytes)
                 {
@@ -637,7 +660,7 @@ mod wasm_impl {
                     let empty_dir = DirectoryState::default();
                     let initial_state =
                         serde_json::to_vec(&empty_dir).unwrap();
-                    return Some(ClientRequest::ContractOp(
+                    return vec![ClientRequest::ContractOp(
                         ContractRequest::Put {
                             contract: directory_contract,
                             state: WrappedState::new(initial_state),
@@ -645,7 +668,7 @@ mod wasm_impl {
                             subscribe: true,
                             blocking_subscribe: false,
                         },
-                    ));
+                    )];
                 } else {
                     tracing::warn!(
                         "Contract not found: {:?}",
@@ -658,7 +681,42 @@ mod wasm_impl {
                 tracing::debug!("Unhandled contract response");
             }
         }
-        None
+        vec![]
+    }
+
+    /// For each supplier in the directory whose storefront we haven't
+    /// subscribed to yet, emit a GET request and an explicit Subscribe.
+    fn subscribe_new_storefronts(
+        directory: &DirectoryState,
+        subscribed: &mut HashSet<ContractInstanceId>,
+    ) -> Vec<ClientRequest<'static>> {
+        let mut requests = Vec::new();
+        for entry in directory.entries.values() {
+            let instance_id = *entry.storefront_key.id();
+            if subscribed.insert(instance_id) {
+                tracing::info!(
+                    "Auto-subscribing to storefront for {}",
+                    entry.name
+                );
+                // GET the current state
+                requests.push(ClientRequest::ContractOp(
+                    ContractRequest::Get {
+                        key: instance_id,
+                        return_contract_code: false,
+                        subscribe: false,
+                        blocking_subscribe: false,
+                    },
+                ));
+                // Explicitly subscribe for live updates
+                requests.push(ClientRequest::ContractOp(
+                    ContractRequest::Subscribe {
+                        key: instance_id,
+                        summary: None,
+                    },
+                ));
+            }
+        }
+        requests
     }
 }
 
