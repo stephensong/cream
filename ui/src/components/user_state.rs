@@ -1,7 +1,11 @@
 use dioxus::prelude::*;
+use serde::{Deserialize, Serialize};
+
+#[cfg(target_family = "wasm")]
+const STORAGE_KEY: &str = "cream_user_state";
 
 /// A placed order tracked in the UI.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlacedOrder {
     pub id: u32,
     pub supplier: String,
@@ -13,7 +17,7 @@ pub struct PlacedOrder {
 }
 
 /// A product listed by the current user (as supplier).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ListedProduct {
     pub id: u32,
     pub name: String,
@@ -24,7 +28,7 @@ pub struct ListedProduct {
 }
 
 /// Shared application state accessible from all components.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserState {
     pub moniker: Option<String>,
     pub postcode: Option<String>,
@@ -38,6 +42,9 @@ pub struct UserState {
 
 impl UserState {
     pub fn new() -> Self {
+        if let Some(state) = Self::load() {
+            return state;
+        }
         Self {
             moniker: None,
             postcode: None,
@@ -47,6 +54,35 @@ impl UserState {
             orders: Vec::new(),
             next_order_id: 1,
             next_product_id: 1,
+        }
+    }
+
+    /// Save current state to localStorage.
+    pub fn save(&self) {
+        #[cfg(target_family = "wasm")]
+        {
+            if let Ok(json) = serde_json::to_string(self) {
+                if let Some(storage) = web_sys::window()
+                    .and_then(|w| w.local_storage().ok())
+                    .flatten()
+                {
+                    let _ = storage.set_item(STORAGE_KEY, &json);
+                }
+            }
+        }
+    }
+
+    /// Load state from localStorage.
+    fn load() -> Option<Self> {
+        #[cfg(target_family = "wasm")]
+        {
+            let storage = web_sys::window()?.local_storage().ok()??;
+            let json = storage.get_item(STORAGE_KEY).ok()??;
+            serde_json::from_str(&json).ok()
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            None
         }
     }
 
@@ -69,6 +105,7 @@ impl UserState {
             price_per_unit,
             status: "Reserved".into(),
         });
+        self.save();
         id
     }
 
@@ -90,11 +127,13 @@ impl UserState {
             price_curd,
             quantity_available,
         });
+        self.save();
         id
     }
 
     pub fn remove_product(&mut self, id: u32) {
         self.products.retain(|p| p.id != id);
+        self.save();
     }
 }
 

@@ -5,8 +5,8 @@ edition = "2021"
 
 [features]
 default = ["web"]
-web = ["dioxus/web"]
-mobile = ["dioxus/mobile"]
+web = ["dioxus/web", "dioxus/router"]
+mobile = ["dioxus/mobile", "dioxus/router"]
 example-data = []
 no-sync = []
 use-node = []
@@ -30,6 +30,7 @@ web-sys = { version = "0.3", features = [
     "Blob",
     "console",
     "ErrorEvent",
+    "Storage",
     "WebSocket",
     "Window",
 ] }

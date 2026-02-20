@@ -8,33 +8,47 @@ use super::my_orders::MyOrders;
 use super::node_api::{use_node_action, NodeAction};
 use super::node_api::use_node_coroutine;
 use super::shared_state::SharedState;
+use super::storefront_view::StorefrontView;
 use super::supplier_dashboard::SupplierDashboard;
 use super::user_state::{use_user_state, UserState};
 use super::wallet_view::WalletView;
 
-#[derive(Clone, PartialEq)]
-enum View {
-    Directory,
-    MyOrders,
-    SupplierDashboard,
-    Wallet,
+#[derive(Clone, Debug, PartialEq, Routable)]
+pub enum Route {
+    #[layout(AppLayout)]
+    #[route("/")]
+    Directory {},
+    #[route("/supplier/:name")]
+    Supplier { name: String },
+    #[route("/orders")]
+    Orders {},
+    #[route("/dashboard")]
+    Dashboard {},
+    #[route("/wallet")]
+    Wallet {},
+    #[end_layout]
+    #[route("/setup")]
+    Setup {},
 }
 
 #[component]
 pub fn App() -> Element {
-    // Provide shared user state to all child components
     use_context_provider(|| Signal::new(UserState::new()));
     use_context_provider(|| Signal::new(SharedState::new()));
-
-    // Start node communication coroutine
     use_node_coroutine();
 
-    let user_state = use_user_state();
-    let mut current_view = use_signal(|| View::Directory);
+    rsx! { Router::<Route> {} }
+}
 
-    // If setup not complete, show the setup screen
+#[component]
+fn AppLayout() -> Element {
+    let user_state = use_user_state();
+    let nav = use_navigator();
+
+    // Redirect to setup if no moniker
     if user_state.read().moniker.is_none() {
-        return rsx! { UserSetup {} };
+        nav.replace(Route::Setup {});
+        return rsx! {};
     }
 
     let state = user_state.read();
@@ -61,41 +75,79 @@ pub fn App() -> Element {
                 p { "CURD Retail Exchange And Marketplace" }
                 nav {
                     button {
-                        onclick: move |_| current_view.set(View::Directory),
+                        onclick: move |_| { nav.push(Route::Directory {}); },
                         "Browse Suppliers"
                     }
                     button {
-                        onclick: move |_| current_view.set(View::MyOrders),
+                        onclick: move |_| { nav.push(Route::Orders {}); },
                         "My Orders ({order_count})"
                     }
                     if is_supplier {
                         button {
-                            onclick: move |_| current_view.set(View::SupplierDashboard),
+                            onclick: move |_| { nav.push(Route::Dashboard {}); },
                             "My Storefront"
                         }
                     }
                     button {
-                        onclick: move |_| current_view.set(View::Wallet),
+                        onclick: move |_| { nav.push(Route::Wallet {}); },
                         "Wallet"
                     }
                 }
             }
             main {
-                match *current_view.read() {
-                    View::Directory => rsx! { DirectoryView {} },
-                    View::MyOrders => rsx! { MyOrders {} },
-                    View::SupplierDashboard if is_supplier => rsx! { SupplierDashboard {} },
-                    View::SupplierDashboard => rsx! { DirectoryView {} },
-                    View::Wallet => rsx! { WalletView {} },
-                }
+                Outlet::<Route> {}
             }
         }
     }
 }
 
+/// Route component: renders the directory view.
+#[component]
+fn Directory() -> Element {
+    rsx! { DirectoryView {} }
+}
+
+/// Route component: renders a supplier's storefront by name from the URL.
+#[component]
+fn Supplier(name: String) -> Element {
+    rsx! { StorefrontView { supplier_name: name } }
+}
+
+/// Route component: renders the orders view.
+#[component]
+fn Orders() -> Element {
+    rsx! { MyOrders {} }
+}
+
+/// Route component: renders the supplier dashboard.
+#[component]
+fn Dashboard() -> Element {
+    let user_state = use_user_state();
+    let is_supplier = user_state.read().is_supplier;
+
+    if is_supplier {
+        rsx! { SupplierDashboard {} }
+    } else {
+        // Non-suppliers who navigate here get redirected to directory
+        rsx! { DirectoryView {} }
+    }
+}
+
+/// Route component: renders the wallet view.
+#[component]
+fn Wallet() -> Element {
+    rsx! { WalletView {} }
+}
+
+#[component]
+fn Setup() -> Element {
+    rsx! { UserSetup {} }
+}
+
 #[component]
 fn UserSetup() -> Element {
     let mut user_state = use_user_state();
+    let nav = use_navigator();
     let mut name_input = use_signal(|| String::new());
     let mut postcode_input = use_signal(|| String::new());
     let mut is_supplier = use_signal(|| false);
@@ -138,6 +190,7 @@ fn UserSetup() -> Element {
                 Some(desc.clone())
             };
         }
+        state.save();
         drop(state);
 
         // Register supplier with the Freenet network
@@ -149,6 +202,9 @@ fn UserSetup() -> Element {
                 description: desc,
             });
         }
+
+        // Navigate to directory after setup
+        nav.replace(Route::Directory {});
     };
 
     rsx! {

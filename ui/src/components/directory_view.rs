@@ -2,8 +2,8 @@ use dioxus::prelude::*;
 
 use cream_common::postcode::{distance_between_postcodes, format_postcode};
 
+use super::app::Route;
 use super::shared_state::use_shared_state;
-use super::storefront_view::StorefrontView;
 use super::user_state::use_user_state;
 
 /// A supplier entry for display in the directory.
@@ -20,18 +20,7 @@ struct SupplierEntry {
 pub fn DirectoryView() -> Element {
     let user_state = use_user_state();
     let shared_state = use_shared_state();
-    let mut selected_supplier = use_signal(|| None::<String>);
     let mut search_query = use_signal(|| String::new());
-
-    if let Some(supplier_name) = selected_supplier.read().clone() {
-        return rsx! {
-            button {
-                onclick: move |_| selected_supplier.set(None),
-                "Back to Directory"
-            }
-            StorefrontView { supplier_name }
-        };
-    }
 
     let state = user_state.read();
     let user_postcode = state.postcode.clone().unwrap_or_default();
@@ -159,7 +148,6 @@ pub fn DirectoryView() -> Element {
                     p { class: "empty-state", "No suppliers found." }
                 } else {
                     {filtered.into_iter().map(|supplier| {
-                        let name_clone = supplier.name.clone();
                         let distance_text = match supplier.distance_km {
                             Some(d) if d < 1.0 => "< 1 km away".to_string(),
                             Some(d) => format!("{:.0} km away", d),
@@ -175,8 +163,8 @@ pub fn DirectoryView() -> Element {
                                     rsx! { p { class: "location", "{location_name} - {distance_text}" } }
                                 }
                                 p { class: "product-count", "{supplier.product_count} products" }
-                                button {
-                                    onclick: move |_| selected_supplier.set(Some(name_clone.clone())),
+                                Link {
+                                    to: Route::Supplier { name: supplier.name.clone() },
                                     "View Storefront"
                                 }
                             }
