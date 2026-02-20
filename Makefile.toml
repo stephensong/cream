@@ -114,10 +114,27 @@ args = ["build", "--release", "--platform", "ios", "--features", "mobile,use-nod
 [tasks.build-ios.env]
 CREAM_NODE_URL = { value = "${CREAM_NODE_URL}", condition = { env_set = ["CREAM_NODE_URL"] } }
 
+[tasks.reset-node]
+description = "Stop Freenet node, wipe contract state, and restart (dev only)"
+script = [
+    "pkill -x freenet || true",
+    "sleep 1",
+    "rm -rf ${HOME}/.local/share/freenet/db ${HOME}/.cache/freenet/gw1/db",
+    "echo 'Node state cleared. Restarting...'",
+    "nohup freenet local --ws-api-port 3001 > /dev/null 2>&1 &",
+    "sleep 1",
+    "echo 'Freenet node restarted on port 3001'",
+]
+
 [tasks.test]
 description = "Run all tests"
 command = "cargo"
 args = ["test", "--workspace"]
+
+[tasks.test-node]
+description = "Run integration tests against a running Freenet node"
+command = "cargo"
+args = ["test", "-p", "cream-node-integration", "--features", "node-tests", "--", "--nocapture"]
 
 [tasks.check]
 description = "Check all code compiles"
