@@ -147,20 +147,14 @@ fn derive_role_key(seed: &[u8; 32], info: &[u8]) -> ed25519_dalek::SigningKey {
 ///
 /// Only available with the `dev` feature (production will use BIP39 mnemonics).
 #[cfg(feature = "dev")]
-pub fn derive_supplier_signing_key(
-    name: &str,
-    password: &str,
-) -> ed25519_dalek::SigningKey {
+pub fn derive_supplier_signing_key(name: &str, password: &str) -> ed25519_dalek::SigningKey {
     let base = derive_base_key(name, password);
     derive_role_key(&base, b"cream-supplier-signing-key-v1")
 }
 
 /// Derive a deterministic customer signing key from name + password.
 #[cfg(feature = "dev")]
-pub fn derive_customer_signing_key(
-    name: &str,
-    password: &str,
-) -> ed25519_dalek::SigningKey {
+pub fn derive_customer_signing_key(name: &str, password: &str) -> ed25519_dalek::SigningKey {
     let base = derive_base_key(name, password);
     derive_role_key(&base, b"cream-customer-signing-key-v1")
 }

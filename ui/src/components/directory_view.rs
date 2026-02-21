@@ -20,7 +20,7 @@ struct SupplierEntry {
 pub fn DirectoryView() -> Element {
     let user_state = use_user_state();
     let shared_state = use_shared_state();
-    let mut search_query = use_signal(|| String::new());
+    let mut search_query = use_signal(String::new);
 
     let state = user_state.read();
     let user_postcode = state.postcode.clone().unwrap_or_default();

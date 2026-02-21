@@ -19,13 +19,21 @@ async fn harness_scenarios() {
         .add_product("Raw Milk", ProductCategory::Milk, 500)
         .await;
     let sf = h.alice.recv_storefront_update().await;
-    assert_eq!(sf.products.len(), 1, "scenario 1: 1 product after first add");
+    assert_eq!(
+        sf.products.len(),
+        1,
+        "scenario 1: 1 product after first add"
+    );
 
     h.gary
         .add_product("Aged Cheddar", ProductCategory::Cheese, 1200)
         .await;
     let sf = h.alice.recv_storefront_update().await;
-    assert_eq!(sf.products.len(), 2, "scenario 1: 2 products after second add");
+    assert_eq!(
+        sf.products.len(),
+        2,
+        "scenario 1: 2 products after second add"
+    );
 
     // ── Scenario 2: independent storefronts ─────────────────────────
     h.alice.subscribe_to_storefront(&h.emma).await;
@@ -48,6 +56,10 @@ async fn harness_scenarios() {
     // Both Alice and Bob should see Gary's storefront now at 3 products
     let alice_sf = h.alice.recv_storefront_update().await;
     let bob_sf = h.bob.recv_storefront_update().await;
-    assert_eq!(alice_sf.products.len(), 3, "scenario 3: Alice sees 3 products");
+    assert_eq!(
+        alice_sf.products.len(),
+        3,
+        "scenario 3: Alice sees 3 products"
+    );
     assert_eq!(bob_sf.products.len(), 3, "scenario 3: Bob sees 3 products");
 }

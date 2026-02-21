@@ -174,6 +174,7 @@ impl UserState {
         id
     }
 
+    #[allow(dead_code)] // TODO: wire up to UI
     pub fn remove_product(&mut self, id: u32) {
         self.products.retain(|p| p.id != id);
         self.save();

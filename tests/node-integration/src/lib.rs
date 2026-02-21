@@ -196,9 +196,8 @@ pub fn extract_get_response_state(resp: &HostResponse) -> Option<Vec<u8>> {
 
 /// Extract UpdateNotification bytes from a HostResponse.
 pub fn extract_notification_bytes(resp: &HostResponse) -> Option<Vec<u8>> {
-    if let HostResponse::ContractResponse(ContractResponse::UpdateNotification {
-        update, ..
-    }) = resp
+    if let HostResponse::ContractResponse(ContractResponse::UpdateNotification { update, .. }) =
+        resp
     {
         let bytes = match update {
             UpdateData::State(s) => s.as_ref().to_vec(),

@@ -204,14 +204,14 @@ fn SetupScreen() -> Element {
     let mut user_state = use_user_state();
 
     let mut step = use_signal(|| SetupStep::Profile);
-    let mut name_input = use_signal(|| String::new());
-    let mut postcode_input = use_signal(|| String::new());
+    let mut name_input = use_signal(String::new);
+    let mut postcode_input = use_signal(String::new);
     let mut is_supplier = use_signal(|| false);
-    let mut supplier_desc = use_signal(|| String::new());
+    let mut supplier_desc = use_signal(String::new);
     let mut postcode_error = use_signal(|| None::<String>);
 
-    let mut password = use_signal(|| String::new());
-    let mut password_confirm = use_signal(|| String::new());
+    let mut password = use_signal(String::new);
+    let mut password_confirm = use_signal(String::new);
     let mut password_error = use_signal(|| None::<String>);
     let mut setup_error = use_signal(|| None::<String>);
 
@@ -254,9 +254,7 @@ fn SetupScreen() -> Element {
                                 oninput: move |evt| {
                                     let val = evt.value();
                                     postcode_input.set(val.clone());
-                                    if val.trim().is_empty() {
-                                        postcode_error.set(None);
-                                    } else if is_valid_au_postcode(val.trim()) {
+                                    if val.trim().is_empty() || is_valid_au_postcode(val.trim()) {
                                         postcode_error.set(None);
                                     } else {
                                         postcode_error.set(Some("Not a recognised postcode".into()));

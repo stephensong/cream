@@ -28,6 +28,7 @@ impl SignedProduct {
         #[cfg(feature = "dev")]
         {
             let _ = owner;
+            #[allow(clippy::needless_return)]
             return true;
         }
         #[cfg(not(feature = "dev"))]
@@ -97,6 +98,7 @@ impl StorefrontState {
         #[cfg(feature = "dev")]
         {
             let _ = owner;
+            #[allow(clippy::needless_return)]
             return true;
         }
         #[cfg(not(feature = "dev"))]

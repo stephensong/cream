@@ -12,10 +12,10 @@ use cream_common::product::{Product, ProductCategory, ProductId};
 use cream_common::storefront::{SignedProduct, StorefrontInfo, StorefrontState};
 
 use crate::{
-    connect_to_node, extract_get_response_state, extract_notification_bytes,
-    is_get_response, is_put_response, is_subscribe_success, is_update_notification,
-    is_update_response, make_directory_contract, make_directory_entry, make_dummy_customer,
-    make_dummy_supplier, make_storefront_contract, recv_matching,
+    connect_to_node, extract_get_response_state, extract_notification_bytes, is_get_response,
+    is_put_response, is_subscribe_success, is_update_notification, is_update_response,
+    make_directory_contract, make_directory_entry, make_dummy_customer, make_dummy_supplier,
+    make_storefront_contract, recv_matching,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -41,7 +41,11 @@ impl Supplier {
         let now = chrono::Utc::now();
         let product = SignedProduct {
             product: Product {
-                id: ProductId(format!("p-{}-{}", self.name.to_lowercase(), now.timestamp_millis())),
+                id: ProductId(format!(
+                    "p-{}-{}",
+                    self.name.to_lowercase(),
+                    now.timestamp_millis()
+                )),
                 name: name.to_string(),
                 description: format!("Fresh {name}"),
                 category,
@@ -60,7 +64,7 @@ impl Supplier {
         let sf_bytes = serde_json::to_vec(&self.storefront).unwrap();
         self.api
             .send(ClientRequest::ContractOp(ContractRequest::Update {
-                key: self.storefront_key.clone(),
+                key: self.storefront_key,
                 data: UpdateData::State(State::from(sf_bytes)),
             }))
             .await
@@ -339,7 +343,7 @@ async fn put_storefront(supplier: &mut Supplier, contract: ContractContainer) {
 
 /// Register a supplier in the directory via Update.
 async fn register_supplier_in_directory(supplier: &mut Supplier, dir_key: &ContractKey) {
-    let entry = make_directory_entry(&supplier.id, &supplier.name, supplier.storefront_key.clone());
+    let entry = make_directory_entry(&supplier.id, &supplier.name, supplier.storefront_key);
     let mut entries = BTreeMap::new();
     entries.insert(supplier.id.clone(), entry);
     let delta = DirectoryState { entries };
@@ -348,7 +352,7 @@ async fn register_supplier_in_directory(supplier: &mut Supplier, dir_key: &Contr
     supplier
         .api
         .send(ClientRequest::ContractOp(ContractRequest::Update {
-            key: dir_key.clone(),
+            key: *dir_key,
             data: UpdateData::Delta(StateDelta::from(delta_bytes)),
         }))
         .await

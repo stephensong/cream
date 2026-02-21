@@ -43,6 +43,7 @@ impl DirectoryEntry {
     pub fn verify_signature(&self) -> bool {
         #[cfg(feature = "dev")]
         {
+            #[allow(clippy::needless_return)]
             return true;
         }
         #[cfg(not(feature = "dev"))]

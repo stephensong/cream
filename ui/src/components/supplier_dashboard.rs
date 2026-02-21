@@ -9,7 +9,7 @@ use super::user_state::use_user_state;
 
 #[component]
 pub fn SupplierDashboard() -> Element {
-    let mut user_state = use_user_state();
+    let user_state = use_user_state();
     let shared_state = use_shared_state();
     let mut show_add_product = use_signal(|| false);
 
@@ -123,11 +123,11 @@ pub fn SupplierDashboard() -> Element {
 #[component]
 fn AddProductForm(on_added: EventHandler<()>) -> Element {
     let mut user_state = use_user_state();
-    let mut name = use_signal(|| String::new());
+    let mut name = use_signal(String::new);
     let mut category = use_signal(|| "Milk".to_string());
-    let mut description = use_signal(|| String::new());
-    let mut price = use_signal(|| String::new());
-    let mut quantity = use_signal(|| String::new());
+    let mut description = use_signal(String::new);
+    let mut price = use_signal(String::new);
+    let mut quantity = use_signal(String::new);
 
     let can_submit = use_memo(move || {
         let name_ok = !name.read().trim().is_empty();

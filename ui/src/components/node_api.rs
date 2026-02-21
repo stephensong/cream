@@ -10,6 +10,7 @@ pub enum NodeAction {
         description: String,
     },
     /// Deploy a new storefront contract for this supplier.
+    #[allow(dead_code)] // handled via RegisterSupplier for now
     DeployStorefront {
         name: String,
         description: String,
@@ -25,6 +26,7 @@ pub enum NodeAction {
         quantity_available: u32,
     },
     /// Remove a product from the storefront.
+    #[allow(dead_code)] // TODO: implement
     RemoveProduct { product_id: String },
     /// Place an order on a storefront.
     PlaceOrder {
@@ -34,6 +36,7 @@ pub enum NodeAction {
         deposit_tier: String,
     },
     /// Subscribe to a specific storefront's updates.
+    #[allow(dead_code)] // auto-subscribed via directory; kept for manual use
     SubscribeStorefront { supplier_name: String },
 }
 
@@ -473,7 +476,7 @@ mod wasm_impl {
                 };
 
                 let (Some(supplier_name), Some(sf_key)) = (supplier_name, sf_key) else {
-                    clog(&format!("[CREAM] ERROR: No storefront found for supplier, can't add product"));
+                    clog("[CREAM] ERROR: No storefront found for supplier, can't add product");
                     return;
                 };
                 clog(&format!("[CREAM] AddProduct: supplier_name={}, sf_key={:?}", supplier_name, sf_key));

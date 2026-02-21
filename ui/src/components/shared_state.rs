@@ -31,6 +31,7 @@ impl SharedState {
     }
 
     /// Get all directory entries sorted by name.
+    #[allow(dead_code)] // useful utility, will be used
     pub fn supplier_entries(&self) -> Vec<&DirectoryEntry> {
         let mut entries: Vec<_> = self.directory.entries.values().collect();
         entries.sort_by(|a, b| a.name.cmp(&b.name));
