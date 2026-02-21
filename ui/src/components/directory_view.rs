@@ -192,7 +192,7 @@ pub fn DirectoryView() -> Element {
                                 h3 { "{supplier.name}" }
                                 p { "{supplier.description}" }
                                 {
-                                    let location_name = format_postcode(&supplier.postcode);
+                                    let location_name = format_postcode(&supplier.postcode, None);
                                     rsx! { p { class: "location", "{location_name} - {distance_text}" } }
                                 }
                                 p { class: "product-count", "{supplier.product_count} products" }

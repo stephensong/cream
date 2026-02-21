@@ -170,7 +170,7 @@ script = [
     "nohup dx serve --features use-node > /tmp/cream-dx-serve.log 2>&1 &",
     "echo $! > /tmp/cream-dx-serve.pid",
     "echo 'Waiting for dx serve on port 8080...'",
-    "for i in $(seq 1 120); do curl -s http://localhost:8080 > /dev/null 2>&1 && echo 'dx serve ready' && exit 0; sleep 1; done",
+    "for i in $(seq 1 300); do curl -s http://localhost:8080 > /dev/null 2>&1 && echo 'dx serve ready' && exit 0; sleep 1; done",
     "echo 'Timed out waiting for dx serve' && exit 1",
 ]
 

@@ -7,6 +7,7 @@ export interface SetupOptions {
   password: string;
   isSupplier?: boolean;
   description?: string;
+  locality?: string;
 }
 
 /**
@@ -20,6 +21,18 @@ export async function completeSetup(page: Page, opts: SetupOptions): Promise<voi
 
   await page.fill('input[placeholder="Name or moniker..."]', opts.name);
   await page.fill('input[placeholder="e.g. 2000"]', opts.postcode);
+
+  // If a locality dropdown appears (multiple localities for this postcode), select one
+  const localitySelect = page.locator('select');
+  if (await localitySelect.isVisible({ timeout: 500 }).catch(() => false)) {
+    const locality = opts.locality || '';
+    if (locality) {
+      await localitySelect.selectOption({ label: locality });
+    } else {
+      // Pick the first non-placeholder option
+      await localitySelect.selectOption({ index: 1 });
+    }
+  }
 
   if (opts.isSupplier) {
     await page.check('input[type="checkbox"]');

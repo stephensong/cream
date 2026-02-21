@@ -29,17 +29,26 @@ pub struct ListedProduct {
     pub quantity_available: u32,
 }
 
+fn default_balance() -> u64 {
+    10_000
+}
+
 /// Shared application state accessible from all components.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserState {
     pub moniker: Option<String>,
     pub postcode: Option<String>,
+    #[serde(default)]
+    pub locality: Option<String>,
     pub is_supplier: bool,
     pub supplier_description: Option<String>,
     pub products: Vec<ListedProduct>,
     pub orders: Vec<PlacedOrder>,
     pub next_order_id: u32,
     pub next_product_id: u32,
+    /// Mock CURD wallet balance. Starts at 10,000, decremented by order deposits.
+    #[serde(default = "default_balance")]
+    pub balance: u64,
 }
 
 impl UserState {
@@ -50,12 +59,14 @@ impl UserState {
         Self {
             moniker: None,
             postcode: None,
+            locality: None,
             is_supplier: false,
             supplier_description: None,
             products: Vec::new(),
             orders: Vec::new(),
             next_order_id: 1,
             next_product_id: 1,
+            balance: 10_000,
         }
     }
 
@@ -139,6 +150,16 @@ impl UserState {
     ) -> u32 {
         let id = self.next_order_id;
         self.next_order_id += 1;
+
+        // Deduct deposit from wallet balance
+        let total = price_per_unit * quantity as u64;
+        let deposit = match deposit_tier.as_str() {
+            "2-Day Reserve (10%)" => total / 10,
+            "1-Week Reserve (20%)" => total / 5,
+            _ => total, // Full Payment
+        };
+        self.balance = self.balance.saturating_sub(deposit);
+
         self.orders.push(PlacedOrder {
             id,
             supplier,

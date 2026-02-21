@@ -1,6 +1,8 @@
 use dioxus::prelude::*;
 
-use cream_common::postcode::{format_postcode, is_valid_au_postcode};
+use cream_common::postcode::{
+    format_postcode, is_valid_au_postcode, lookup_all_localities, nearest_postcode, PostcodeInfo,
+};
 
 use super::directory_view::DirectoryView;
 use super::key_manager::KeyManager;
@@ -8,7 +10,7 @@ use super::my_orders::MyOrders;
 #[cfg(feature = "use-node")]
 use super::node_api::{use_node_action, NodeAction};
 use super::node_api::use_node_coroutine;
-use super::shared_state::SharedState;
+use super::shared_state::{use_shared_state, SharedState};
 use super::storefront_view::StorefrontView;
 use super::supplier_dashboard::SupplierDashboard;
 use super::user_state::{use_user_state, UserState};
@@ -88,10 +90,26 @@ fn AppLayout() -> Element {
     let state = user_state.read();
     let moniker = state.moniker.clone().unwrap_or_default();
     let postcode_raw = state.postcode.clone().unwrap_or_default();
-    let postcode_display = format_postcode(&postcode_raw);
+    let locality = state.locality.clone();
+    let postcode_display = format_postcode(&postcode_raw, locality.as_deref());
     let order_count = state.orders.len();
     let is_supplier = state.is_supplier;
+    let balance = state.balance;
     drop(state);
+
+    // Compute displayed balance: base + incoming deposit credits for suppliers
+    let incoming_deposits: u64 = if is_supplier {
+        let shared = use_shared_state();
+        let shared_read = shared.read();
+        shared_read
+            .storefronts
+            .get(&moniker)
+            .map(|sf| sf.orders.values().map(|o| o.deposit_amount).sum())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let displayed_balance = balance + incoming_deposits;
 
     rsx! {
         div { class: "cream-app",
@@ -134,7 +152,7 @@ fn AppLayout() -> Element {
                     }
                     button {
                         onclick: move |_| { nav.push(Route::Wallet {}); },
-                        "Wallet"
+                        "Wallet ({displayed_balance} CURD)"
                     }
                 }
             }
@@ -202,6 +220,7 @@ enum SetupStep {
 fn SetupScreen() -> Element {
     let mut key_manager: Signal<Option<KeyManager>> = use_context();
     let mut user_state = use_user_state();
+    let shared_state = use_shared_state();
 
     let mut step = use_signal(|| SetupStep::Profile);
     let mut name_input = use_signal(String::new);
@@ -209,6 +228,13 @@ fn SetupScreen() -> Element {
     let mut is_supplier = use_signal(|| false);
     let mut supplier_desc = use_signal(String::new);
     let mut postcode_error = use_signal(|| None::<String>);
+
+    // Locality selection
+    let mut localities = use_signal(Vec::<PostcodeInfo>::new);
+    let mut selected_locality = use_signal(|| None::<String>);
+
+    // Returning user detection
+    let mut welcome_back = use_signal(|| None::<String>);
 
     let mut password = use_signal(String::new);
     let mut password_confirm = use_signal(String::new);
@@ -224,9 +250,15 @@ fn SetupScreen() -> Element {
             let can_submit = {
                 let name_ok = !name_input.read().trim().is_empty();
                 let postcode_ok = is_valid_au_postcode(postcode_input.read().trim());
+                let locality_ok = localities.read().len() <= 1
+                    || selected_locality.read().is_some();
                 let supplier_ok = !*is_supplier.read() || !supplier_desc.read().trim().is_empty();
-                name_ok && postcode_ok && supplier_ok
+                name_ok && postcode_ok && locality_ok && supplier_ok
             };
+
+            let localities_list = localities.read().clone();
+            let current_locality = selected_locality.read().clone();
+            let welcome_msg = welcome_back.read().clone();
 
             rsx! {
                 div { class: "cream-app",
@@ -240,7 +272,47 @@ fn SetupScreen() -> Element {
                                 r#type: "text",
                                 placeholder: "Name or moniker...",
                                 value: "{name_input}",
-                                oninput: move |evt| name_input.set(evt.value()),
+                                oninput: move |evt| {
+                                    name_input.set(evt.value());
+                                    // Clear welcome back message on edit
+                                    welcome_back.set(None);
+                                },
+                                onfocusout: move |_| {
+                                    let typed = name_input.read().trim().to_string();
+                                    if typed.is_empty() {
+                                        return;
+                                    }
+                                    let typed_lower = typed.to_lowercase();
+                                    // Search directory for matching name
+                                    let shared = shared_state.read();
+                                    let matched = shared.directory.entries.values()
+                                        .find(|e| e.name.to_lowercase() == typed_lower);
+                                    if let Some(entry) = matched {
+                                        // Correct name casing
+                                        name_input.set(entry.name.clone());
+                                        // Reverse-lookup postcode + locality from location
+                                        if let Some(info) = nearest_postcode(&entry.location) {
+                                            postcode_input.set(info.postcode.clone());
+                                            postcode_error.set(None);
+                                            // Update localities for this postcode
+                                            let locs = lookup_all_localities(&info.postcode);
+                                            if locs.len() == 1 {
+                                                selected_locality.set(Some(locs[0].place_name.clone()));
+                                            } else {
+                                                // Try to match the nearest locality
+                                                selected_locality.set(Some(info.place_name.clone()));
+                                            }
+                                            localities.set(locs);
+                                        }
+                                        // Auto-fill supplier fields
+                                        is_supplier.set(true);
+                                        supplier_desc.set(entry.description.clone());
+                                        welcome_back.set(Some(entry.name.clone()));
+                                    }
+                                },
+                            }
+                            if let Some(name) = &welcome_msg {
+                                p { class: "welcome-back", "Welcome back, {name}!" }
                             }
                         }
 
@@ -254,15 +326,60 @@ fn SetupScreen() -> Element {
                                 oninput: move |evt| {
                                     let val = evt.value();
                                     postcode_input.set(val.clone());
-                                    if val.trim().is_empty() || is_valid_au_postcode(val.trim()) {
+                                    let trimmed = val.trim();
+                                    if trimmed.is_empty() {
                                         postcode_error.set(None);
+                                        localities.set(Vec::new());
+                                        selected_locality.set(None);
+                                    } else if is_valid_au_postcode(trimmed) {
+                                        postcode_error.set(None);
+                                        let locs = lookup_all_localities(trimmed);
+                                        if locs.len() == 1 {
+                                            selected_locality.set(Some(locs[0].place_name.clone()));
+                                        } else {
+                                            selected_locality.set(None);
+                                        }
+                                        localities.set(locs);
                                     } else {
                                         postcode_error.set(Some("Not a recognised postcode".into()));
+                                        localities.set(Vec::new());
+                                        selected_locality.set(None);
                                     }
                                 },
                             }
                             if let Some(err) = postcode_error.read().as_ref() {
                                 span { class: "field-error", "{err}" }
+                            }
+                        }
+
+                        // Locality selection (only when multiple localities for the postcode)
+                        if localities_list.len() > 1 {
+                            div { class: "form-group",
+                                label { "Locality:" }
+                                select {
+                                    value: current_locality.as_deref().unwrap_or(""),
+                                    onchange: move |evt| {
+                                        let val = evt.value();
+                                        if val.is_empty() {
+                                            selected_locality.set(None);
+                                        } else {
+                                            selected_locality.set(Some(val));
+                                        }
+                                    },
+                                    option { value: "", "Select a locality..." }
+                                    for loc in &localities_list {
+                                        option {
+                                            value: "{loc.place_name}",
+                                            selected: current_locality.as_deref() == Some(loc.place_name.as_str()),
+                                            "{loc.place_name}"
+                                        }
+                                    }
+                                }
+                            }
+                        } else if localities_list.len() == 1 {
+                            div { class: "form-group",
+                                label { "Locality:" }
+                                span { class: "locality-auto", "{localities_list[0].place_name}" }
                             }
                         }
 
@@ -372,6 +489,7 @@ fn SetupScreen() -> Element {
                                 };
 
                                 let postcode = postcode_input.read().trim().to_string();
+                                let locality_val = selected_locality.read().clone();
                                 let is_sup = *is_supplier.read();
                                 let desc = supplier_desc.read().trim().to_string();
 
@@ -379,6 +497,7 @@ fn SetupScreen() -> Element {
                                     let mut state = user_state.write();
                                     state.moniker = Some(name.clone());
                                     state.postcode = Some(postcode.clone());
+                                    state.locality = locality_val.clone();
                                     state.is_supplier = is_sup;
                                     if is_sup {
                                         state.supplier_description = if desc.is_empty() {
@@ -400,6 +519,7 @@ fn SetupScreen() -> Element {
                                     node.send(NodeAction::RegisterSupplier {
                                         name,
                                         postcode,
+                                        locality: locality_val,
                                         description: desc,
                                     });
                                 }

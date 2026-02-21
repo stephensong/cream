@@ -15,7 +15,10 @@ pub fn SupplierDashboard() -> Element {
 
     let state = user_state.read();
     let moniker = state.moniker.clone().unwrap_or_default();
-    let postcode = format_postcode(&state.postcode.clone().unwrap_or("?".into()));
+    let postcode = format_postcode(
+        &state.postcode.clone().unwrap_or("?".into()),
+        state.locality.as_deref(),
+    );
     let description = state
         .supplier_description
         .clone()

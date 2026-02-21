@@ -7,6 +7,7 @@ pub enum NodeAction {
     RegisterSupplier {
         name: String,
         postcode: String,
+        locality: Option<String>,
         description: String,
     },
     /// Deploy a new storefront contract for this supplier.
@@ -331,6 +332,7 @@ mod wasm_impl {
             NodeAction::RegisterSupplier {
                 name,
                 postcode,
+                locality,
                 description,
             } => {
                 let supplier_id = key_manager.supplier_id();
@@ -354,10 +356,13 @@ mod wasm_impl {
                 clog(&format!("[CREAM] RegisterSupplier: {} not found in directory (supplier_id={:?}), deploying NEW storefront. \
                     Note: for harness data, password must be the lowercase name (e.g. \"gary\")", name, supplier_id));
 
-                // Look up postcode to get coordinates
-                let location =
-                    cream_common::postcode::lookup_au_postcode(&postcode)
-                        .unwrap_or(GeoLocation::new(-33.87, 151.21)); // Default to Sydney
+                // Look up postcode (+ locality if available) to get coordinates
+                let location = locality
+                    .as_deref()
+                    .and_then(|loc| cream_common::postcode::lookup_locality(&postcode, loc))
+                    .map(|info| info.location)
+                    .or_else(|| cream_common::postcode::lookup_au_postcode(&postcode))
+                    .unwrap_or(GeoLocation::new(-33.87, 151.21)); // Default to Sydney
 
                 let storefront_params = StorefrontParameters { owner: owner_key };
                 let params_bytes = serde_json::to_vec(&storefront_params).unwrap();
