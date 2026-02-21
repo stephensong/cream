@@ -8,9 +8,9 @@ use super::user_state::use_user_state;
 pub fn StorefrontView(supplier_name: String) -> Element {
     let user_state = use_user_state();
     let shared_state = use_shared_state();
-    let mut selected_product = use_signal(|| None::<(String, u64)>);
+    let mut selected_product = use_signal(|| None::<(String, String, u64)>);
 
-    if let Some((product_name, price)) = selected_product.read().clone() {
+    if let Some((product_id, product_name, price)) = selected_product.read().clone() {
         return rsx! {
             button {
                 onclick: move |_| selected_product.set(None),
@@ -18,6 +18,7 @@ pub fn StorefrontView(supplier_name: String) -> Element {
             }
             OrderForm {
                 supplier_name: supplier_name.clone(),
+                product_id,
                 product_name,
                 price_per_unit: price,
             }
@@ -28,7 +29,8 @@ pub fn StorefrontView(supplier_name: String) -> Element {
     let is_own = user_state.read().moniker.as_ref() == Some(&supplier_name);
 
     // Always get products from SharedState (network-sourced storefronts)
-    let products: Vec<(String, String, u64, u32)> = {
+    // Tuple: (product_id, name, category, price, quantity)
+    let products: Vec<(String, String, String, u64, u32)> = {
         let shared = shared_state.read();
         if let Some(storefront) = shared.storefronts.get(&supplier_name) {
             storefront
@@ -37,6 +39,7 @@ pub fn StorefrontView(supplier_name: String) -> Element {
                 .map(|sp| {
                     let cat = format!("{:?}", sp.product.category);
                     (
+                        sp.product.id.0.clone(),
                         sp.product.name.clone(),
                         cat,
                         sp.product.price_curd,
@@ -63,19 +66,20 @@ pub fn StorefrontView(supplier_name: String) -> Element {
                 if products.is_empty() {
                     p { class: "empty-state", "No products available." }
                 } else {
-                    {products.into_iter().map(|(name, category, price, qty)| {
+                    {products.into_iter().map(|(product_id, name, category, price, qty)| {
+                        let pid = product_id.clone();
                         let name_clone = name.clone();
                         let is_own_store = is_own;
                         rsx! {
                             div { class: "product-card",
-                                key: "{name}",
+                                key: "{product_id}",
                                 h3 { "{name}" }
                                 span { class: "category", "{category}" }
                                 p { class: "price", "{price} CURD" }
                                 p { class: "quantity", "Available: {qty}" }
                                 if !is_own_store {
                                     button {
-                                        onclick: move |_| selected_product.set(Some((name_clone.clone(), price))),
+                                        onclick: move |_| selected_product.set(Some((pid.clone(), name_clone.clone(), price))),
                                         "Order"
                                     }
                                 }
@@ -88,12 +92,12 @@ pub fn StorefrontView(supplier_name: String) -> Element {
     }
 }
 
-fn example_products() -> Vec<(String, String, u64, u32)> {
+fn example_products() -> Vec<(String, String, String, u64, u32)> {
     vec![
-        ("Raw Whole Milk (1 gal)".into(), "Milk".into(), 800, 25),
-        ("Aged Cheddar (1 lb)".into(), "Cheese".into(), 1200, 15),
-        ("Cultured Butter (8 oz)".into(), "Butter".into(), 600, 30),
-        ("Fresh Cream (1 pt)".into(), "Cream".into(), 500, 20),
-        ("Plain Kefir (1 qt)".into(), "Kefir".into(), 700, 12),
+        ("ex-1".into(), "Raw Whole Milk (1 gal)".into(), "Milk".into(), 800, 25),
+        ("ex-2".into(), "Aged Cheddar (1 lb)".into(), "Cheese".into(), 1200, 15),
+        ("ex-3".into(), "Cultured Butter (8 oz)".into(), "Butter".into(), 600, 30),
+        ("ex-4".into(), "Fresh Cream (1 pt)".into(), "Cream".into(), 500, 20),
+        ("ex-5".into(), "Plain Kefir (1 qt)".into(), "Kefir".into(), 700, 12),
     ]
 }

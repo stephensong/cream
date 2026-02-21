@@ -34,6 +34,7 @@ pub enum NodeAction {
         product_id: String,
         quantity: u32,
         deposit_tier: String,
+        price_per_unit: u64,
     },
     /// Subscribe to a specific storefront's updates.
     #[allow(dead_code)] // auto-subscribed via directory; kept for manual use
@@ -79,8 +80,7 @@ mod wasm_impl {
 
     use cream_common::directory::{DirectoryEntry, DirectoryState};
     use cream_common::location::GeoLocation;
-    #[allow(unused_imports)]
-    use cream_common::order::OrderId;
+    use cream_common::order::{DepositTier, Order, OrderId, OrderStatus};
     use cream_common::product::{Product, ProductCategory, ProductId};
     use cream_common::storefront::{
         SignedProduct, StorefrontInfo, StorefrontParameters, StorefrontState,
@@ -553,15 +553,94 @@ mod wasm_impl {
                 product_id,
                 quantity,
                 deposit_tier,
+                price_per_unit,
             } => {
-                tracing::info!(
-                    "PlaceOrder on {}: {} x{} ({})",
-                    storefront_name,
-                    product_id,
+                clog(&format!("[CREAM] PlaceOrder on {}: {} x{} ({})",
+                    storefront_name, product_id, quantity, deposit_tier));
+
+                // Find the storefront's contract key from the directory
+                let sf_key = {
+                    let state = shared.read();
+                    state.directory.entries.values()
+                        .find(|e| e.name == storefront_name)
+                        .map(|e| e.storefront_key)
+                };
+
+                let Some(sf_key) = sf_key else {
+                    clog(&format!("[CREAM] ERROR: No directory entry found for {}, can't place order", storefront_name));
+                    return;
+                };
+
+                // Get the existing storefront state
+                let existing_sf = {
+                    shared.read().storefronts.get(&storefront_name).cloned()
+                };
+
+                let Some(mut sf) = existing_sf else {
+                    clog(&format!("[CREAM] ERROR: Storefront state not found for {}", storefront_name));
+                    return;
+                };
+
+                // Parse deposit tier
+                let tier = match deposit_tier.as_str() {
+                    "2-Day Reserve (10%)" => DepositTier::Reserve2Days,
+                    "1-Week Reserve (20%)" => DepositTier::Reserve1Week,
+                    "Full Payment (100%)" => DepositTier::FullPayment,
+                    _ => {
+                        clog(&format!("[CREAM] ERROR: Unknown deposit tier: {}", deposit_tier));
+                        return;
+                    }
+                };
+
+                // Calculate pricing
+                let now = chrono::Utc::now();
+                let total_price = price_per_unit * quantity as u64;
+                let deposit_amount = tier.calculate_deposit(total_price);
+
+                // Calculate reservation expiry
+                let expires_at = match tier {
+                    DepositTier::Reserve2Days => now + chrono::Duration::days(2),
+                    DepositTier::Reserve1Week => now + chrono::Duration::weeks(1),
+                    DepositTier::FullPayment => now + chrono::Duration::days(365),
+                };
+
+                // Build the order
+                let order_id = OrderId(format!("o-{}", now.timestamp_millis()));
+                let mut order = Order {
+                    id: order_id.clone(),
+                    product_id: ProductId(product_id),
+                    customer: key_manager.customer_id(),
                     quantity,
-                    deposit_tier
-                );
-                // TODO: Build Order, add to storefront state, send Update
+                    deposit_tier: tier,
+                    deposit_amount,
+                    total_price,
+                    status: OrderStatus::Reserved { expires_at },
+                    created_at: now,
+                    signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+                };
+
+                // Sign the order with the customer key
+                key_manager.sign_order(&mut order);
+
+                // Insert into storefront and send update
+                sf.orders.insert(order_id.clone(), order);
+                let sf_bytes = serde_json::to_vec(&sf).unwrap();
+                clog(&format!("[CREAM] PlaceOrder: sending Update with {} orders, {} bytes",
+                    sf.orders.len(), sf_bytes.len()));
+
+                let update = ClientRequest::ContractOp(ContractRequest::Update {
+                    key: sf_key,
+                    data: UpdateData::State(State::from(sf_bytes)),
+                });
+
+                // Update local SharedState immediately
+                shared.write().storefronts.insert(storefront_name.clone(), sf);
+
+                if let Err(e) = api.send(update).await {
+                    clog(&format!("[CREAM] ERROR: Failed to place order: {:?}", e));
+                } else {
+                    clog("[CREAM] PlaceOrder: Update sent successfully");
+                }
             }
 
             NodeAction::SubscribeStorefront { supplier_name } => {

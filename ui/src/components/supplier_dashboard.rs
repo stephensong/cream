@@ -20,19 +20,12 @@ pub fn SupplierDashboard() -> Element {
         .supplier_description
         .clone()
         .unwrap_or("No description set".into());
-    let orders_for_me: Vec<_> = state
-        .orders
-        .iter()
-        .filter(|o| o.supplier == moniker)
-        .cloned()
-        .collect();
     drop(state);
 
-    // Get products from the network storefront (SharedState), not local UserState
+    // Get products and orders from the network storefront (SharedState)
     let shared = shared_state.read();
-    let products: Vec<_> = shared
-        .storefronts
-        .get(&moniker)
+    let storefront = shared.storefronts.get(&moniker);
+    let products: Vec<_> = storefront
         .map(|sf| {
             sf.products
                 .values()
@@ -41,14 +34,9 @@ pub fn SupplierDashboard() -> Element {
                 .collect()
         })
         .unwrap_or_default();
-    let network_order_count = shared
-        .storefronts
-        .get(&moniker)
-        .map(|sf| sf.orders.len())
-        .unwrap_or(0);
-    if network_order_count > 0 {
-        tracing::debug!("{} network orders for {}", network_order_count, moniker);
-    }
+    let network_orders: Vec<_> = storefront
+        .map(|sf| sf.orders.values().cloned().collect())
+        .unwrap_or_default();
     drop(shared);
 
     rsx! {
@@ -96,20 +84,23 @@ pub fn SupplierDashboard() -> Element {
             }
 
             div { class: "dashboard-section",
-                h3 { "Incoming Orders ({orders_for_me.len()})" }
-                if orders_for_me.is_empty() {
+                h3 { "Incoming Orders ({network_orders.len()})" }
+                if network_orders.is_empty() {
                     p { class: "empty-state", "No orders yet." }
                 } else {
                     div { class: "order-list",
-                        {orders_for_me.iter().map(|order| {
-                            let total = order.price_per_unit * order.quantity as u64;
+                        {network_orders.iter().map(|order| {
+                            let oid = order.id.0.clone();
+                            let pid = order.product_id.0.clone();
+                            let status = format!("{:?}", order.status);
+                            let tier = format!("{:?}", order.deposit_tier);
                             rsx! {
                                 div { class: "order-card",
-                                    key: "{order.id}",
-                                    span { class: "order-id", "Order #{order.id}" }
-                                    span { class: "order-status", " - {order.status}" }
-                                    p { "{order.product} x{order.quantity} - {total} CURD" }
-                                    p { "Deposit: {order.deposit_tier}" }
+                                    key: "{oid}",
+                                    span { class: "order-id", "Order #{oid}" }
+                                    span { class: "order-status", " - {status}" }
+                                    p { "{pid} x{order.quantity} - {order.total_price} CURD" }
+                                    p { "Deposit: {tier} ({order.deposit_amount} CURD)" }
                                 }
                             }
                         })}

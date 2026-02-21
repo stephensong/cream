@@ -5,7 +5,7 @@ use super::node_api::{use_node_action, NodeAction};
 use super::user_state::use_user_state;
 
 #[component]
-pub fn OrderForm(supplier_name: String, product_name: String, price_per_unit: u64) -> Element {
+pub fn OrderForm(supplier_name: String, product_id: String, product_name: String, price_per_unit: u64) -> Element {
     let mut user_state = use_user_state();
     let mut quantity = use_signal(|| 1u32);
     let mut deposit_tier = use_signal(|| "2-Day Reserve (10%)".to_string());
@@ -60,6 +60,8 @@ pub fn OrderForm(supplier_name: String, product_name: String, price_per_unit: u6
                 onclick: {
                     let supplier = supplier_name.clone();
                     let product = product_name.clone();
+                    #[cfg(feature = "use-node")]
+                    let product_id = product_id.clone();
                     move |_| {
                         let qty = *quantity.read();
                         let tier = deposit_tier.read().clone();
@@ -79,9 +81,10 @@ pub fn OrderForm(supplier_name: String, product_name: String, price_per_unit: u6
                             let node = use_node_action();
                             node.send(NodeAction::PlaceOrder {
                                 storefront_name: supplier.clone(),
-                                product_id: product.clone(),
+                                product_id: product_id.clone(),
                                 quantity: qty,
                                 deposit_tier: tier,
+                                price_per_unit,
                             });
                         }
 

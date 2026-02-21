@@ -15,7 +15,7 @@ use cream_common::storefront::order_signable_bytes;
 #[derive(Clone)]
 pub struct KeyManager {
     supplier_signing_key: SigningKey,
-    #[allow(dead_code)] // used by customer_id/sign_order, needed for PlaceOrder
+    #[allow(dead_code)] // used by customer_id/sign_order in use-node builds
     customer_signing_key: SigningKey,
 }
 
@@ -53,7 +53,6 @@ impl KeyManager {
         SupplierId(self.supplier_verifying_key())
     }
 
-    #[allow(dead_code)] // needed for PlaceOrder
     pub fn customer_id(&self) -> CustomerId {
         CustomerId(self.customer_verifying_key())
     }
@@ -62,7 +61,6 @@ impl KeyManager {
         VerifyingKey::from(&self.supplier_signing_key)
     }
 
-    #[allow(dead_code)] // needed for PlaceOrder
     pub fn customer_verifying_key(&self) -> VerifyingKey {
         VerifyingKey::from(&self.customer_signing_key)
     }
@@ -81,7 +79,6 @@ impl KeyManager {
     }
 
     /// Sign an order in-place (as customer).
-    #[allow(dead_code)] // needed for PlaceOrder
     pub fn sign_order(&self, order: &mut Order) {
         let bytes = order_signable_bytes(order);
         order.signature = self.customer_signing_key.sign(&bytes);
