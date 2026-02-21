@@ -85,6 +85,8 @@ pub fn make_directory_entry(
         name: name.to_string(),
         description: format!("{name}'s farm"),
         location: GeoLocation::new(-33.87, 151.21),
+        postcode: Some("2000".to_string()),
+        locality: Some("Sydney".to_string()),
         categories: vec![],
         storefront_key,
         updated_at: chrono::Utc::now(),

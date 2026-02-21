@@ -416,6 +416,8 @@ mod wasm_impl {
                     name: name.clone(),
                     description,
                     location,
+                    postcode: Some(postcode),
+                    locality,
                     categories: vec![],
                     storefront_key: sf_key,
                     updated_at: chrono::Utc::now(),

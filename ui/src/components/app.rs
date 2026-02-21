@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 
 use cream_common::postcode::{
-    format_postcode, is_valid_au_postcode, lookup_all_localities, nearest_postcode, PostcodeInfo,
+    format_postcode, is_valid_au_postcode, lookup_all_localities, PostcodeInfo,
 };
 
 use super::directory_view::DirectoryView;
@@ -290,17 +290,15 @@ fn SetupScreen() -> Element {
                                     if let Some(entry) = matched {
                                         // Correct name casing
                                         name_input.set(entry.name.clone());
-                                        // Reverse-lookup postcode + locality from location
-                                        if let Some(info) = nearest_postcode(&entry.location) {
-                                            postcode_input.set(info.postcode.clone());
+                                        // Use postcode/locality directly from directory entry
+                                        if let Some(pc) = &entry.postcode {
+                                            postcode_input.set(pc.clone());
                                             postcode_error.set(None);
-                                            // Update localities for this postcode
-                                            let locs = lookup_all_localities(&info.postcode);
+                                            let locs = lookup_all_localities(pc);
                                             if locs.len() == 1 {
                                                 selected_locality.set(Some(locs[0].place_name.clone()));
-                                            } else {
-                                                // Try to match the nearest locality
-                                                selected_locality.set(Some(info.place_name.clone()));
+                                            } else if let Some(loc) = &entry.locality {
+                                                selected_locality.set(Some(loc.clone()));
                                             }
                                             localities.set(locs);
                                         }

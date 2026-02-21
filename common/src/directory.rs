@@ -18,6 +18,10 @@ pub struct DirectoryEntry {
     pub name: String,
     pub description: String,
     pub location: GeoLocation,
+    #[serde(default)]
+    pub postcode: Option<String>,
+    #[serde(default)]
+    pub locality: Option<String>,
     pub categories: Vec<ProductCategory>,
     pub storefront_key: ContractKey,
     pub updated_at: DateTime<Utc>,
@@ -32,6 +36,8 @@ impl DirectoryEntry {
             name: &self.name,
             description: &self.description,
             location: &self.location,
+            postcode: self.postcode.as_deref(),
+            locality: self.locality.as_deref(),
             categories: &self.categories,
             storefront_key: &self.storefront_key,
             updated_at: &self.updated_at,
@@ -60,6 +66,8 @@ struct SignableDirectoryEntry<'a> {
     name: &'a str,
     description: &'a str,
     location: &'a GeoLocation,
+    postcode: Option<&'a str>,
+    locality: Option<&'a str>,
     categories: &'a [ProductCategory],
     storefront_key: &'a ContractKey,
     updated_at: &'a DateTime<Utc>,

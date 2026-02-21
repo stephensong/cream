@@ -12,6 +12,7 @@ struct SupplierEntry {
     name: String,
     description: String,
     postcode: String,
+    locality: Option<String>,
     distance_km: Option<f64>,
     product_count: usize,
 }
@@ -43,10 +44,12 @@ pub fn DirectoryView() -> Element {
             .get(&moniker)
             .map(|sf| sf.products.len())
             .unwrap_or(0);
+        let locality = state.locality.clone();
         suppliers.push(SupplierEntry {
             name: moniker,
             description: desc,
             postcode: postcode.clone(),
+            locality,
             distance_km: Some(0.0),
             product_count,
         });
@@ -85,13 +88,7 @@ pub fn DirectoryView() -> Element {
                 }
             }
 
-            // Use postcode from the geo-location (approximate, based on latitude)
-            // For now, use a placeholder; in the real implementation the directory
-            // entry would carry a postcode or we'd reverse-geocode.
-            let postcode = format!(
-                "{:.0}",
-                entry.location.latitude.abs() * 100.0
-            );
+            let postcode = entry.postcode.clone().unwrap_or_default();
             let dist = distance_between_postcodes(&user_postcode, &postcode);
             let product_count = shared
                 .storefronts
@@ -108,6 +105,7 @@ pub fn DirectoryView() -> Element {
                 name: entry.name.clone(),
                 description: entry.description.clone(),
                 postcode,
+                locality: entry.locality.clone(),
                 distance_km: dist,
                 product_count,
             });
@@ -124,6 +122,7 @@ pub fn DirectoryView() -> Element {
                     name,
                     description: desc,
                     postcode,
+                    locality: None,
                     distance_km: dist,
                     product_count: 5,
                 });
@@ -192,7 +191,7 @@ pub fn DirectoryView() -> Element {
                                 h3 { "{supplier.name}" }
                                 p { "{supplier.description}" }
                                 {
-                                    let location_name = format_postcode(&supplier.postcode, None);
+                                    let location_name = format_postcode(&supplier.postcode, supplier.locality.as_deref());
                                     rsx! { p { class: "location", "{location_name} - {distance_text}" } }
                                 }
                                 p { class: "product-count", "{supplier.product_count} products" }

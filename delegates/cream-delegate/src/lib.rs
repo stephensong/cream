@@ -245,6 +245,8 @@ mod tests {
             name: "Test Farm".into(),
             description: "A test dairy farm".into(),
             location: GeoLocation::new(40.0, -74.0),
+            postcode: None,
+            locality: None,
             categories: vec![ProductCategory::Milk, ProductCategory::Cheese],
             storefront_key: freenet_stdlib::prelude::ContractKey::from_params(
                 "11111111111111111111111111111111",
