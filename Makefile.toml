@@ -156,6 +156,23 @@ args = ["clippy", "--all-targets"]
 description = "Format and lint"
 dependencies = ["fmt", "clippy"]
 
+# ─── Tailwind CSS ─────────────────────────────────────────────────────────────
+
+[tasks.tailwind-install]
+description = "Install Tailwind CSS dependencies"
+cwd = "ui"
+script = ["npm install"]
+
+[tasks.tailwind-build]
+description = "Build Tailwind CSS (one-shot)"
+cwd = "ui"
+script = ["npx @tailwindcss/cli -i ./input.css -o ./assets/tailwind.css"]
+
+[tasks.tailwind-watch]
+description = "Watch and rebuild Tailwind CSS on changes"
+cwd = "ui"
+script = ["npx @tailwindcss/cli -i ./input.css -o ./assets/tailwind.css --watch"]
+
 # ─── E2E Browser Tests ───────────────────────────────────────────────────────
 
 [tasks.e2e-install]
@@ -164,7 +181,8 @@ cwd = "tests/e2e"
 script = ["npm install", "npx playwright install chromium"]
 
 [tasks.e2e-serve]
-description = "Start dx serve with use-node feature in the background"
+description = "Build Tailwind and start dx serve with use-node feature in the background"
+dependencies = ["tailwind-install", "tailwind-build"]
 cwd = "ui"
 script = [
     "nohup dx serve --features use-node > /tmp/cream-dx-serve.log 2>&1 &",

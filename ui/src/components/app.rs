@@ -59,17 +59,16 @@ pub fn App() -> Element {
     let key_manager: Signal<Option<KeyManager>> = use_context();
     let user_state = use_user_state();
 
-    // Not authenticated → show setup screen
-    if key_manager.read().is_none() {
-        return rsx! { SetupScreen {} };
-    }
+    let content = if key_manager.read().is_none() || user_state.read().moniker.is_none() {
+        rsx! { SetupScreen {} }
+    } else {
+        rsx! { Router::<Route> {} }
+    };
 
-    // Authenticated but no profile yet → show setup
-    if user_state.read().moniker.is_none() {
-        return rsx! { SetupScreen {} };
+    rsx! {
+        document::Stylesheet { href: asset!("/assets/tailwind.css") }
+        {content}
     }
-
-    rsx! { Router::<Route> {} }
 }
 
 /// Try to derive KeyManager from credentials stored in sessionStorage.
