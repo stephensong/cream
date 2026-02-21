@@ -155,3 +155,56 @@ args = ["clippy", "--all-targets"]
 [tasks.lint]
 description = "Format and lint"
 dependencies = ["fmt", "clippy"]
+
+# ─── E2E Browser Tests ───────────────────────────────────────────────────────
+
+[tasks.e2e-install]
+description = "Install Playwright and browser dependencies"
+cwd = "tests/e2e"
+script = ["npm install", "npx playwright install chromium"]
+
+[tasks.e2e-serve]
+description = "Start dx serve with use-node feature in the background"
+cwd = "ui"
+script = [
+    "nohup dx serve --features use-node > /tmp/cream-dx-serve.log 2>&1 &",
+    "echo $! > /tmp/cream-dx-serve.pid",
+    "echo 'Waiting for dx serve on port 8080...'",
+    "for i in $(seq 1 120); do curl -s http://localhost:8080 > /dev/null 2>&1 && echo 'dx serve ready' && exit 0; sleep 1; done",
+    "echo 'Timed out waiting for dx serve' && exit 1",
+]
+
+[tasks.e2e-stop]
+description = "Stop the dx serve background process"
+script = [
+    "if [ -f /tmp/cream-dx-serve.pid ]; then kill $(cat /tmp/cream-dx-serve.pid) 2>/dev/null || true; rm -f /tmp/cream-dx-serve.pid; echo 'dx serve stopped'; else echo 'No dx serve PID file found'; fi",
+]
+
+[tasks.e2e-run]
+description = "Run Playwright E2E tests"
+cwd = "tests/e2e"
+command = "npx"
+args = ["playwright", "test"]
+
+[tasks.e2e-run-headed]
+description = "Run Playwright E2E tests in headed mode (visible browser)"
+cwd = "tests/e2e"
+command = "npx"
+args = ["playwright", "test", "--headed"]
+
+[tasks.test-e2e]
+description = "Full E2E pipeline: build contracts, reset node, start server, run tests, stop server"
+dependencies = ["build-contracts-dev", "test-node", "e2e-install", "e2e-serve"]
+script = [
+    '''
+    cleanup() {
+        if [ -f /tmp/cream-dx-serve.pid ]; then
+            kill $(cat /tmp/cream-dx-serve.pid) 2>/dev/null || true
+            rm -f /tmp/cream-dx-serve.pid
+            echo "dx serve stopped"
+        fi
+    }
+    trap cleanup EXIT
+    cd tests/e2e && npx playwright test
+    ''',
+]
