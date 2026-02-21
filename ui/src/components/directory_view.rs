@@ -47,15 +47,22 @@ pub fn DirectoryView() -> Element {
     drop(state);
 
     // Add suppliers from the Freenet directory (SharedState)
+    // Determine our own SupplierId so we can skip our own directory entry
+    // (we already added ourselves from local state above).
+    let my_supplier_id = {
+        let km_signal: Signal<Option<crate::components::key_manager::KeyManager>> = use_context();
+        let km_guard = km_signal.read();
+        km_guard.as_ref().map(|km| km.supplier_id())
+    };
     {
         let shared = shared_state.read();
         for entry in shared.directory.entries.values() {
-            // Skip if this is our own entry (already added above)
-            let user = user_state.read();
-            if user.moniker.as_deref() == Some(&entry.name) {
-                continue;
+            // Skip our own entry (already added from local state above)
+            if let Some(ref my_id) = my_supplier_id {
+                if &entry.supplier == my_id {
+                    continue;
+                }
             }
-            drop(user);
 
             // Use postcode from the geo-location (approximate, based on latitude)
             // For now, use a placeholder; in the real implementation the directory

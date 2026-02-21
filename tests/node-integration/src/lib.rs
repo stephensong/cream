@@ -54,24 +54,22 @@ pub fn make_storefront_contract(
     (contract, key)
 }
 
-/// Create a unique supplier identity (random keys).
-/// The `test-node` task resets the node before each run, so random keys
-/// don't accumulate stale entries across runs.
-pub fn make_dummy_supplier() -> (SupplierId, ed25519_dalek::VerifyingKey) {
-    use rand::RngCore;
-    let mut seed = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut seed);
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+/// Create a deterministic supplier identity from a name.
+///
+/// Uses `derive_signing_key(name, password)` with `password = name.to_lowercase()`
+/// so that the test harness produces the same keys as the UI when a user logs
+/// in with their name as the password.
+pub fn make_dummy_supplier(name: &str) -> (SupplierId, ed25519_dalek::VerifyingKey) {
+    let password = name.to_lowercase();
+    let signing_key = cream_common::identity::derive_supplier_signing_key(name, &password);
     let verifying_key = ed25519_dalek::VerifyingKey::from(&signing_key);
     (SupplierId(verifying_key), verifying_key)
 }
 
-/// Create a unique customer identity (random keys).
-pub fn make_dummy_customer() -> (CustomerId, ed25519_dalek::VerifyingKey) {
-    use rand::RngCore;
-    let mut seed = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut seed);
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+/// Create a deterministic customer identity from a name.
+pub fn make_dummy_customer(name: &str) -> (CustomerId, ed25519_dalek::VerifyingKey) {
+    let password = name.to_lowercase();
+    let signing_key = cream_common::identity::derive_customer_signing_key(name, &password);
     let verifying_key = ed25519_dalek::VerifyingKey::from(&signing_key);
     (CustomerId(verifying_key), verifying_key)
 }

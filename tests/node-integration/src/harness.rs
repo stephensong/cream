@@ -201,14 +201,14 @@ impl TestHarness {
         let api_alice = connect_to_node().await;
         let api_bob = connect_to_node().await;
 
-        // Create supplier identities
-        let (gary_id, gary_vk) = make_dummy_supplier();
-        let (emma_id, emma_vk) = make_dummy_supplier();
-        let (iris_id, iris_vk) = make_dummy_supplier();
+        // Create supplier identities (deterministic — same keys the UI derives)
+        let (gary_id, gary_vk) = make_dummy_supplier("Gary");
+        let (emma_id, emma_vk) = make_dummy_supplier("Emma");
+        let (iris_id, iris_vk) = make_dummy_supplier("Iris");
 
-        // Create customer identities
-        let (alice_id, alice_vk) = make_dummy_customer();
-        let (bob_id, bob_vk) = make_dummy_customer();
+        // Create customer identities (deterministic)
+        let (alice_id, alice_vk) = make_dummy_customer("Alice");
+        let (bob_id, bob_vk) = make_dummy_customer("Bob");
 
         // Create storefront contracts
         let (gary_sf_contract, gary_sf_key) = make_storefront_contract(&gary_vk);

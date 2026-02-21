@@ -110,6 +110,61 @@ pub struct UserIdentity {
     pub customer_id: Option<CustomerId>,
 }
 
+/// Derive a deterministic base ed25519 signing key from a name and password.
+///
+/// This is the first step — use `derive_supplier_signing_key` or
+/// `derive_customer_signing_key` for role-specific keys.
+#[cfg(feature = "dev")]
+fn derive_base_key(name: &str, password: &str) -> [u8; 32] {
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+
+    let salt = name.trim().to_lowercase();
+    let hk = Hkdf::<Sha256>::new(Some(salt.as_bytes()), password.as_bytes());
+    let mut okm = [0u8; 32];
+    hk.expand(b"cream-dev-identity-v1", &mut okm)
+        .expect("HKDF expand should not fail for 32 bytes");
+    okm
+}
+
+/// Derive 32 bytes from a seed using HKDF-SHA256 with the given info string.
+#[cfg(feature = "dev")]
+fn derive_role_key(seed: &[u8; 32], info: &[u8]) -> ed25519_dalek::SigningKey {
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+
+    let hk = Hkdf::<Sha256>::new(None, seed);
+    let mut okm = [0u8; 32];
+    hk.expand(info, &mut okm)
+        .expect("HKDF expand should not fail for 32 bytes");
+    ed25519_dalek::SigningKey::from_bytes(&okm)
+}
+
+/// Derive a deterministic supplier signing key from name + password.
+///
+/// Both the test harness and the UI use this function so that the same
+/// name + password always produces the same supplier keypair.
+///
+/// Only available with the `dev` feature (production will use BIP39 mnemonics).
+#[cfg(feature = "dev")]
+pub fn derive_supplier_signing_key(
+    name: &str,
+    password: &str,
+) -> ed25519_dalek::SigningKey {
+    let base = derive_base_key(name, password);
+    derive_role_key(&base, b"cream-supplier-signing-key-v1")
+}
+
+/// Derive a deterministic customer signing key from name + password.
+#[cfg(feature = "dev")]
+pub fn derive_customer_signing_key(
+    name: &str,
+    password: &str,
+) -> ed25519_dalek::SigningKey {
+    let base = derive_base_key(name, password);
+    derive_role_key(&base, b"cream-customer-signing-key-v1")
+}
+
 /// A value signed by a known key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Signed<T> {

@@ -9,7 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = ["std"]
 std = ["chrono/std", "chrono/clock"]
-dev = []
+dev = ["hkdf", "sha2"]
 
 [dependencies]
 chrono = { workspace = true }
@@ -17,3 +17,5 @@ ed25519-dalek = { workspace = true }
 freenet-stdlib = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+hkdf = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }

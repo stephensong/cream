@@ -56,7 +56,7 @@ async fn directory_subscribe_notifies_on_update() {
     );
 
     // Client A: UPDATE directory with a new supplier entry
-    let (supplier_id, vk) = make_dummy_supplier();
+    let (supplier_id, vk) = make_dummy_supplier("Test Farm");
     let (_, sf_key) = make_storefront_contract(&vk);
     let entry = make_directory_entry(&supplier_id, "Test Farm", sf_key);
 
@@ -97,7 +97,7 @@ async fn storefront_subscribe_notifies_on_product_add() {
     let mut client_a = connect_to_node().await;
     let mut client_b = connect_to_node().await;
 
-    let (supplier_id, vk) = make_dummy_supplier();
+    let (supplier_id, vk) = make_dummy_supplier("Notify Farm");
     let (sf_contract, sf_key) = make_storefront_contract(&vk);
 
     // Client A: PUT storefront with initial state (empty products)
@@ -186,7 +186,7 @@ async fn get_subscribe_flag_vs_explicit_subscribe() {
     let mut client_b_get = connect_to_node().await;
     let mut client_b_sub = connect_to_node().await;
 
-    let (supplier_id, vk) = make_dummy_supplier();
+    let (supplier_id, vk) = make_dummy_supplier("Diagnostic Farm");
     let (sf_contract, sf_key) = make_storefront_contract(&vk);
 
     // Client A: PUT storefront
@@ -302,7 +302,7 @@ async fn product_count_increments_for_subscriber() {
     let mut supplier = connect_to_node().await;
     let mut customer = connect_to_node().await;
 
-    let (supplier_id, vk) = make_dummy_supplier();
+    let (supplier_id, vk) = make_dummy_supplier("Count Farm");
     let (sf_contract, sf_key) = make_storefront_contract(&vk);
 
     // Supplier: PUT storefront with 0 products

@@ -132,8 +132,8 @@ command = "cargo"
 args = ["test", "--workspace"]
 
 [tasks.test-node]
-description = "Reset node and run integration tests against it"
-dependencies = ["reset-node"]
+description = "Build contracts, reset node, and run integration tests"
+dependencies = ["build-contracts-dev", "reset-node"]
 command = "cargo"
 args = ["test", "-p", "cream-node-integration", "--features", "node-tests", "--", "--nocapture"]
 
