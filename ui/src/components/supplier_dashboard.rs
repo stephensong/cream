@@ -20,9 +20,6 @@ pub fn SupplierDashboard() -> Element {
         .supplier_description
         .clone()
         .unwrap_or("No description set".into());
-    let products = state.products.clone();
-
-    // Get orders from both local state and SharedState
     let orders_for_me: Vec<_> = state
         .orders
         .iter()
@@ -31,20 +28,28 @@ pub fn SupplierDashboard() -> Element {
         .collect();
     drop(state);
 
-    // Also check SharedState for network-sourced orders
-    {
-        let shared = shared_state.read();
-        if let Some(storefront) = shared.storefronts.get(&moniker) {
-            let network_order_count = storefront.orders.len();
-            if network_order_count > 0 {
-                tracing::debug!(
-                    "{} network orders for {}",
-                    network_order_count,
-                    moniker
-                );
-            }
-        }
+    // Get products from the network storefront (SharedState), not local UserState
+    let shared = shared_state.read();
+    let products: Vec<_> = shared
+        .storefronts
+        .get(&moniker)
+        .map(|sf| {
+            sf.products
+                .values()
+                .map(|sp| &sp.product)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let network_order_count = shared
+        .storefronts
+        .get(&moniker)
+        .map(|sf| sf.orders.len())
+        .unwrap_or(0);
+    if network_order_count > 0 {
+        tracing::debug!("{} network orders for {}", network_order_count, moniker);
     }
+    drop(shared);
 
     rsx! {
         div { class: "supplier-dashboard",
@@ -73,23 +78,16 @@ pub fn SupplierDashboard() -> Element {
                 } else {
                     div { class: "product-list",
                         {products.iter().map(|product| {
-                            let pid = product.id;
+                            let pid = product.id.0.clone();
                             rsx! {
                                 div { class: "product-card",
-                                    key: "{product.id}",
+                                    key: "{pid}",
                                     div { class: "product-header",
                                         h4 { "{product.name}" }
-                                        span { class: "category", "{product.category}" }
+                                        span { class: "category", "{product.category:?}" }
                                     }
                                     p { "{product.description}" }
                                     p { "Price: {product.price_curd} CURD | Available: {product.quantity_available}" }
-                                    button {
-                                        class: "btn-danger",
-                                        onclick: move |_| {
-                                            user_state.write().remove_product(pid);
-                                        },
-                                        "Remove"
-                                    }
                                 }
                             }
                         })}

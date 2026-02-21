@@ -91,6 +91,11 @@ mod wasm_impl {
     use crate::components::key_manager::KeyManager;
     use crate::components::shared_state::use_shared_state;
 
+    /// Log a message to the browser console.
+    fn clog(msg: &str) {
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(msg));
+    }
+
     /// Embedded directory contract WASM (built with `cargo make build-contracts-dev`).
     const DIRECTORY_CONTRACT_WASM: &[u8] = include_bytes!(
         "../../../target/wasm32-unknown-unknown/release/cream_directory_contract.wasm"
@@ -165,6 +170,7 @@ mod wasm_impl {
             return;
         }
         shared.write().connected = true;
+        clog("[CREAM] Connected to Freenet node");
 
         // ── Set up directory contract ─────────────────────────────────
         let directory_contract =
@@ -208,6 +214,12 @@ mod wasm_impl {
         // Track which storefronts we've already subscribed to
         let mut subscribed_storefronts: HashSet<ContractInstanceId> = HashSet::new();
 
+        // Forward lookup: ContractInstanceId → directory entry name.
+        // Populated when we subscribe to storefronts so we can correctly
+        // key incoming GET/Update responses by the directory name (e.g. "Gary")
+        // rather than the storefront's own info.name (e.g. "Gary's Farm").
+        let mut instance_to_name: std::collections::HashMap<ContractInstanceId, String> = std::collections::HashMap::new();
+
         // ── Main event loop ─────────────────────────────────────────────
         loop {
             futures::select! {
@@ -235,6 +247,7 @@ mod wasm_impl {
                             let follow_ups = handle_contract_response(
                                 &mut shared, cr, directory_instance_id,
                                 &mut subscribed_storefronts,
+                                &mut instance_to_name,
                             );
                             for follow_up in follow_ups {
                                 if let Err(e) = api.send(follow_up).await {
@@ -317,9 +330,26 @@ mod wasm_impl {
                 postcode,
                 description,
             } => {
-                // Deploy a storefront contract for this supplier using real keys.
                 let supplier_id = key_manager.supplier_id();
                 let owner_key = key_manager.supplier_verifying_key();
+
+                // Check if this supplier already exists in the directory
+                // (e.g. pre-populated by the test harness). If so, just
+                // populate the local maps and skip the PUT/Update.
+                let existing_entry = shared.read().directory.entries
+                    .get(&supplier_id).cloned();
+
+                if let Some(entry) = existing_entry {
+                    clog(&format!("[CREAM] RegisterSupplier: {} already in directory, skipping PUT", name));
+                    let sf_key = entry.storefront_key;
+                    sf_contract_keys.insert(name.clone(), sf_key);
+                    shared.write().storefront_keys
+                        .insert(name.clone(), format!("{}", sf_key));
+                    return;
+                }
+
+                clog(&format!("[CREAM] RegisterSupplier: {} not found in directory (supplier_id={:?}), deploying NEW storefront. \
+                    Note: for harness data, password must be the lowercase name (e.g. \"gary\")", name, supplier_id));
 
                 // Look up postcode to get coordinates
                 let location =
@@ -356,9 +386,9 @@ mod wasm_impl {
                     blocking_subscribe: false,
                 });
 
-                tracing::info!("Deploying storefront for {}: {:?}", name, sf_key);
+                clog(&format!("[CREAM] Deploying storefront for {}: {:?}", name, sf_key));
                 if let Err(e) = api.send(put_sf).await {
-                    tracing::error!("Failed to deploy storefront: {:?}", e);
+                    clog(&format!("[CREAM] ERROR: Failed to deploy storefront: {:?}", e));
                     return;
                 }
 
@@ -403,9 +433,9 @@ mod wasm_impl {
                         data: UpdateData::Delta(StateDelta::from(delta_bytes)),
                     });
 
-                tracing::info!("Registering {} in directory", name);
+                clog(&format!("[CREAM] Registering {} in directory", name));
                 if let Err(e) = api.send(update_dir).await {
-                    tracing::error!("Failed to update directory: {:?}", e);
+                    clog(&format!("[CREAM] ERROR: Failed to update directory: {:?}", e));
                 }
             }
 
@@ -421,22 +451,32 @@ mod wasm_impl {
                 price_curd,
                 quantity_available,
             } => {
-                // Find this user's storefront key from SharedState
-                let user_name = {
+                // Find this user's storefront key from the directory using their SupplierId.
+                // This works whether the storefront was deployed by this tab (RegisterSupplier)
+                // or pre-populated by the test harness / another session.
+                let my_supplier_id = key_manager.supplier_id();
+                clog(&format!("[CREAM] AddProduct: looking up storefront for supplier {:?}", my_supplier_id));
+                let (supplier_name, sf_key) = {
                     let state = shared.read();
-                    // Find our storefront - look for any storefront key we deployed
-                    state.storefront_keys.keys().next().cloned()
+                    clog(&format!("[CREAM] AddProduct: sf_contract_keys has {} entries, directory has {} entries",
+                        sf_contract_keys.len(), state.directory.entries.len()));
+                    // First check sf_contract_keys (set during RegisterSupplier in this session)
+                    let from_local = sf_contract_keys.iter().next()
+                        .map(|(name, key)| (name.clone(), *key));
+                    // Fall back to directory entries (populated from GET response)
+                    let result = from_local.or_else(|| {
+                        state.directory.entries.get(&my_supplier_id)
+                            .map(|entry| (entry.name.clone(), entry.storefront_key))
+                    });
+                    clog(&format!("[CREAM] AddProduct: found storefront = {}", result.is_some()));
+                    result.unzip()
                 };
 
-                let Some(supplier_name) = user_name else {
-                    tracing::warn!("No storefront deployed yet, can't add product");
+                let (Some(supplier_name), Some(sf_key)) = (supplier_name, sf_key) else {
+                    clog(&format!("[CREAM] ERROR: No storefront found for supplier, can't add product"));
                     return;
                 };
-
-                let Some(sf_key) = sf_contract_keys.get(&supplier_name).cloned() else {
-                    tracing::warn!("Storefront key not found for {}", supplier_name);
-                    return;
-                };
+                clog(&format!("[CREAM] AddProduct: supplier_name={}, sf_key={:?}", supplier_name, sf_key));
 
                 // Build a product update with the existing storefront state
                 let now = chrono::Utc::now();
@@ -479,6 +519,8 @@ mod wasm_impl {
                 if let Some(mut sf) = existing_sf {
                     sf.products.insert(product_id.clone(), signed_product.clone());
                     let sf_bytes = serde_json::to_vec(&sf).unwrap();
+                    clog(&format!("[CREAM] AddProduct: sending Update with {} products, {} bytes",
+                        sf.products.len(), sf_bytes.len()));
 
                     let update =
                         ClientRequest::ContractOp(ContractRequest::Update {
@@ -489,15 +531,13 @@ mod wasm_impl {
                     // Update local SharedState immediately so the supplier sees their product
                     shared.write().storefronts.insert(supplier_name.clone(), sf);
 
-                    tracing::info!("Adding product to storefront");
                     if let Err(e) = api.send(update).await {
-                        tracing::error!("Failed to add product: {:?}", e);
+                        clog(&format!("[CREAM] ERROR: Failed to add product: {:?}", e));
+                    } else {
+                        clog("[CREAM] AddProduct: Update sent successfully");
                     }
                 } else {
-                    tracing::warn!(
-                        "Storefront state not found for {}",
-                        supplier_name
-                    );
+                    clog(&format!("[CREAM] ERROR: Storefront state not found for {}", supplier_name));
                 }
             }
 
@@ -567,66 +607,107 @@ mod wasm_impl {
         response: ContractResponse,
         directory_instance_id: ContractInstanceId,
         subscribed: &mut HashSet<ContractInstanceId>,
+        instance_to_name: &mut std::collections::HashMap<ContractInstanceId, String>,
     ) -> Vec<ClientRequest<'static>> {
         match response {
-            ContractResponse::GetResponse { state, .. } => {
+            ContractResponse::GetResponse { key, state, .. } => {
                 let bytes = state.as_ref();
                 if bytes.is_empty() {
                     return vec![];
                 }
-                if let Ok(directory) =
-                    serde_json::from_slice::<DirectoryState>(bytes)
-                {
-                    tracing::info!(
-                        "Got directory state: {} entries",
-                        directory.entries.len()
-                    );
-                    let follow_ups =
-                        subscribe_new_storefronts(&directory, subscribed);
-                    shared.write().directory = directory;
-                    return follow_ups;
-                } else if let Ok(storefront) =
-                    serde_json::from_slice::<StorefrontState>(bytes)
-                {
-                    tracing::info!(
-                        "Got storefront: {} ({} products)",
-                        storefront.info.name,
-                        storefront.products.len()
-                    );
-                    let name = storefront.info.name.clone();
-                    shared.write().storefronts.insert(name, storefront);
+                let is_directory = *key.id() == directory_instance_id;
+                clog(&format!("[CREAM] GetResponse: is_directory={}, bytes_len={}", is_directory, bytes.len()));
+                if is_directory {
+                    match serde_json::from_slice::<DirectoryState>(bytes) {
+                        Ok(directory) => {
+                            clog(&format!("[CREAM] Directory GET: {} entries: {:?}",
+                                directory.entries.len(),
+                                directory.entries.values().map(|e| e.name.as_str()).collect::<Vec<_>>()
+                            ));
+                            let follow_ups =
+                                subscribe_new_storefronts(&directory, subscribed, instance_to_name);
+                            clog(&format!("[CREAM] Sending {} follow-up requests", follow_ups.len()));
+                            shared.write().directory = directory;
+                            return follow_ups;
+                        }
+                        Err(e) => {
+                            clog(&format!("[CREAM] ERROR: Failed to parse directory GetResponse: {e}"));
+                        }
+                    }
+                } else {
+                    match serde_json::from_slice::<StorefrontState>(bytes) {
+                        Ok(storefront) => {
+                            // Look up the directory entry by the storefront's owner (SupplierId).
+                            // This maps e.g. info.name "Gary's Farm" → directory name "Gary".
+                            let dir_name = {
+                                let state = shared.read();
+                                state.directory.entries.get(&storefront.info.owner)
+                                    .map(|e| e.name.clone())
+                            };
+                            let name_from_map = instance_to_name.get(key.id()).cloned();
+                            let name = dir_name
+                                .or(name_from_map)
+                                .unwrap_or_else(|| storefront.info.name.clone());
+                            clog(&format!("[CREAM] Storefront GET: keyed as '{}' (info.name='{}', owner={:?}, {} products)",
+                                name, storefront.info.name, storefront.info.owner, storefront.products.len()));
+                            shared.write().storefronts.insert(name, storefront);
+                        }
+                        Err(e) => {
+                            clog(&format!("[CREAM] ERROR: Failed to parse storefront GetResponse: {e}"));
+                        }
+                    }
                 }
             }
 
-            ContractResponse::UpdateNotification { update, .. } => {
+            ContractResponse::UpdateNotification { key, update, .. } => {
                 let bytes = match &update {
                     UpdateData::State(s) => s.as_ref(),
                     UpdateData::Delta(d) => d.as_ref(),
+                    UpdateData::StateAndDelta { state, .. } => state.as_ref(),
                     _ => return vec![],
                 };
                 if bytes.is_empty() {
                     return vec![];
                 }
-                if let Ok(dir_update) =
-                    serde_json::from_slice::<DirectoryState>(bytes)
-                {
-                    tracing::info!(
-                        "Directory update: {} entries",
-                        dir_update.entries.len()
-                    );
-                    let follow_ups =
-                        subscribe_new_storefronts(&dir_update, subscribed);
-                    shared.write().directory.merge(dir_update);
-                    return follow_ups;
-                } else if let Ok(sf_update) =
-                    serde_json::from_slice::<StorefrontState>(bytes)
-                {
-                    let name = sf_update.info.name.clone();
-                    let mut state = shared.write();
-                    if let Some(existing) = state.storefronts.get_mut(&name) {
-                        existing.merge(sf_update);
-                    } else {
-                        state.storefronts.insert(name, sf_update);
+                let is_directory = *key.id() == directory_instance_id;
+                clog(&format!("[CREAM] UpdateNotification: is_directory={}, bytes_len={}", is_directory, bytes.len()));
+                if is_directory {
+                    match serde_json::from_slice::<DirectoryState>(bytes) {
+                        Ok(dir_update) => {
+                            clog(&format!("[CREAM] Directory notification: {} entries", dir_update.entries.len()));
+                            let follow_ups =
+                                subscribe_new_storefronts(&dir_update, subscribed, instance_to_name);
+                            shared.write().directory.merge(dir_update);
+                            return follow_ups;
+                        }
+                        Err(e) => {
+                            clog(&format!("[CREAM] ERROR: Failed to parse directory notification: {e}"));
+                        }
+                    }
+                } else {
+                    match serde_json::from_slice::<StorefrontState>(bytes) {
+                        Ok(sf_update) => {
+                            let dir_name = {
+                                let state = shared.read();
+                                state.directory.entries.get(&sf_update.info.owner)
+                                    .map(|e| e.name.clone())
+                            };
+                            let name_from_map = instance_to_name.get(key.id()).cloned();
+                            let name = dir_name
+                                .or(name_from_map)
+                                .unwrap_or_else(|| sf_update.info.name.clone());
+                            clog(&format!("[CREAM] Storefront notification: keyed as '{}' ({} products)",
+                                name, sf_update.products.len()));
+                            let mut state = shared.write();
+                            if let Some(existing) = state.storefronts.get_mut(&name) {
+                                existing.merge(sf_update);
+                            } else {
+                                state.storefronts.insert(name, sf_update);
+                            }
+                        }
+                        Err(e) => {
+                            clog(&format!("[CREAM] ERROR: Failed to parse storefront notification: {e}"));
+                        }
                     }
                 }
             }
@@ -688,15 +769,15 @@ mod wasm_impl {
     fn subscribe_new_storefronts(
         directory: &DirectoryState,
         subscribed: &mut HashSet<ContractInstanceId>,
+        instance_to_name: &mut std::collections::HashMap<ContractInstanceId, String>,
     ) -> Vec<ClientRequest<'static>> {
         let mut requests = Vec::new();
         for entry in directory.entries.values() {
             let instance_id = *entry.storefront_key.id();
+            // Always update the name mapping (in case directory was updated)
+            instance_to_name.insert(instance_id, entry.name.clone());
             if subscribed.insert(instance_id) {
-                tracing::info!(
-                    "Auto-subscribing to storefront for {}",
-                    entry.name
-                );
+                clog(&format!("[CREAM] Auto-subscribing to storefront for {} (instance_id={:?})", entry.name, instance_id));
                 // GET the current state
                 requests.push(ClientRequest::ContractOp(
                     ContractRequest::Get {

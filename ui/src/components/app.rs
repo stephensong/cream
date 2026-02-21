@@ -25,13 +25,6 @@ fn title_case(s: &str) -> String {
     first + &chars.as_str().to_lowercase()
 }
 
-/// Which auth screen should we show when the user is not logged in?
-#[derive(Clone, PartialEq)]
-enum AuthScreen {
-    Login,
-    Setup,
-}
-
 #[derive(Clone, Debug, PartialEq, Routable)]
 pub enum Route {
     #[layout(AppLayout)]
@@ -54,29 +47,19 @@ pub enum Route {
 pub fn App() -> Element {
     use_context_provider(|| Signal::new(UserState::new()));
     use_context_provider(|| Signal::new(SharedState::new()));
-    use_context_provider(|| Signal::new(None::<KeyManager>));
+    // Try to auto-derive KeyManager from sessionStorage credentials
+    use_context_provider(|| {
+        let km = auto_derive_key_manager();
+        Signal::new(km)
+    });
     use_node_coroutine();
 
     let key_manager: Signal<Option<KeyManager>> = use_context();
     let user_state = use_user_state();
 
-    // Determine initial auth screen: if we have a stored moniker, show login
-    let has_profile = user_state.read().moniker.is_some();
-    let mut auth_screen = use_signal(|| {
-        if has_profile { AuthScreen::Login } else { AuthScreen::Setup }
-    });
-
-    // Not authenticated → show auth screen
+    // Not authenticated → show setup screen
     if key_manager.read().is_none() {
-        let screen = auth_screen.read().clone();
-        return match screen {
-            AuthScreen::Login => rsx! {
-                LoginScreen { on_switch: move |s| auth_screen.set(s) }
-            },
-            AuthScreen::Setup => rsx! {
-                SetupScreen {}
-            },
-        };
+        return rsx! { SetupScreen {} };
     }
 
     // Authenticated but no profile yet → show setup
@@ -87,9 +70,19 @@ pub fn App() -> Element {
     rsx! { Router::<Route> {} }
 }
 
+/// Try to derive KeyManager from credentials stored in sessionStorage.
+/// Returns Some(km) if moniker + password are available, None otherwise.
+fn auto_derive_key_manager() -> Option<KeyManager> {
+    let user_state = UserState::new();
+    let moniker = user_state.moniker.as_deref()?;
+    let password = UserState::load_password()?;
+    KeyManager::from_credentials(moniker, &password).ok()
+}
+
 #[component]
 fn AppLayout() -> Element {
-    let user_state = use_user_state();
+    let mut user_state = use_user_state();
+    let mut key_manager: Signal<Option<KeyManager>> = use_context();
     let nav = use_navigator();
 
     let state = user_state.read();
@@ -110,6 +103,16 @@ fn AppLayout() -> Element {
                         span { class: "user-postcode", " - {postcode_display}" }
                         if is_supplier {
                             span { class: "supplier-badge", " [Supplier]" }
+                        }
+                        a {
+                            href: "#",
+                            class: "logout-link",
+                            onclick: move |_| {
+                                UserState::clear_session();
+                                key_manager.set(None);
+                                user_state.set(UserState::new());
+                            },
+                            "(log out)"
                         }
                     }
                 }
@@ -185,85 +188,6 @@ fn NotFound(segments: Vec<String>) -> Element {
     let nav = use_navigator();
     nav.push(Route::Directory {});
     rsx! {}
-}
-
-// ─── Login ───────────────────────────────────────────────────────────────────
-
-#[component]
-fn LoginScreen(on_switch: EventHandler<AuthScreen>) -> Element {
-    let mut key_manager: Signal<Option<KeyManager>> = use_context();
-    let user_state = use_user_state();
-    let mut password = use_signal(|| String::new());
-    let mut error = use_signal(|| None::<String>);
-
-    let moniker = user_state.read().moniker.clone().unwrap_or_default();
-
-    rsx! {
-        div { class: "cream-app",
-            div { class: "user-setup",
-                h1 { "Welcome Back" }
-                if !moniker.is_empty() {
-                    p { "Enter your password to continue as {moniker}." }
-                } else {
-                    p { "Enter your password to continue." }
-                }
-
-                div { class: "form-group",
-                    label { "Password:" }
-                    input {
-                        r#type: "password",
-                        placeholder: "Enter password...",
-                        value: "{password}",
-                        oninput: move |evt| {
-                            password.set(evt.value());
-                            error.set(None);
-                        },
-                    }
-                }
-
-                if let Some(err) = error.read().as_ref() {
-                    p { class: "field-error", "{err}" }
-                }
-
-                button {
-                    disabled: password.read().is_empty(),
-                    onclick: {
-                        let moniker = moniker.clone();
-                        move |_| {
-                            let pw = password.read().clone();
-                            match KeyManager::from_credentials(&moniker, &pw) {
-                                Ok(km) => {
-                                    key_manager.set(Some(km));
-                                }
-                                Err(e) => {
-                                    error.set(Some(format!("{e}")));
-                                }
-                            }
-                        }
-                    },
-                    "Unlock"
-                }
-
-                p { class: "alt-action",
-                    a {
-                        href: "#",
-                        onclick: move |_| {
-                            // Clear stored profile so user can set up fresh
-                            #[cfg(target_family = "wasm")]
-                            if let Some(storage) = web_sys::window()
-                                .and_then(|w| w.local_storage().ok())
-                                .flatten()
-                            {
-                                let _ = storage.remove_item("cream_user_state");
-                            }
-                            on_switch.call(AuthScreen::Setup);
-                        },
-                        "Use a different identity"
-                    }
-                }
-            }
-        }
-    }
 }
 
 // ─── Setup ───────────────────────────────────────────────────────────────────
@@ -467,6 +391,9 @@ fn SetupScreen() -> Element {
                                     }
                                     state.save();
                                 }
+
+                                // Save password to sessionStorage for auto-login on refresh
+                                UserState::save_password(&pw);
 
                                 key_manager.set(Some(km));
 

@@ -25,24 +25,10 @@ pub fn StorefrontView(supplier_name: String) -> Element {
     }
 
     // Check if this is the current user's storefront
-    let state = user_state.read();
-    let is_own = state.moniker.as_ref() == Some(&supplier_name);
-    let user_products: Vec<_> = if is_own {
-        state
-            .products
-            .iter()
-            .map(|p| (p.name.clone(), p.category.clone(), p.price_curd, p.quantity_available))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    drop(state);
+    let is_own = user_state.read().moniker.as_ref() == Some(&supplier_name);
 
-    // Build product list from local state or SharedState or example data
-    let products: Vec<(String, String, u64, u32)> = if is_own {
-        user_products
-    } else {
-        // Try to get from SharedState (network-sourced storefronts)
+    // Always get products from SharedState (network-sourced storefronts)
+    let products: Vec<(String, String, u64, u32)> = {
         let shared = shared_state.read();
         if let Some(storefront) = shared.storefronts.get(&supplier_name) {
             storefront

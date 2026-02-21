@@ -36,12 +36,19 @@ pub fn DirectoryView() -> Element {
             .clone()
             .unwrap_or("Local supplier".into());
         let postcode = state.postcode.clone().unwrap_or_default();
+        // Use product count from the network storefront, not local UserState
+        let product_count = shared_state
+            .read()
+            .storefronts
+            .get(&moniker)
+            .map(|sf| sf.products.len())
+            .unwrap_or(0);
         suppliers.push(SupplierEntry {
             name: moniker,
             description: desc,
             postcode: postcode.clone(),
             distance_km: Some(0.0),
-            product_count: state.products.len(),
+            product_count,
         });
     }
     drop(state);
@@ -56,6 +63,20 @@ pub fn DirectoryView() -> Element {
     };
     {
         let shared = shared_state.read();
+        #[cfg(target_family = "wasm")]
+        {
+            web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
+                &format!("[CREAM] DirectoryView render: {} directory entries, {} storefronts cached",
+                    shared.directory.entries.len(), shared.storefronts.len())
+            ));
+            // Dump all storefront keys and their product counts
+            for (sf_name, sf) in &shared.storefronts {
+                web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
+                    &format!("[CREAM]   storefronts[\"{}\"] = {} products (info.name=\"{}\")",
+                        sf_name, sf.products.len(), sf.info.name)
+                ));
+            }
+        }
         for entry in shared.directory.entries.values() {
             // Skip our own entry (already added from local state above)
             if let Some(ref my_id) = my_supplier_id {
@@ -77,6 +98,11 @@ pub fn DirectoryView() -> Element {
                 .get(&entry.name)
                 .map(|sf| sf.products.len())
                 .unwrap_or(0);
+
+            #[cfg(target_family = "wasm")]
+            web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
+                &format!("[CREAM] DirectoryView: {} → {} products", entry.name, product_count)
+            ));
 
             suppliers.push(SupplierEntry {
                 name: entry.name.clone(),

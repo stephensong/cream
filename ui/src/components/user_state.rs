@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(target_family = "wasm")]
 const STORAGE_KEY: &str = "cream_user_state";
+#[cfg(target_family = "wasm")]
+const PASSWORD_KEY: &str = "cream_password";
 
 /// A placed order tracked in the UI.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -57,13 +59,13 @@ impl UserState {
         }
     }
 
-    /// Save current state to localStorage (persists across tabs and restarts).
+    /// Save current state to sessionStorage (per-tab, survives refresh).
     pub fn save(&self) {
         #[cfg(target_family = "wasm")]
         {
             if let Ok(json) = serde_json::to_string(self) {
                 if let Some(storage) = web_sys::window()
-                    .and_then(|w| w.local_storage().ok())
+                    .and_then(|w| w.session_storage().ok())
                     .flatten()
                 {
                     let _ = storage.set_item(STORAGE_KEY, &json);
@@ -72,17 +74,58 @@ impl UserState {
         }
     }
 
-    /// Load state from localStorage.
+    /// Load state from sessionStorage.
     fn load() -> Option<Self> {
         #[cfg(target_family = "wasm")]
         {
-            let storage = web_sys::window()?.local_storage().ok()??;
+            let storage = web_sys::window()?.session_storage().ok()??;
             let json = storage.get_item(STORAGE_KEY).ok()??;
             serde_json::from_str(&json).ok()
         }
         #[cfg(not(target_family = "wasm"))]
         {
             None
+        }
+    }
+
+    /// Save password to sessionStorage (per-tab).
+    pub fn save_password(password: &str) {
+        #[cfg(target_family = "wasm")]
+        {
+            if let Some(storage) = web_sys::window()
+                .and_then(|w| w.session_storage().ok())
+                .flatten()
+            {
+                let _ = storage.set_item(PASSWORD_KEY, password);
+            }
+        }
+        let _ = password;
+    }
+
+    /// Load password from sessionStorage.
+    pub fn load_password() -> Option<String> {
+        #[cfg(target_family = "wasm")]
+        {
+            let storage = web_sys::window()?.session_storage().ok()??;
+            storage.get_item(PASSWORD_KEY).ok()?
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            None
+        }
+    }
+
+    /// Clear all session data (for "log out" / "use different identity").
+    pub fn clear_session() {
+        #[cfg(target_family = "wasm")]
+        {
+            if let Some(storage) = web_sys::window()
+                .and_then(|w| w.session_storage().ok())
+                .flatten()
+            {
+                let _ = storage.remove_item(STORAGE_KEY);
+                let _ = storage.remove_item(PASSWORD_KEY);
+            }
         }
     }
 
