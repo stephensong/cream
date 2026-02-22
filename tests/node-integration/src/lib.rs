@@ -15,12 +15,22 @@ pub mod harness;
 
 const NODE_URL: &str = "ws://localhost:3001/v1/contract/command?encodingProtocol=native";
 
-/// Connect a native WebApi client to the local Freenet node.
-pub async fn connect_to_node() -> WebApi {
-    let (ws_conn, _) = tokio_tungstenite::connect_async(NODE_URL)
+/// Build a full WebSocket URL for a Freenet node on the given port.
+pub fn node_url(port: u16) -> String {
+    format!("ws://localhost:{port}/v1/contract/command?encodingProtocol=native")
+}
+
+/// Connect a native WebApi client to a Freenet node at an arbitrary URL.
+pub async fn connect_to_node_at(url: &str) -> WebApi {
+    let (ws_conn, _) = tokio_tungstenite::connect_async(url)
         .await
-        .expect("Failed to connect to Freenet node — is it running on port 3001?");
+        .unwrap_or_else(|e| panic!("Failed to connect to Freenet node at {url}: {e}"));
     WebApi::start(ws_conn)
+}
+
+/// Connect a native WebApi client to the local Freenet node (port 3001).
+pub async fn connect_to_node() -> WebApi {
+    connect_to_node_at(NODE_URL).await
 }
 
 /// Build a ContractContainer from WASM bytes and parameters.

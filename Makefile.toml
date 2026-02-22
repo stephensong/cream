@@ -68,13 +68,13 @@ args = ["serve", "--features", "use-node"]
 
 [tasks.local-network]
 description = "Start local Freenet network (1 gateway + 2 nodes)"
-script = ["make -f ${FREENET_CORE}/scripts/local-network.mk setup start N_GATEWAYS=1 N_NODES=2 FREENET_CORE_PATH=${FREENET_CORE}/crates/core"]
+script = ["cd ${FREENET_CORE}/scripts && unset MAKEFLAGS && export N_GATEWAYS=1 N_NODES=2 FREENET_CORE_PATH=${FREENET_CORE}/crates/core && make -e -f local-network.mk setup start"]
 [tasks.local-network.env]
 FREENET_CORE = { value = "${HOME}/dev/freenet-core", condition = { env_not_set = ["FREENET_CORE"] } }
 
 [tasks.local-network-stop]
 description = "Stop local Freenet network"
-script = ["make -f ${FREENET_CORE}/scripts/local-network.mk stop FREENET_CORE_PATH=${FREENET_CORE}/crates/core"]
+script = ["cd ${FREENET_CORE}/scripts && unset MAKEFLAGS && export FREENET_CORE_PATH=${FREENET_CORE}/crates/core && make -e -f local-network.mk stop"]
 [tasks.local-network-stop.env]
 FREENET_CORE = { value = "${HOME}/dev/freenet-core", condition = { env_not_set = ["FREENET_CORE"] } }
 
@@ -117,8 +117,8 @@ CREAM_NODE_URL = { value = "${CREAM_NODE_URL}", condition = { env_set = ["CREAM_
 [tasks.reset-node]
 description = "Stop Freenet node, wipe contract state, and restart (dev only)"
 script = [
-    "pkill -x freenet || true",
-    "sleep 1",
+    "pkill -9 -x freenet || true",
+    "sleep 2",
     "rm -rf ${HOME}/.local/share/freenet/db ${HOME}/.cache/freenet/gw1/db",
     "echo 'Node state cleared. Restarting...'",
     "nohup freenet local --ws-api-port 3001 > /dev/null 2>&1 &",
@@ -136,6 +136,128 @@ description = "Build contracts, reset node, and run integration tests"
 dependencies = ["build-contracts-dev", "reset-node"]
 command = "cargo"
 args = ["test", "-p", "cream-node-integration", "--features", "node-tests", "--", "--nocapture"]
+
+[tasks.reset-network]
+description = "Stop all Freenet processes, wipe state, start multi-node network (1 gateway + 2 nodes)"
+script = [
+    '''
+    set -euo pipefail
+    BASE="${HOME}/.cache/freenet"
+    KEYS="${BASE}/keys"
+    PIDS="${BASE}/pids"
+    LOGS="${BASE}/logs"
+    ENV="RUST_BACKTRACE=1 RUST_LOG=info"
+
+    # Stop existing processes (SIGKILL to ensure they die quickly)
+    pkill -9 -x freenet 2>/dev/null || true
+    sleep 2
+
+    # Wipe node state and stale config (nodes share config-dir, so config.toml conflicts)
+    rm -rf "${BASE}/gw1/db" "${BASE}/n1/db" "${BASE}/n2/db" "${HOME}/.local/share/freenet/db"
+    rm -f "${BASE}/config.toml"
+    mkdir -p "${KEYS}" "${PIDS}" "${LOGS}" "${BASE}/gw1" "${BASE}/n1" "${BASE}/n2"
+
+    # Generate X25519 transport keypair if missing
+    if [ ! -f "${KEYS}/gw1_private_key.pem" ] || head -1 "${KEYS}/gw1_private_key.pem" | grep -q "BEGIN"; then
+        echo "Generating X25519 transport keypair..."
+        python3 -c "
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+import binascii, os
+private_key = X25519PrivateKey.generate()
+priv_hex = binascii.hexlify(private_key.private_bytes_raw()).decode()
+pub_hex = binascii.hexlify(private_key.public_key().public_bytes_raw()).decode()
+print(priv_hex, end='')
+open('${KEYS}/gw1_public_key.pem', 'w').write(pub_hex)
+" > "${KEYS}/gw1_private_key.pem"
+        echo "  Keys written to ${KEYS}/"
+    fi
+
+    echo "Starting gateway on ws:3001..."
+    : > "${LOGS}/gw1.log"
+    nohup env ${ENV} freenet network \
+        --skip-load-from-network \
+        --config-dir "${BASE}" \
+        --is-gateway \
+        --ws-api-port 3001 \
+        --public-network-address 127.0.0.1 \
+        --public-network-port 3101 \
+        --data-dir "${BASE}/gw1" \
+        --transport-keypair "${KEYS}/gw1_private_key.pem" \
+        --network-port 3101 \
+        >> "${LOGS}/gw1.log" 2>&1 &
+    echo $! > "${PIDS}/gw1.pid"
+
+    # Wait for gateway to be ready (it clobbers gateways.toml on startup)
+    for i in $(seq 1 15); do
+        if ss -tlnp 2>/dev/null | grep -q ':3001 '; then break; fi
+        sleep 1
+    done
+
+    # Write gateways.toml AFTER gateway starts (freenet overwrites it during init)
+    # Also remove config.toml that the gateway persists (contains is_gateway=true
+    # and the gateway's transport_keypair — nodes sharing config-dir would inherit these)
+    cat > "${BASE}/gateways.toml" << TOML
+[[gateways]]
+address = { host_address = "127.0.0.1:3101" }
+public_key = "${KEYS}/gw1_public_key.pem"
+TOML
+    rm -f "${BASE}/config.toml"
+
+    echo "Starting node-1 on ws:3002..."
+    : > "${LOGS}/n1.log"
+    nohup env ${ENV} freenet network \
+        --skip-load-from-network \
+        --config-dir "${BASE}" \
+        --ws-api-port 3002 \
+        --public-network-port 3003 \
+        --data-dir "${BASE}/n1" \
+        --network-port 3102 \
+        >> "${LOGS}/n1.log" 2>&1 &
+    echo $! > "${PIDS}/n1.pid"
+    sleep 2
+
+    echo "Starting node-2 on ws:3003..."
+    : > "${LOGS}/n2.log"
+    nohup env ${ENV} freenet network \
+        --skip-load-from-network \
+        --config-dir "${BASE}" \
+        --ws-api-port 3003 \
+        --public-network-port 3004 \
+        --data-dir "${BASE}/n2" \
+        --network-port 3103 \
+        >> "${LOGS}/n2.log" 2>&1 &
+    echo $! > "${PIDS}/n2.pid"
+    sleep 2
+
+    # Verify all three are running
+    RUNNING=0
+    for port in 3001 3002 3003; do
+        if ss -tlnp 2>/dev/null | grep -q ":${port} "; then
+            RUNNING=$((RUNNING + 1))
+        else
+            echo "WARNING: no listener on port ${port}"
+            case ${port} in
+                3001) tail -5 "${LOGS}/gw1.log" 2>/dev/null ;;
+                3002) tail -5 "${LOGS}/n1.log" 2>/dev/null ;;
+                3003) tail -5 "${LOGS}/n2.log" 2>/dev/null ;;
+            esac
+        fi
+    done
+
+    if [ "${RUNNING}" -eq 3 ]; then
+        echo "Multi-node network ready: gateway=3001, node-1=3002, node-2=3003"
+    else
+        echo "ERROR: Only ${RUNNING}/3 nodes started. Check logs in ${LOGS}/"
+        exit 1
+    fi
+    ''',
+]
+
+[tasks.test-multi-node]
+description = "Build contracts, start multi-node network, and run multi-node integration tests"
+dependencies = ["build-contracts-dev", "reset-network"]
+command = "cargo"
+args = ["test", "-p", "cream-node-integration", "--features", "multi-node-tests", "--", "--nocapture"]
 
 [tasks.check]
 description = "Check all code compiles"
