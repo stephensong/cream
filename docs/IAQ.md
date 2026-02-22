@@ -132,3 +132,54 @@ When a customer connects to a supplier's node, that supplier can see the custome
 If a customer later decides to become a supplier themselves, they would need to install a full Freenet node, register their storefront, and list their products. Their node then becomes part of the CREAM network and can serve other customers in turn.
 
 ---
+
+## How does a new customer find a local supplier?
+
+A new customer needs to connect to a supplier's Freenet node to browse their storefront and place orders. But due to the legal sensitivities around raw dairy, there is no public web directory of suppliers. Discovery happens through word of mouth and social media — a supplier tells people at the farmers market, posts on a local food group, or hands out a card.
+
+For this to work, each supplier needs a simple, memorable name that customers can type into the CREAM mobile app.
+
+### The rendezvous service
+
+CREAM uses a lightweight **rendezvous service** — a simple lookup that maps memorable names to node addresses. When a supplier registers, they pick a short name like `garys-farm`. When a customer types that name into the CREAM app, the app asks the rendezvous service "where is garys-farm?", gets back the supplier's IP and port, and connects directly to the supplier's node via WebSocket.
+
+The rendezvous service is only involved in that initial lookup. All actual marketplace traffic flows directly between the customer's app and the supplier's node.
+
+### What the rendezvous service handles
+
+- **Registration**: A supplier picks a name and associates it with their node address. Their CREAM node handles this automatically: `cream register garys-farm`.
+- **Dynamic IPs**: Home internet connections change IP addresses. The supplier's node periodically pings the rendezvous service with its current address (a heartbeat every few minutes, like a dynamic DNS client).
+- **Lookup**: A simple HTTPS GET that returns a node address. Extremely lightweight, easily cacheable.
+
+### What the customer sees
+
+The customer experience is:
+
+1. Hear about a farm through word of mouth or social media.
+2. Download the CREAM mobile app.
+3. Type in the supplier's name — e.g., `garys-farm`.
+4. See **only that supplier's storefront** — products, prices, ordering.
+5. No directory, no browsing other suppliers.
+
+Restricting customers to a single supplier's storefront solves two problems at once: it protects the privacy of the broader network (customers can't enumerate all suppliers), and it simplifies the onboarding experience.
+
+### Centralisation trade-offs
+
+The rendezvous service is a centralised component in an otherwise decentralised system. This means:
+
+- **If it goes down**, new customers can't discover suppliers. But existing customers who already have a saved address can still connect directly.
+- **If it's seized or pressured**, the operator could be forced to take down listings or hand over the mapping data — which reveals which IP addresses are running CREAM nodes.
+- **If it's compromised**, an attacker could redirect customers to malicious nodes.
+
+### Why the centralisation is acceptable
+
+- **It only stores names and IP addresses.** No marketplace data, no orders, no customer information. The actual marketplace is fully decentralised on Freenet. Seizing the rendezvous service gives you a list of supplier IPs, but those IPs are already being shared openly via word of mouth.
+- **It's trivially replaceable.** If one rendezvous service goes down, another can be stood up in minutes. The CREAM app could ship with a list of fallback rendezvous URLs (like Bitcoin ships with multiple DNS seeds). Community members could run their own.
+- **It's only needed once per supplier.** Once a customer has connected to a supplier and saved their address, the rendezvous service is no longer needed for that relationship. The app caches resolved addresses locally.
+- **It could be replicated.** Multiple independent operators could run rendezvous services, each with overlapping or partial directories. No single operator needs the complete list.
+
+### Future evolution
+
+Eventually, the name-to-address mapping could itself be a Freenet contract — a directory of supplier endpoints stored on the network. But this creates a chicken-and-egg problem: you need a node to read the contract, and you need the directory to find a node. A lightweight centralised rendezvous is the right starting point, with decentralisation as a future evolution.
+
+---
