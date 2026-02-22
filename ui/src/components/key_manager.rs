@@ -33,6 +33,7 @@ impl fmt::Display for KeyManagerError {
     }
 }
 
+#[allow(dead_code)] // methods used in WASM + use-node builds (node_api::wasm_impl)
 impl KeyManager {
     /// Derive supplier + customer keys from name and password.
     ///

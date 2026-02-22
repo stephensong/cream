@@ -2,6 +2,7 @@ use dioxus::prelude::*;
 
 /// Actions the UI can send to the Freenet node via the coroutine.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // variants constructed in WASM + use-node builds
 pub enum NodeAction {
     /// Register as a supplier in the directory contract.
     RegisterSupplier {
@@ -43,6 +44,7 @@ pub enum NodeAction {
 }
 
 /// Get a handle to send actions to the node communication coroutine.
+#[allow(dead_code)] // used in WASM + use-node builds
 pub fn use_node_action() -> Coroutine<NodeAction> {
     use_coroutine_handle::<NodeAction>()
 }
