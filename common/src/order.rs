@@ -1,3 +1,5 @@
+use std::fmt;
+
 use chrono::{DateTime, Utc};
 use ed25519_dalek::Signature;
 use serde::{Deserialize, Serialize};
@@ -27,6 +29,15 @@ impl DepositTier {
             DepositTier::Reserve2Days => 0.10,
             DepositTier::Reserve1Week => 0.20,
             DepositTier::FullPayment => 1.00,
+        }
+    }
+
+    /// Human-readable label for the deposit tier.
+    pub fn label(self) -> &'static str {
+        match self {
+            DepositTier::Reserve2Days => "2-day hold (10%)",
+            DepositTier::Reserve1Week => "1-week hold (20%)",
+            DepositTier::FullPayment => "Full payment",
         }
     }
 
@@ -67,6 +78,17 @@ impl OrderStatus {
         }
     }
 
+    /// Human-readable status label.
+    pub fn label(&self) -> &'static str {
+        match self {
+            OrderStatus::Reserved { .. } => "Reserved",
+            OrderStatus::Paid => "Paid",
+            OrderStatus::Fulfilled => "Fulfilled",
+            OrderStatus::Cancelled => "Cancelled",
+            OrderStatus::Expired => "Expired",
+        }
+    }
+
     /// Returns true if transitioning from self to `next` is valid.
     pub fn can_transition_to(&self, next: &OrderStatus) -> bool {
         matches!(
@@ -77,6 +99,18 @@ impl OrderStatus {
                 | (OrderStatus::Paid, OrderStatus::Fulfilled)
                 | (OrderStatus::Paid, OrderStatus::Cancelled)
         )
+    }
+}
+
+impl fmt::Display for OrderStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+impl fmt::Display for DepositTier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
     }
 }
 

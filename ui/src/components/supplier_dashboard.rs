@@ -43,6 +43,15 @@ pub fn SupplierDashboard() -> Element {
     let network_orders: Vec<_> = storefront
         .map(|sf| sf.orders.values().cloned().collect())
         .unwrap_or_default();
+    // Map product IDs to names for readable order display
+    let product_names: std::collections::HashMap<String, String> = storefront
+        .map(|sf| {
+            sf.products
+                .iter()
+                .map(|(id, sp)| (id.0.clone(), sp.product.name.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
     drop(shared);
 
     rsx! {
@@ -98,15 +107,19 @@ pub fn SupplierDashboard() -> Element {
                     div { class: "order-list",
                         {network_orders.iter().map(|order| {
                             let oid = order.id.0.clone();
-                            let pid = order.product_id.0.clone();
-                            let status = format!("{:?}", order.status);
-                            let tier = format!("{:?}", order.deposit_tier);
+                            let short_id = if oid.len() > 4 { &oid[oid.len()-4..] } else { &oid };
+                            let product_name = product_names
+                                .get(&order.product_id.0)
+                                .cloned()
+                                .unwrap_or_else(|| order.product_id.0.clone());
+                            let status = order.status.to_string();
+                            let tier = order.deposit_tier.to_string();
                             rsx! {
                                 div { class: "order-card",
                                     key: "{oid}",
-                                    span { class: "order-id", "Order #{oid}" }
-                                    span { class: "order-status", " - {status}" }
-                                    p { "{pid} x{order.quantity} - {order.total_price} CURD" }
+                                    span { class: "order-id", "Order #{short_id}" }
+                                    span { class: "order-status", " — {status}" }
+                                    p { "{product_name} x{order.quantity} — {order.total_price} CURD" }
                                     p { "Deposit: {tier} ({order.deposit_amount} CURD)" }
                                 }
                             }

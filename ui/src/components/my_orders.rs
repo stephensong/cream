@@ -21,7 +21,7 @@ pub fn MyOrders() -> Element {
                                 key: "{order.id}",
                                 div { class: "order-header",
                                     span { class: "order-id", "Order #{order.id}" }
-                                    span { class: "order-status", "{order.status}" }
+                                    span { class: "order-status", " — {order.status}" }
                                 }
                                 p { class: "order-product", "{order.product}" }
                                 p { class: "order-supplier", "From: {order.supplier}" }
