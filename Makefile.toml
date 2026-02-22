@@ -180,22 +180,27 @@ description = "Install Playwright and browser dependencies"
 cwd = "tests/e2e"
 script = ["npm install", "npx playwright install chromium"]
 
-[tasks.e2e-serve]
-description = "Build Tailwind and start dx serve with use-node feature in the background"
+[tasks.e2e-build]
+description = "Build UI with dx for E2E testing"
 dependencies = ["tailwind-install", "tailwind-build"]
 cwd = "ui"
+command = "dx"
+args = ["build", "--features", "use-node"]
+
+[tasks.e2e-serve]
+description = "Serve pre-built UI assets on port 8080 for E2E tests"
+dependencies = ["e2e-build"]
 script = [
-    "nohup dx serve --features use-node > /tmp/cream-dx-serve.log 2>&1 &",
-    "echo $! > /tmp/cream-dx-serve.pid",
-    "echo 'Waiting for dx serve on port 8080...'",
-    "for i in $(seq 1 300); do curl -s http://localhost:8080 > /dev/null 2>&1 && echo 'dx serve ready' && exit 0; sleep 1; done",
-    "echo 'Timed out waiting for dx serve' && exit 1",
+    "nohup python3 -m http.server 8080 --directory ui/target/dx/cream-ui/debug/web/public > /tmp/cream-e2e-server.log 2>&1 &",
+    "echo $! > /tmp/cream-e2e-server.pid",
+    "for i in $(seq 1 10); do curl -s http://localhost:8080 > /dev/null 2>&1 && echo 'Static server ready on port 8080' && exit 0; sleep 1; done",
+    "echo 'Timed out waiting for static server' && exit 1",
 ]
 
 [tasks.e2e-stop]
-description = "Stop the dx serve background process"
+description = "Stop the E2E static server"
 script = [
-    "if [ -f /tmp/cream-dx-serve.pid ]; then kill $(cat /tmp/cream-dx-serve.pid) 2>/dev/null || true; rm -f /tmp/cream-dx-serve.pid; echo 'dx serve stopped'; else echo 'No dx serve PID file found'; fi",
+    "if [ -f /tmp/cream-e2e-server.pid ]; then kill $(cat /tmp/cream-e2e-server.pid) 2>/dev/null || true; rm -f /tmp/cream-e2e-server.pid; echo 'Static server stopped'; else echo 'No server PID file found'; fi",
 ]
 
 [tasks.e2e-run]
@@ -216,10 +221,10 @@ dependencies = ["build-contracts-dev", "test-node", "e2e-install", "e2e-serve"]
 script = [
     '''
     cleanup() {
-        if [ -f /tmp/cream-dx-serve.pid ]; then
-            kill $(cat /tmp/cream-dx-serve.pid) 2>/dev/null || true
-            rm -f /tmp/cream-dx-serve.pid
-            echo "dx serve stopped"
+        if [ -f /tmp/cream-e2e-server.pid ]; then
+            kill $(cat /tmp/cream-e2e-server.pid) 2>/dev/null || true
+            rm -f /tmp/cream-e2e-server.pid
+            echo "Static server stopped"
         fi
     }
     trap cleanup EXIT
