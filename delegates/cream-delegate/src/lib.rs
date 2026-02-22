@@ -178,7 +178,7 @@ mod tests {
             description: "Fresh raw milk".into(),
             category: ProductCategory::Milk,
             price_curd: 500,
-            quantity_available: 10,
+            quantity_total: 10,
             expiry_date: None,
             updated_at: Utc::now(),
             created_at: Utc::now(),

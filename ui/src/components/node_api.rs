@@ -25,7 +25,7 @@ pub enum NodeAction {
         category: String,
         description: String,
         price_curd: u64,
-        quantity_available: u32,
+        quantity_total: u32,
     },
     /// Remove a product from the storefront.
     #[allow(dead_code)] // TODO: implement
@@ -461,7 +461,7 @@ mod wasm_impl {
                 category,
                 description,
                 price_curd,
-                quantity_available,
+                quantity_total,
             } => {
                 // Find this user's storefront key from the directory using their SupplierId.
                 // This works whether the storefront was deployed by this tab (RegisterSupplier)
@@ -508,7 +508,7 @@ mod wasm_impl {
                     description,
                     category: cat,
                     price_curd,
-                    quantity_available,
+                    quantity_total,
                     expiry_date: None,
                     updated_at: now,
                     created_at: now,
@@ -632,14 +632,8 @@ mod wasm_impl {
                 key_manager.sign_order(&mut order);
 
                 // Insert into storefront and send update
-                let ordered_product_id = order.product_id.clone();
                 sf.orders.insert(order_id.clone(), order);
 
-                // Decrement product quantity
-                if let Some(signed_product) = sf.products.get_mut(&ordered_product_id) {
-                    signed_product.product.quantity_available = signed_product.product.quantity_available.saturating_sub(quantity);
-                    signed_product.product.updated_at = now;
-                }
                 let sf_bytes = serde_json::to_vec(&sf).unwrap();
                 clog(&format!("[CREAM] PlaceOrder: sending Update with {} orders, {} bytes",
                     sf.orders.len(), sf_bytes.len()));

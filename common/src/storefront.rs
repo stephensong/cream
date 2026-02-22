@@ -11,6 +11,8 @@ use crate::location::GeoLocation;
 use crate::order::{Order, OrderId};
 use crate::product::{Product, ProductId};
 
+use crate::order::OrderStatus;
+
 /// Signed product listing (supplier must sign).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedProduct {
@@ -63,6 +65,29 @@ pub struct StorefrontState {
 }
 
 impl StorefrontState {
+    /// Compute available quantity for a product by subtracting active order quantities.
+    ///
+    /// Active orders are those with status `Reserved` or `Paid` (ordinals 0 and 1).
+    pub fn available_quantity(&self, product_id: &ProductId) -> u32 {
+        let total = self
+            .products
+            .get(product_id)
+            .map(|sp| sp.product.quantity_total)
+            .unwrap_or(0);
+
+        let reserved: u32 = self
+            .orders
+            .values()
+            .filter(|o| {
+                o.product_id == *product_id
+                    && matches!(o.status, OrderStatus::Reserved { .. } | OrderStatus::Paid)
+            })
+            .map(|o| o.quantity)
+            .sum();
+
+        total.saturating_sub(reserved)
+    }
+
     /// Merge another storefront state into this one.
     ///
     /// - Products: LWW by `updated_at`

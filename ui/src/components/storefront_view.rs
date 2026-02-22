@@ -29,7 +29,7 @@ pub fn StorefrontView(supplier_name: String) -> Element {
     let is_own = user_state.read().moniker.as_ref() == Some(&supplier_name);
 
     // Always get products from SharedState (network-sourced storefronts)
-    // Tuple: (product_id, name, category, price, quantity)
+    // Tuple: (product_id, name, category, price, available_quantity)
     let products: Vec<(String, String, String, u64, u32)> = {
         let shared = shared_state.read();
         if let Some(storefront) = shared.storefronts.get(&supplier_name) {
@@ -38,12 +38,13 @@ pub fn StorefrontView(supplier_name: String) -> Element {
                 .values()
                 .map(|sp| {
                     let cat = format!("{:?}", sp.product.category);
+                    let available = storefront.available_quantity(&sp.product.id);
                     (
                         sp.product.id.0.clone(),
                         sp.product.name.clone(),
                         cat,
                         sp.product.price_curd,
-                        sp.product.quantity_available,
+                        available,
                     )
                 })
                 .collect()

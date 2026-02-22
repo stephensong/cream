@@ -104,7 +104,7 @@ pub fn make_dummy_product(name: &str) -> SignedProduct {
             description: format!("Fresh {name}"),
             category: ProductCategory::Milk,
             price_curd: 500,
-            quantity_available: 10,
+            quantity_total: 10,
             expiry_date: None,
             updated_at: now,
             created_at: now,

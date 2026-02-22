@@ -25,15 +25,18 @@ pub fn SupplierDashboard() -> Element {
         .unwrap_or("No description set".into());
     drop(state);
 
-    // Get products and orders from the network storefront (SharedState)
+    // Get products (with computed available quantity) and orders from the network storefront
     let shared = shared_state.read();
     let storefront = shared.storefronts.get(&moniker);
-    let products: Vec<_> = storefront
+    // Tuple: (product, available_quantity)
+    let products: Vec<(cream_common::product::Product, u32)> = storefront
         .map(|sf| {
             sf.products
                 .values()
-                .map(|sp| &sp.product)
-                .cloned()
+                .map(|sp| {
+                    let available = sf.available_quantity(&sp.product.id);
+                    (sp.product.clone(), available)
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -68,7 +71,7 @@ pub fn SupplierDashboard() -> Element {
                     p { class: "empty-state", "No products yet. Add your first product above." }
                 } else {
                     div { class: "product-list",
-                        {products.iter().map(|product| {
+                        {products.iter().map(|(product, available)| {
                             let pid = product.id.0.clone();
                             rsx! {
                                 div { class: "product-card",
@@ -78,7 +81,7 @@ pub fn SupplierDashboard() -> Element {
                                         span { class: "category", "{product.category:?}" }
                                     }
                                     p { "{product.description}" }
-                                    p { "Price: {product.price_curd} CURD | Available: {product.quantity_available}" }
+                                    p { "Price: {product.price_curd} CURD | Available: {available}" }
                                 }
                             }
                         })}
@@ -210,7 +213,7 @@ fn AddProductForm(on_added: EventHandler<()>) -> Element {
                             category: prod_cat,
                             description: prod_desc,
                             price_curd: p,
-                            quantity_available: q,
+                            quantity_total: q,
                         });
                     }
 

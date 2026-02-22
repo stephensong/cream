@@ -26,7 +26,7 @@ pub struct Product {
     pub category: ProductCategory,
     /// Price in smallest CURD unit.
     pub price_curd: u64,
-    pub quantity_available: u32,
+    pub quantity_total: u32,
     pub expiry_date: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,

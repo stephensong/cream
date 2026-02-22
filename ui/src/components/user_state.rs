@@ -26,7 +26,7 @@ pub struct ListedProduct {
     pub category: String,
     pub description: String,
     pub price_curd: u64,
-    pub quantity_available: u32,
+    pub quantity_total: u32,
 }
 
 fn default_balance() -> u64 {
@@ -179,7 +179,7 @@ impl UserState {
         category: String,
         description: String,
         price_curd: u64,
-        quantity_available: u32,
+        quantity_total: u32,
     ) -> u32 {
         let id = self.next_product_id;
         self.next_product_id += 1;
@@ -189,7 +189,7 @@ impl UserState {
             category,
             description,
             price_curd,
-            quantity_available,
+            quantity_total,
         });
         self.save();
         id

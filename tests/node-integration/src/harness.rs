@@ -50,7 +50,7 @@ impl Supplier {
                 description: format!("Fresh {name}"),
                 category,
                 price_curd,
-                quantity_available: 10,
+                quantity_total: 10,
                 expiry_date: None,
                 updated_at: now,
                 created_at: now,
