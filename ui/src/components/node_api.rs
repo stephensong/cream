@@ -80,6 +80,7 @@ mod wasm_impl {
     use dioxus::prelude::*;
     use futures::channel::mpsc;
     use futures::{SinkExt, StreamExt};
+    use wasm_bindgen::JsCast;
 
     use cream_common::directory::{DirectoryEntry, DirectoryState};
     use cream_common::location::GeoLocation;
@@ -96,6 +97,24 @@ mod wasm_impl {
     use super::NodeAction;
     use crate::components::key_manager::KeyManager;
     use crate::components::shared_state::use_shared_state;
+
+    /// Sleep for the given number of milliseconds (WASM-compatible).
+    #[allow(dead_code)] // used in supplier mode heartbeat
+    async fn gloo_timers_sleep(ms: u32) {
+        let (tx, rx) = futures::channel::oneshot::channel::<()>();
+        let closure = wasm_bindgen::closure::Closure::once(move || {
+            let _ = tx.send(());
+        });
+        web_sys::window()
+            .unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                closure.as_ref().unchecked_ref(),
+                ms as i32,
+            )
+            .unwrap();
+        closure.forget();
+        let _ = rx.await;
+    }
 
     /// Log a message to the browser console.
     fn clog(msg: &str) {
@@ -126,30 +145,43 @@ mod wasm_impl {
     pub async fn node_comms(mut rx: UnboundedReceiver<NodeAction>) {
         let mut shared = use_shared_state();
         let key_manager_signal: Signal<Option<KeyManager>> = use_context();
+        #[allow(unused_variables)] // used in customer mode
+        let user_state: Signal<crate::components::user_state::UserState> = use_context();
 
         // ── Connect to node via WebSocket ───────────────────────────────
         // Default node URL; overridable at compile-time via CREAM_NODE_URL env var,
         // or at runtime via ?node=<port> query parameter (e.g. ?node=3003).
+        // In customer mode, the supplier's node URL from UserState takes priority.
         const DEFAULT_NODE_URL: &str =
             "ws://localhost:3001/v1/contract/command?encodingProtocol=native";
         let compile_time_url = option_env!("CREAM_NODE_URL").unwrap_or(DEFAULT_NODE_URL);
 
         let node_url = {
-            let url = web_sys::window()
-                .and_then(|w| w.location().search().ok())
-                .and_then(|qs| {
-                    web_sys::UrlSearchParams::new_with_str(&qs)
-                        .ok()?
-                        .get("node")
-                })
-                .map(|port| {
-                    format!(
-                        "ws://localhost:{port}/v1/contract/command?encodingProtocol=native"
-                    )
-                });
-            match url {
-                Some(u) => u,
-                None => compile_time_url.to_string(),
+            // Customer mode: use supplier node URL from UserState if available
+            #[cfg(feature = "customer")]
+            let customer_url = user_state.read().supplier_node_url.clone();
+            #[cfg(not(feature = "customer"))]
+            let customer_url: Option<String> = None;
+
+            if let Some(url) = customer_url {
+                url
+            } else {
+                let url = web_sys::window()
+                    .and_then(|w| w.location().search().ok())
+                    .and_then(|qs| {
+                        web_sys::UrlSearchParams::new_with_str(&qs)
+                            .ok()?
+                            .get("node")
+                    })
+                    .map(|port| {
+                        format!(
+                            "ws://localhost:{port}/v1/contract/command?encodingProtocol=native"
+                        )
+                    });
+                match url {
+                    Some(u) => u,
+                    None => compile_time_url.to_string(),
+                }
             }
         };
 
@@ -199,41 +231,85 @@ mod wasm_impl {
         shared.write().connected = true;
         clog("[CREAM] Connected to Freenet node");
 
-        // ── Set up directory contract ─────────────────────────────────
+        // ── Set up contracts ─────────────────────────────────────────
         let directory_contract =
             make_contract(DIRECTORY_CONTRACT_WASM, Parameters::from(vec![]));
         let directory_key = directory_contract.key();
-        let directory_instance_id = *directory_key.id();
 
-        tracing::info!("Directory contract key: {:?}", directory_key);
-        shared.write().directory_contract_key =
-            Some(format!("{}", directory_key));
+        // In customer mode, we use a dummy directory instance ID that will never
+        // match any response, since we skip directory operations entirely.
+        #[cfg(feature = "customer")]
+        let directory_instance_id = {
+            // Subscribe directly to the single supplier's storefront.
+            // The storefront key is stored as a Base58-encoded ContractInstanceId.
+            if let Some(sf_key_str) = user_state.read().supplier_storefront_key.clone() {
+                match ContractInstanceId::from_bytes(&sf_key_str) {
+                    Ok(sf_instance_id) => {
+                        clog(&format!("[CREAM] Customer mode: subscribing to storefront {:?}", sf_instance_id));
+                        // GET the storefront state
+                        let get_sf = ClientRequest::ContractOp(ContractRequest::Get {
+                            key: sf_instance_id,
+                            return_contract_code: false,
+                            subscribe: false,
+                            blocking_subscribe: false,
+                        });
+                        if let Err(e) = api.send(get_sf).await {
+                            clog(&format!("[CREAM] ERROR: Failed to GET storefront: {:?}", e));
+                        }
+                        // Subscribe for live updates
+                        let sub_sf = ClientRequest::ContractOp(ContractRequest::Subscribe {
+                            key: sf_instance_id,
+                            summary: None,
+                        });
+                        if let Err(e) = api.send(sub_sf).await {
+                            clog(&format!("[CREAM] ERROR: Failed to subscribe to storefront: {:?}", e));
+                        }
+                    }
+                    Err(e) => {
+                        clog(&format!("[CREAM] ERROR: Invalid storefront key '{}': {:?}", sf_key_str, e));
+                    }
+                }
+            }
+            // Use a zeroed-out dummy so no response matches the directory branch
+            ContractInstanceId::new([0u8; 32])
+        };
 
-        // Try to GET the existing directory.
-        // If it doesn't exist yet, we'll PUT it when we get NotFound.
-        let get_request = ClientRequest::ContractOp(ContractRequest::Get {
-            key: directory_instance_id,
-            return_contract_code: false,
-            subscribe: false,
-            blocking_subscribe: false,
-        });
+        #[cfg(not(feature = "customer"))]
+        let directory_instance_id = {
+            let id = *directory_key.id();
 
-        tracing::info!("Getting directory contract (will PUT if not found)...");
-        if let Err(e) = api.send(get_request).await {
-            tracing::error!("Failed to GET directory contract: {:?}", e);
-            shared.write().last_error =
-                Some(format!("Failed to get directory contract: {:?}", e));
-        }
+            tracing::info!("Directory contract key: {:?}", directory_key);
+            shared.write().directory_contract_key =
+                Some(format!("{}", directory_key));
 
-        // Explicitly subscribe to directory updates
-        let subscribe_dir = ClientRequest::ContractOp(ContractRequest::Subscribe {
-            key: directory_instance_id,
-            summary: None,
-        });
-        tracing::info!("Subscribing to directory contract...");
-        if let Err(e) = api.send(subscribe_dir).await {
-            tracing::error!("Failed to subscribe to directory: {:?}", e);
-        }
+            // Try to GET the existing directory.
+            // If it doesn't exist yet, we'll PUT it when we get NotFound.
+            let get_request = ClientRequest::ContractOp(ContractRequest::Get {
+                key: id,
+                return_contract_code: false,
+                subscribe: false,
+                blocking_subscribe: false,
+            });
+
+            tracing::info!("Getting directory contract (will PUT if not found)...");
+            if let Err(e) = api.send(get_request).await {
+                tracing::error!("Failed to GET directory contract: {:?}", e);
+                shared.write().last_error =
+                    Some(format!("Failed to get directory contract: {:?}", e));
+            }
+
+            // Explicitly subscribe to directory updates
+            let subscribe_dir = ClientRequest::ContractOp(ContractRequest::Subscribe {
+                key: id,
+                summary: None,
+            });
+            tracing::info!("Subscribing to directory contract...");
+            if let Err(e) = api.send(subscribe_dir).await {
+                tracing::error!("Failed to subscribe to directory: {:?}", e);
+            }
+
+            id
+        };
 
         // Local map of supplier name -> ContractKey for storefront updates
         let mut sf_contract_keys: BTreeMap<String, ContractKey> = BTreeMap::new();
@@ -264,6 +340,7 @@ mod wasm_impl {
                         &directory_key,
                         &mut sf_contract_keys,
                         &km,
+                        &node_url,
                     ).await;
                 }
 
@@ -275,6 +352,7 @@ mod wasm_impl {
                                 &mut shared, cr, directory_instance_id,
                                 &mut subscribed_storefronts,
                                 &mut instance_to_name,
+                                &mut sf_contract_keys,
                             );
                             for follow_up in follow_ups {
                                 if let Err(e) = api.send(follow_up).await {
@@ -350,6 +428,7 @@ mod wasm_impl {
         directory_key: &ContractKey,
         sf_contract_keys: &mut BTreeMap<String, ContractKey>,
         key_manager: &KeyManager,
+        #[allow(unused_variables)] node_url: &str,
     ) {
         match action {
             NodeAction::RegisterSupplier {
@@ -470,6 +549,51 @@ mod wasm_impl {
                 if let Err(e) = api.send(update_dir).await {
                     clog(&format!("[CREAM] ERROR: Failed to update directory: {:?}", e));
                 }
+
+                // Register with rendezvous service (supplier mode only)
+                #[cfg(not(feature = "customer"))]
+                {
+                    let rendezvous_name = name.to_lowercase().replace(' ', "-");
+                    let node_address = node_url.to_string();
+                    let sf_key_str = format!("{}", sf_key);
+                    let pub_key_bytes = key_manager.supplier_verifying_key().as_bytes().to_vec();
+                    let pub_key_hex: String = pub_key_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                    let sign_msg = format!("{}|{}|{}", rendezvous_name, node_address, sf_key_str);
+                    let sig_bytes = key_manager.sign_raw(sign_msg.as_bytes());
+                    let sig_hex: String = sig_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+
+                    let rname = rendezvous_name.clone();
+                    let raddr = node_address.clone();
+                    let reg_pub_hex = pub_key_hex.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        match crate::components::rendezvous::register_supplier(
+                            &rname, &raddr, &sf_key_str, &reg_pub_hex, &sig_hex,
+                        ).await {
+                            Ok(()) => clog(&format!("[CREAM] Registered with rendezvous as '{}'", rname)),
+                            Err(e) => clog(&format!("[CREAM] WARNING: Rendezvous registration failed: {}", e)),
+                        }
+                    });
+
+                    // Start background heartbeat task (every 5 minutes)
+                    let hb_name = rendezvous_name;
+                    let hb_addr = node_address;
+                    let hb_pub_hex = pub_key_hex;
+                    let hb_km = key_manager.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        loop {
+                            gloo_timers_sleep(5 * 60 * 1000).await;
+                            let sign_msg = format!("{}|{}", hb_name, hb_addr);
+                            let sig_bytes = hb_km.sign_raw(sign_msg.as_bytes());
+                            let sig_hex: String = sig_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                            match crate::components::rendezvous::heartbeat(
+                                &hb_name, &hb_addr, &hb_pub_hex, &sig_hex,
+                            ).await {
+                                Ok(()) => clog("[CREAM] Heartbeat sent"),
+                                Err(e) => clog(&format!("[CREAM] WARNING: Heartbeat failed: {}", e)),
+                            }
+                        }
+                    });
+                }
             }
 
             NodeAction::DeployStorefront { .. } => {
@@ -588,16 +712,20 @@ mod wasm_impl {
                 clog(&format!("[CREAM] PlaceOrder on {}: {} x{} ({})",
                     storefront_name, product_id, quantity, deposit_tier));
 
-                // Find the storefront's contract key from the directory
-                let sf_key = {
-                    let state = shared.read();
-                    state.directory.entries.values()
-                        .find(|e| e.name == storefront_name)
-                        .map(|e| e.storefront_key)
-                };
+                // Find the storefront's contract key.
+                // Check sf_contract_keys first (populated from GetResponse),
+                // then fall back to directory entries.
+                let sf_key = sf_contract_keys.get(&storefront_name).copied()
+                    .or_else(|| sf_contract_keys.values().next().copied())
+                    .or_else(|| {
+                        let state = shared.read();
+                        state.directory.entries.values()
+                            .find(|e| e.name == storefront_name)
+                            .map(|e| e.storefront_key)
+                    });
 
                 let Some(sf_key) = sf_key else {
-                    clog(&format!("[CREAM] ERROR: No directory entry found for {}, can't place order", storefront_name));
+                    clog(&format!("[CREAM] ERROR: No storefront key found for {}, can't place order", storefront_name));
                     return;
                 };
 
@@ -721,6 +849,7 @@ mod wasm_impl {
         directory_instance_id: ContractInstanceId,
         subscribed: &mut HashSet<ContractInstanceId>,
         instance_to_name: &mut std::collections::HashMap<ContractInstanceId, String>,
+        sf_contract_keys: &mut BTreeMap<String, ContractKey>,
     ) -> Vec<ClientRequest<'static>> {
         match response {
             ContractResponse::GetResponse { key, state, .. } => {
@@ -763,6 +892,8 @@ mod wasm_impl {
                                 .unwrap_or_else(|| storefront.info.name.clone());
                             clog(&format!("[CREAM] Storefront GET: keyed as '{}' (info.name='{}', owner={:?}, {} products)",
                                 name, storefront.info.name, storefront.info.owner, storefront.products.len()));
+                            // Store the ContractKey for later use (e.g. PlaceOrder)
+                            sf_contract_keys.insert(name.clone(), key);
                             shared.write().storefronts.insert(name, storefront);
                         }
                         Err(e) => {

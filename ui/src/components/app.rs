@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use dioxus_router::Navigator;
 
 use cream_common::postcode::{
     format_postcode, is_valid_au_postcode, lookup_all_localities, PostcodeInfo,
@@ -40,7 +41,14 @@ pub enum Route {
     Dashboard {},
     #[route("/wallet")]
     Wallet {},
-    #[redirect("/", || Route::Directory {})]
+    #[cfg_attr(
+        not(feature = "customer"),
+        redirect("/", || Route::Directory {})
+    )]
+    #[cfg_attr(
+        feature = "customer",
+        redirect("/", || Route::Orders {})
+    )]
     #[route("/:..segments")]
     NotFound { segments: Vec<String> },
 }
@@ -59,7 +67,12 @@ pub fn App() -> Element {
     let key_manager: Signal<Option<KeyManager>> = use_context();
     let user_state = use_user_state();
 
-    let content = if key_manager.read().is_none() || user_state.read().moniker.is_none() {
+    let mut setup_needed = key_manager.read().is_none() || user_state.read().moniker.is_none();
+    if cfg!(feature = "customer") {
+        setup_needed = setup_needed || user_state.read().connected_supplier.is_none();
+    }
+
+    let content = if setup_needed {
         rsx! { SetupScreen {} }
     } else {
         rsx! { Router::<Route> {} }
@@ -68,6 +81,59 @@ pub fn App() -> Element {
     rsx! {
         document::Stylesheet { href: asset!("/assets/tailwind.css") }
         {content}
+    }
+}
+
+/// Render the navigation buttons for the app header.
+#[cfg(not(feature = "customer"))]
+fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_supplier: bool, _connected_supplier: String) -> Element {
+    rsx! {
+        nav {
+            button {
+                onclick: move |_| { nav.push(Route::Directory {}); },
+                "Browse Suppliers"
+            }
+            button {
+                onclick: move |_| { nav.push(Route::Orders {}); },
+                "My Orders ({order_count})"
+            }
+            if is_supplier {
+                button {
+                    onclick: move |_| { nav.push(Route::Dashboard {}); },
+                    "My Storefront"
+                }
+            }
+            button {
+                onclick: move |_| { nav.push(Route::Wallet {}); },
+                "Wallet ({displayed_balance} CURD)"
+            }
+        }
+    }
+}
+
+/// Render the navigation buttons for the app header (customer mode).
+#[cfg(feature = "customer")]
+fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, _is_supplier: bool, connected_supplier: String) -> Element {
+    rsx! {
+        nav {
+            {
+                let supplier = connected_supplier.clone();
+                rsx! {
+                    button {
+                        onclick: move |_| { nav.push(Route::Supplier { name: supplier.clone() }); },
+                        "Storefront"
+                    }
+                }
+            }
+            button {
+                onclick: move |_| { nav.push(Route::Orders {}); },
+                "My Orders ({order_count})"
+            }
+            button {
+                onclick: move |_| { nav.push(Route::Wallet {}); },
+                "Wallet ({displayed_balance} CURD)"
+            }
+        }
     }
 }
 
@@ -92,11 +158,15 @@ fn AppLayout() -> Element {
     let locality = state.locality.clone();
     let postcode_display = format_postcode(&postcode_raw, locality.as_deref());
     let order_count = state.orders.len();
+    #[cfg(not(feature = "customer"))]
     let is_supplier = state.is_supplier;
+    let is_supplier_display = if cfg!(feature = "customer") { false } else { state.is_supplier };
     let balance = state.balance;
+    let connected_supplier = state.connected_supplier.clone().unwrap_or_default();
     drop(state);
 
     // Compute displayed balance: base + incoming deposit credits for suppliers
+    #[cfg(not(feature = "customer"))]
     let incoming_deposits: u64 = if is_supplier {
         let shared = use_shared_state();
         let shared_read = shared.read();
@@ -108,6 +178,8 @@ fn AppLayout() -> Element {
     } else {
         0
     };
+    #[cfg(feature = "customer")]
+    let incoming_deposits: u64 = 0;
     let displayed_balance = balance + incoming_deposits;
 
     rsx! {
@@ -118,7 +190,7 @@ fn AppLayout() -> Element {
                     div { class: "user-info",
                         span { class: "user-moniker", "{moniker}" }
                         span { class: "user-postcode", " - {postcode_display}" }
-                        if is_supplier {
+                        if !cfg!(feature = "customer") && is_supplier_display {
                             span { class: "supplier-badge", " [Supplier]" }
                         }
                         a {
@@ -134,26 +206,7 @@ fn AppLayout() -> Element {
                     }
                 }
                 p { "CURD Retail Exchange And Marketplace" }
-                nav {
-                    button {
-                        onclick: move |_| { nav.push(Route::Directory {}); },
-                        "Browse Suppliers"
-                    }
-                    button {
-                        onclick: move |_| { nav.push(Route::Orders {}); },
-                        "My Orders ({order_count})"
-                    }
-                    if is_supplier {
-                        button {
-                            onclick: move |_| { nav.push(Route::Dashboard {}); },
-                            "My Storefront"
-                        }
-                    }
-                    button {
-                        onclick: move |_| { nav.push(Route::Wallet {}); },
-                        "Wallet ({displayed_balance} CURD)"
-                    }
-                }
+                {nav_buttons(nav.clone(), order_count, displayed_balance, is_supplier_display, connected_supplier.clone())}
             }
             main {
                 Outlet::<Route> {}
@@ -165,7 +218,15 @@ fn AppLayout() -> Element {
 /// Route component: renders the directory view.
 #[component]
 fn Directory() -> Element {
-    rsx! { DirectoryView {} }
+    if cfg!(feature = "customer") {
+        let nav = use_navigator();
+        let user_state = use_user_state();
+        let supplier = user_state.read().connected_supplier.clone().unwrap_or_default();
+        nav.push(Route::Supplier { name: supplier });
+        rsx! {}
+    } else {
+        rsx! { DirectoryView {} }
+    }
 }
 
 /// Route component: renders a supplier's storefront by name from the URL.
@@ -183,13 +244,21 @@ fn Orders() -> Element {
 /// Route component: renders the supplier dashboard.
 #[component]
 fn Dashboard() -> Element {
-    let user_state = use_user_state();
-    let is_supplier = user_state.read().is_supplier;
-
-    if is_supplier {
-        rsx! { SupplierDashboard {} }
+    if cfg!(feature = "customer") {
+        let nav = use_navigator();
+        let user_state = use_user_state();
+        let supplier = user_state.read().connected_supplier.clone().unwrap_or_default();
+        nav.push(Route::Supplier { name: supplier });
+        rsx! {}
     } else {
-        rsx! { DirectoryView {} }
+        let user_state = use_user_state();
+        let is_supplier = user_state.read().is_supplier;
+
+        if is_supplier {
+            rsx! { SupplierDashboard {} }
+        } else {
+            rsx! { DirectoryView {} }
+        }
     }
 }
 
@@ -199,11 +268,17 @@ fn Wallet() -> Element {
     rsx! { WalletView {} }
 }
 
-/// Catch-all for unknown routes — redirects to directory.
+/// Catch-all for unknown routes — redirects to directory (or storefront in customer mode).
 #[component]
 fn NotFound(segments: Vec<String>) -> Element {
     let nav = use_navigator();
-    nav.push(Route::Directory {});
+    if cfg!(feature = "customer") {
+        let user_state = use_user_state();
+        let supplier = user_state.read().connected_supplier.clone().unwrap_or_default();
+        nav.push(Route::Supplier { name: supplier });
+    } else {
+        nav.push(Route::Directory {});
+    }
     rsx! {}
 }
 
@@ -219,7 +294,7 @@ enum SetupStep {
 fn SetupScreen() -> Element {
     let mut key_manager: Signal<Option<KeyManager>> = use_context();
     let mut user_state = use_user_state();
-    let shared_state = use_shared_state();
+    let _shared_state = use_shared_state();
 
     let mut step = use_signal(|| SetupStep::Profile);
     let mut name_input = use_signal(String::new);
@@ -232,8 +307,15 @@ fn SetupScreen() -> Element {
     let mut localities = use_signal(Vec::<PostcodeInfo>::new);
     let mut selected_locality = use_signal(|| None::<String>);
 
-    // Returning user detection
-    let mut welcome_back = use_signal(|| None::<String>);
+    // Returning user detection (supplier mode only)
+    let welcome_back = use_signal(|| None::<String>);
+
+    // Customer mode: supplier name lookup
+    let mut supplier_name_input = use_signal(String::new);
+    let mut supplier_lookup_error = use_signal(|| None::<String>);
+    let mut supplier_lookup_loading = use_signal(|| false);
+    let mut supplier_lookup_result =
+        use_signal(|| None::<super::rendezvous::RendezvousEntry>);
 
     let mut password = use_signal(String::new);
     let mut password_confirm = use_signal(String::new);
@@ -251,13 +333,17 @@ fn SetupScreen() -> Element {
                 let postcode_ok = is_valid_au_postcode(postcode_input.read().trim());
                 let locality_ok = localities.read().len() <= 1
                     || selected_locality.read().is_some();
-                let supplier_ok = !*is_supplier.read() || !supplier_desc.read().trim().is_empty();
+                let supplier_ok = if cfg!(feature = "customer") {
+                    supplier_lookup_result.read().is_some()
+                } else {
+                    !*is_supplier.read() || !supplier_desc.read().trim().is_empty()
+                };
                 name_ok && postcode_ok && locality_ok && supplier_ok
             };
 
             let localities_list = localities.read().clone();
             let current_locality = selected_locality.read().clone();
-            let welcome_msg = welcome_back.read().clone();
+            let _welcome_msg = welcome_back.read().clone();
 
             rsx! {
                 div { class: "cream-app",
@@ -273,43 +359,7 @@ fn SetupScreen() -> Element {
                                 value: "{name_input}",
                                 oninput: move |evt| {
                                     name_input.set(evt.value());
-                                    // Clear welcome back message on edit
-                                    welcome_back.set(None);
                                 },
-                                onfocusout: move |_| {
-                                    let typed = name_input.read().trim().to_string();
-                                    if typed.is_empty() {
-                                        return;
-                                    }
-                                    let typed_lower = typed.to_lowercase();
-                                    // Search directory for matching name
-                                    let shared = shared_state.read();
-                                    let matched = shared.directory.entries.values()
-                                        .find(|e| e.name.to_lowercase() == typed_lower);
-                                    if let Some(entry) = matched {
-                                        // Correct name casing
-                                        name_input.set(entry.name.clone());
-                                        // Use postcode/locality directly from directory entry
-                                        if let Some(pc) = &entry.postcode {
-                                            postcode_input.set(pc.clone());
-                                            postcode_error.set(None);
-                                            let locs = lookup_all_localities(pc);
-                                            if locs.len() == 1 {
-                                                selected_locality.set(Some(locs[0].place_name.clone()));
-                                            } else if let Some(loc) = &entry.locality {
-                                                selected_locality.set(Some(loc.clone()));
-                                            }
-                                            localities.set(locs);
-                                        }
-                                        // Auto-fill supplier fields
-                                        is_supplier.set(true);
-                                        supplier_desc.set(entry.description.clone());
-                                        welcome_back.set(Some(entry.name.clone()));
-                                    }
-                                },
-                            }
-                            if let Some(name) = &welcome_msg {
-                                p { class: "welcome-back", "Welcome back, {name}!" }
                             }
                         }
 
@@ -380,24 +430,81 @@ fn SetupScreen() -> Element {
                             }
                         }
 
-                        div { class: "form-group",
-                            label {
-                                input {
-                                    r#type: "checkbox",
-                                    checked: *is_supplier.read(),
-                                    onchange: move |evt| is_supplier.set(evt.checked()),
+                        if !cfg!(feature = "customer") {
+                            div { class: "form-group",
+                                label {
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: *is_supplier.read(),
+                                        onchange: move |evt| is_supplier.set(evt.checked()),
+                                    }
+                                    " I want to sell products (register as supplier)"
                                 }
-                                " I want to sell products (register as supplier)"
+                            }
+
+                            if *is_supplier.read() {
+                                div { class: "form-group",
+                                    label { "Storefront description:" }
+                                    textarea {
+                                        placeholder: "Describe your farm or dairy...",
+                                        value: "{supplier_desc}",
+                                        oninput: move |evt| supplier_desc.set(evt.value()),
+                                    }
+                                }
                             }
                         }
 
-                        if *is_supplier.read() {
+                        if cfg!(feature = "customer") {
                             div { class: "form-group",
-                                label { "Storefront description:" }
-                                textarea {
-                                    placeholder: "Describe your farm or dairy...",
-                                    value: "{supplier_desc}",
-                                    oninput: move |evt| supplier_desc.set(evt.value()),
+                                label { "Supplier name:" }
+                                div { class: "supplier-lookup-row",
+                                    input {
+                                        r#type: "text",
+                                        placeholder: "e.g. garys-farm",
+                                        value: "{supplier_name_input}",
+                                        oninput: move |evt| {
+                                            supplier_name_input.set(evt.value());
+                                            supplier_lookup_error.set(None);
+                                            supplier_lookup_result.set(None);
+                                        },
+                                    }
+                                    button {
+                                        disabled: supplier_name_input.read().trim().is_empty()
+                                            || *supplier_lookup_loading.read(),
+                                        onclick: move |_| {
+                                            let name = supplier_name_input.read().trim().to_string();
+                                            if name.is_empty() {
+                                                return;
+                                            }
+                                            supplier_lookup_loading.set(true);
+                                            supplier_lookup_error.set(None);
+                                            supplier_lookup_result.set(None);
+                                            spawn(async move {
+                                                match super::rendezvous::lookup_supplier(&name).await {
+                                                    Ok(entry) => {
+                                                        supplier_lookup_result.set(Some(entry));
+                                                    }
+                                                    Err(e) => {
+                                                        supplier_lookup_error.set(Some(e));
+                                                    }
+                                                }
+                                                supplier_lookup_loading.set(false);
+                                            });
+                                        },
+                                        if *supplier_lookup_loading.read() {
+                                            "Looking up..."
+                                        } else {
+                                            "Look up"
+                                        }
+                                    }
+                                }
+                                if let Some(err) = supplier_lookup_error.read().as_ref() {
+                                    span { class: "field-error", "{err}" }
+                                }
+                                if let Some(entry) = supplier_lookup_result.read().as_ref() {
+                                    p { class: "welcome-back",
+                                        "Found supplier: {entry.name}"
+                                    }
                                 }
                             }
                         }
@@ -495,13 +602,22 @@ fn SetupScreen() -> Element {
                                     state.moniker = Some(name.clone());
                                     state.postcode = Some(postcode.clone());
                                     state.locality = locality_val.clone();
-                                    state.is_supplier = is_sup;
-                                    if is_sup {
-                                        state.supplier_description = if desc.is_empty() {
-                                            None
-                                        } else {
-                                            Some(desc.clone())
-                                        };
+                                    if cfg!(feature = "customer") {
+                                        state.is_supplier = false;
+                                        if let Some(entry) = supplier_lookup_result.read().as_ref() {
+                                            state.connected_supplier = Some(entry.name.clone());
+                                            state.supplier_node_url = Some(entry.address.clone());
+                                            state.supplier_storefront_key = Some(entry.storefront_key.clone());
+                                        }
+                                    } else {
+                                        state.is_supplier = is_sup;
+                                        if is_sup {
+                                            state.supplier_description = if desc.is_empty() {
+                                                None
+                                            } else {
+                                                Some(desc.clone())
+                                            };
+                                        }
                                     }
                                     state.save();
                                 }
@@ -512,7 +628,7 @@ fn SetupScreen() -> Element {
                                 key_manager.set(Some(km));
 
                                 #[cfg(feature = "use-node")]
-                                if is_sup {
+                                if !cfg!(feature = "customer") && is_sup {
                                     node.send(NodeAction::RegisterSupplier {
                                         name,
                                         postcode,

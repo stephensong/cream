@@ -10,6 +10,7 @@ mobile = ["dioxus/mobile", "dioxus/router"]
 example-data = []
 no-sync = []
 use-node = []
+customer = []
 
 [dependencies]
 cream-common = { path = "../common", features = ["dev"] }
@@ -35,6 +36,11 @@ web-sys = { version = "0.3", features = [
     "UrlSearchParams",
     "WebSocket",
     "Window",
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "Headers",
 ] }
 serde-wasm-bindgen = "0.5"
 getrandom = { version = "0.2", features = ["js"] }

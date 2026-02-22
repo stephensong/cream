@@ -84,4 +84,9 @@ impl KeyManager {
         let bytes = order_signable_bytes(order);
         order.signature = self.customer_signing_key.sign(&bytes);
     }
+
+    /// Sign arbitrary bytes with the supplier key. Returns the 64-byte signature.
+    pub fn sign_raw(&self, message: &[u8]) -> [u8; 64] {
+        self.supplier_signing_key.sign(message).to_bytes()
+    }
 }

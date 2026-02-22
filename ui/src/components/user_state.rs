@@ -49,6 +49,15 @@ pub struct UserState {
     /// Mock CURD wallet balance. Starts at 10,000, decremented by order deposits.
     #[serde(default = "default_balance")]
     pub balance: u64,
+    /// Customer mode: connected supplier's memorable name (e.g. "garys-farm").
+    #[serde(default)]
+    pub connected_supplier: Option<String>,
+    /// Customer mode: resolved WebSocket URL for the supplier's node.
+    #[serde(default)]
+    pub supplier_node_url: Option<String>,
+    /// Customer mode: Base58-encoded ContractInstanceId for the supplier's storefront.
+    #[serde(default)]
+    pub supplier_storefront_key: Option<String>,
 }
 
 impl UserState {
@@ -67,6 +76,9 @@ impl UserState {
             next_order_id: 1,
             next_product_id: 1,
             balance: 10_000,
+            connected_supplier: None,
+            supplier_node_url: None,
+            supplier_storefront_key: None,
         }
     }
 

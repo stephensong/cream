@@ -114,6 +114,33 @@ args = ["build", "--release", "--platform", "ios", "--features", "mobile,use-nod
 [tasks.build-ios.env]
 CREAM_NODE_URL = { value = "${CREAM_NODE_URL}", condition = { env_set = ["CREAM_NODE_URL"] } }
 
+# ─── Customer App ─────────────────────────────────────────────────────────────
+
+[tasks.dev-customer-web]
+description = "Run customer web app for browser testing (single storefront, rendezvous lookup)"
+dependencies = ["build-contracts-dev"]
+cwd = "ui"
+command = "dx"
+args = ["serve", "--features", "use-node,customer"]
+
+[tasks.dev-customer-android]
+description = "Run customer Android app in emulator"
+dependencies = ["build-contracts-dev"]
+cwd = "ui"
+command = "dx"
+args = ["serve", "--platform", "android", "--features", "mobile,use-node,customer", "--no-default-features"]
+[tasks.dev-customer-android.env]
+CREAM_NODE_URL = { value = "${CREAM_NODE_URL}", condition = { env_set = ["CREAM_NODE_URL"] } }
+
+[tasks.build-customer-android]
+description = "Build release customer APK for Android"
+dependencies = ["build-contracts"]
+cwd = "ui"
+command = "dx"
+args = ["build", "--release", "--platform", "android", "--features", "mobile,use-node,customer", "--no-default-features"]
+[tasks.build-customer-android.env]
+CREAM_NODE_URL = { value = "${CREAM_NODE_URL}", condition = { env_set = ["CREAM_NODE_URL"] } }
+
 [tasks.reset-node]
 description = "Stop Freenet node, wipe contract state, and restart (dev only)"
 script = [
