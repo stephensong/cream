@@ -98,3 +98,37 @@ The `freenet` binary includes built-in service management:
 The service also has **auto-update** built in: when the node detects a version mismatch with a gateway, it exits with a special code and the service wrapper automatically downloads the latest version before restarting.
 
 ---
+
+## Can a new user use CREAM without installing a node?
+
+**Short answer: Suppliers must run a node. Customers don't need to.**
+
+CREAM has two types of user with different infrastructure requirements:
+
+### Suppliers
+
+Suppliers must install and run a full Freenet node. Their node is how they publish their storefront, list products, and receive orders. It also makes them part of the network infrastructure — the CREAM network *is* its suppliers. Installing a node is a one-liner (`curl -fsSL https://freenet.org/install.sh | sh`) and the service runs quietly in the background.
+
+### Customers
+
+Customers do not need to install a Freenet node. They use a mobile app (or browser) that connects to a local supplier's node directly. This is the natural model for a local raw dairy marketplace — you discover a farm near you, connect to their node, browse their products, and place orders.
+
+The customer's app connects to the supplier's node via WebSocket, which gives them access to the full CREAM network through that node — they can browse the directory of all suppliers, not just the one they connected to. The supplier's node acts as their window into the network.
+
+### How does a new customer find a supplier?
+
+This is the bootstrap problem: a customer needs to connect to *some* node to see the directory, but they don't have a node and don't yet know any suppliers. Possible approaches include:
+
+- **QR code at the farm gate or farmers market** — a supplier shares their node's URL, and scanning it opens the CREAM app pre-configured to connect.
+- **Word of mouth / social media** — a supplier shares a link that launches the app pointed at their node.
+- **A public web directory** — a simple website listing participating suppliers and their node addresses, searchable by location. This is a centralised convenience layer but doesn't compromise the decentralised marketplace itself.
+
+### Privacy considerations
+
+When a customer connects to a supplier's node, that supplier can see the customer's contract requests — which other suppliers they browse, what they order, and when they're online. In the context of a local dairy marketplace, where you're already showing up at someone's farm to collect raw milk, this is an acceptable trade-off. The customer trusts their local supplier in the same way they would trust any local shopkeeper.
+
+### Becoming a supplier
+
+If a customer later decides to become a supplier themselves, they would need to install a full Freenet node, register their storefront, and list their products. Their node then becomes part of the CREAM network and can serve other customers in turn.
+
+---
