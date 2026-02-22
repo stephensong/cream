@@ -1,2 +1,188 @@
 @import "tailwindcss";
 @source "./src/**/*.{rs,html,css}";
+
+@layer base {
+  body {
+    background: #0f172a;
+    color: #e2e8f0;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+  }
+
+  .cream-app {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 2rem;
+  }
+
+  h1 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+    color: #f1f5f9;
+  }
+
+  h2 {
+    font-size: 1.35rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: #f1f5f9;
+  }
+
+  h3 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+    color: #f1f5f9;
+  }
+
+  p {
+    margin-bottom: 0.75rem;
+  }
+
+  a {
+    color: #38bdf8;
+    text-decoration: underline;
+  }
+
+  a:hover {
+    color: #7dd3fc;
+  }
+
+  button {
+    background: #6366f1;
+    color: white;
+    border: none;
+    padding: 0.5rem 1.25rem;
+    border-radius: 0.5rem;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  button:hover {
+    background: #818cf8;
+  }
+
+  button:disabled {
+    background: #475569;
+    color: #94a3b8;
+    cursor: not-allowed;
+  }
+
+  input, textarea, select {
+    border: 1px solid #334155;
+    border-radius: 0.375rem;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.95rem;
+    width: 100%;
+    background: #1e293b;
+    color: #e2e8f0;
+    transition: border-color 0.15s;
+  }
+
+  input:focus, textarea:focus, select:focus {
+    outline: none;
+    border-color: #6366f1;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+  }
+
+  input::placeholder, textarea::placeholder {
+    color: #64748b;
+  }
+
+  label {
+    display: block;
+    font-weight: 500;
+    margin-bottom: 0.25rem;
+    font-size: 0.9rem;
+    color: #94a3b8;
+  }
+
+  .form-group {
+    margin-bottom: 1.25rem;
+  }
+
+  .user-setup {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 0.75rem;
+    padding: 2rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    max-width: 480px;
+    margin: 2rem auto;
+  }
+
+  .app-header {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  }
+
+  .header-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 0.25rem;
+  }
+
+  .user-info {
+    font-size: 0.85rem;
+    color: #94a3b8;
+  }
+
+  .supplier-badge {
+    color: #34d399;
+    font-weight: 600;
+  }
+
+  .logout-link {
+    font-size: 0.8rem;
+    margin-left: 0.5rem;
+  }
+
+  nav {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 1rem;
+  }
+
+  nav button {
+    font-size: 0.85rem;
+    padding: 0.4rem 1rem;
+  }
+
+  .field-error {
+    color: #f87171;
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+  }
+
+  .welcome-back {
+    color: #34d399;
+    font-weight: 500;
+    font-size: 0.9rem;
+  }
+
+  .supplier-list,
+  .product-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1rem;
+    margin-top: 1rem;
+  }
+
+  .supplier-card,
+  .product-card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 0.75rem;
+    padding: 1.25rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  }
+}
