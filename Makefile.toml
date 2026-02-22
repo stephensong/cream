@@ -139,7 +139,7 @@ args = ["test", "-p", "cream-node-integration", "--features", "node-tests", "--"
 
 [tasks.fixture]
 description = "Full manual-testing fixture: build contracts, start network, run tests, start rendezvous, launch UI dev server"
-dependencies = ["test-node", "restart-rendezvous"]
+dependencies = ["test-node", "restart-rendezvous", "tailwind-install", "tailwind-build"]
 cwd = "ui"
 command = "dx"
 args = ["serve", "--features", "use-node"]

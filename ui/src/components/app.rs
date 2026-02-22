@@ -192,15 +192,14 @@ fn AppLayout() -> Element {
                         if !is_customer && is_supplier {
                             span { class: "supplier-badge", " [Supplier]" }
                         }
-                        a {
-                            href: "#",
-                            class: "logout-link",
+                        button {
+                            class: "logout-btn",
                             onclick: move |_| {
                                 UserState::clear_session();
                                 key_manager.set(None);
                                 user_state.set(UserState::new());
                             },
-                            "(log out)"
+                            "Log out"
                         }
                     }
                 }
