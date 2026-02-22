@@ -6,7 +6,7 @@ default_platform = "web"
 title = "CREAM - CURD Retail Exchange And Marketplace"
 
 [web.watcher]
-watch_path = ["src"]
+watch_path = ["src", "input.css"]
 
 [mobile]
 bundle_identifier = "com.cream.marketplace"

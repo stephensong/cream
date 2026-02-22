@@ -185,7 +185,7 @@ fn AppLayout() -> Element {
         div { class: "cream-app",
             header { class: "app-header",
                 div { class: "header-top",
-                    h1 { "CREAM" }
+                    h1 { "CREAM " span { class: "tagline", "rises to the top" } }
                     div { class: "user-info",
                         span { class: "user-moniker", "{moniker}" }
                         span { class: "user-postcode", " - {postcode_display}" }
@@ -204,7 +204,7 @@ fn AppLayout() -> Element {
                         }
                     }
                 }
-                p { "CURD Retail Exchange And Marketplace" }
+                p { "The decentralized, private 24/7 farmer's market" }
                 {nav_buttons(nav.clone(), order_count, displayed_balance, is_supplier, connected_supplier.clone())}
             }
             main {
@@ -371,7 +371,7 @@ fn SetupScreen() -> Element {
                 div { class: "cream-app",
                     div { class: "user-setup",
                         h1 { "Welcome to CREAM" }
-                        p { "CURD Retail Exchange And Marketplace" }
+                        p { "The decentralized, private 24/7 farmer's market" }
 
                         div { class: "form-group",
                             label { "Your name:" }

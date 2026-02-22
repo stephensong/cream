@@ -136,6 +136,14 @@
     color: #94a3b8;
   }
 
+  .tagline {
+    font-size: 0.55em;
+    font-style: italic;
+    font-weight: 400;
+    color: #94a3b8;
+    margin-left: 0.75rem;
+  }
+
   .supplier-badge {
     color: #34d399;
     font-weight: 600;
@@ -175,6 +183,13 @@
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     gap: 1rem;
     margin-top: 1rem;
+  }
+
+  .url-copy-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.25rem;
   }
 
   .supplier-card,
