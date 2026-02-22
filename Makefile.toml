@@ -132,10 +132,17 @@ command = "cargo"
 args = ["test", "--workspace"]
 
 [tasks.test-node]
-description = "Build contracts, reset node, and run integration tests"
-dependencies = ["build-contracts-dev", "reset-node"]
+description = "Build contracts, reset multi-node network, and run integration tests"
+dependencies = ["build-contracts-dev", "reset-network"]
 command = "cargo"
 args = ["test", "-p", "cream-node-integration", "--features", "node-tests", "--", "--nocapture"]
+
+[tasks.fixture]
+description = "Full manual-testing fixture: build contracts, start network, run tests, launch UI dev server"
+dependencies = ["test-node"]
+cwd = "ui"
+command = "dx"
+args = ["serve", "--features", "use-node"]
 
 [tasks.reset-network]
 description = "Stop all Freenet processes, wipe state, start multi-node network (1 gateway + 2 nodes)"
@@ -252,12 +259,6 @@ TOML
     fi
     ''',
 ]
-
-[tasks.test-multi-node]
-description = "Build contracts, start multi-node network, and run multi-node integration tests"
-dependencies = ["build-contracts-dev", "reset-network"]
-command = "cargo"
-args = ["test", "-p", "cream-node-integration", "--features", "multi-node-tests", "--", "--nocapture"]
 
 [tasks.check]
 description = "Check all code compiles"

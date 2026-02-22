@@ -12,13 +12,13 @@ use cream_common::product::{Product, ProductCategory, ProductId};
 use cream_common::storefront::{SignedProduct, StorefrontInfo, StorefrontState};
 
 use crate::{
-    connect_to_node, extract_get_response_state, extract_notification_bytes, is_get_response,
+    connect_to_node_at, extract_get_response_state, extract_notification_bytes, is_get_response,
     is_put_response, is_subscribe_success, is_update_notification, is_update_response,
     make_directory_contract, make_directory_entry, make_dummy_customer, make_dummy_supplier,
-    make_storefront_contract, recv_matching,
+    make_storefront_contract, node_url, recv_matching, wait_for_get,
 };
 
-const TIMEOUT: Duration = Duration::from_secs(5);
+const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A supplier participant in the test harness.
 pub struct Supplier {
@@ -195,15 +195,22 @@ pub struct TestHarness {
 impl TestHarness {
     /// Set up the full harness: 5 WebSocket connections, identities, directory contract,
     /// 3 storefront contracts, and 3 directory registrations.
+    ///
+    /// Participants are distributed across nodes:
+    /// - **Gateway (3001)**: Gary, Iris, Alice — Gary PUTs contracts here
+    /// - **Node 2 (3003)**: Emma, Bob — exercises cross-node propagation
     pub async fn setup() -> Self {
         tracing_subscriber::fmt::try_init().ok();
 
-        // Connect all 5 clients
-        let api_gary = connect_to_node().await;
-        let api_emma = connect_to_node().await;
-        let api_iris = connect_to_node().await;
-        let api_alice = connect_to_node().await;
-        let api_bob = connect_to_node().await;
+        let url_gw = node_url(3001);
+        let url_n2 = node_url(3003);
+
+        // Connect clients — gateway for Gary/Iris/Alice, node-2 for Emma/Bob
+        let api_gary = connect_to_node_at(&url_gw).await;
+        let api_emma = connect_to_node_at(&url_n2).await;
+        let api_iris = connect_to_node_at(&url_gw).await;
+        let api_alice = connect_to_node_at(&url_gw).await;
+        let api_bob = connect_to_node_at(&url_n2).await;
 
         // Create supplier identities (deterministic — same keys the UI derives)
         let (gary_id, gary_vk) = make_dummy_supplier("Gary");
@@ -286,15 +293,25 @@ impl TestHarness {
             tracing::info!("Directory contract already exists (parallel test), continuing");
         }
 
-        // PUT all 3 storefront contracts
+        // PUT storefront contracts on their respective nodes.
+        // Gary and Iris PUT on gateway; Emma PUTs on node-2.
         put_storefront(&mut gary, gary_sf_contract).await;
-        put_storefront(&mut emma, emma_sf_contract).await;
         put_storefront(&mut iris, iris_sf_contract).await;
 
-        // Register all 3 suppliers in the directory
+        // Wait for directory contract to propagate to node-2 before Emma PUTs
+        let mut emma_dir_probe = connect_to_node_at(&url_n2).await;
+        wait_for_get(&mut emma_dir_probe, *dir_key.id(), TIMEOUT)
+            .await
+            .expect("Directory contract should propagate to node-2");
+        drop(emma_dir_probe);
+
+        put_storefront(&mut emma, emma_sf_contract).await;
+
+        // Register all 3 suppliers in the directory.
+        // Gary and Iris register via gateway; Emma registers via node-2.
         register_supplier_in_directory(&mut gary, &dir_key).await;
-        register_supplier_in_directory(&mut emma, &dir_key).await;
         register_supplier_in_directory(&mut iris, &dir_key).await;
+        register_supplier_in_directory(&mut emma, &dir_key).await;
 
         TestHarness {
             gary,

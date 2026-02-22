@@ -17,9 +17,14 @@ use freenet_stdlib::client_api::{ClientRequest, ContractRequest};
 use freenet_stdlib::prelude::*;
 
 use cream_node_integration::harness::TestHarness;
-use cream_node_integration::*;
+use cream_node_integration::{
+    connect_to_node_at, extract_get_response_state, extract_notification_bytes, is_get_response,
+    is_put_response, is_subscribe_success, is_update_notification,
+    make_directory_contract, make_directory_entry, make_dummy_product, make_dummy_supplier,
+    make_storefront_contract, node_url, recv_matching, wait_for_get,
+};
 
-const TIMEOUT: Duration = Duration::from_secs(5);
+const TIMEOUT: Duration = Duration::from_secs(30);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cumulative_node_tests() {
@@ -30,8 +35,8 @@ async fn cumulative_node_tests() {
     // ═══════════════════════════════════════════════════════════════════
     println!("── Step 1: directory_subscribe_notifies_on_update ──");
     {
-        let mut client_a = connect_to_node().await;
-        let mut client_b = connect_to_node().await;
+        let mut client_a = connect_to_node_at(&node_url(3001)).await;
+        let mut client_b = connect_to_node_at(&node_url(3003)).await;
 
         let (dir_contract, dir_key) = make_directory_contract();
         let empty_dir = DirectoryState::default();
@@ -51,6 +56,11 @@ async fn cumulative_node_tests() {
         // Short timeout — directory may already exist from a previous run
         let _put_resp =
             recv_matching(&mut client_a, is_put_response, Duration::from_secs(2)).await;
+
+        // Wait for directory to propagate to node-2 before subscribing
+        wait_for_get(&mut client_b, *dir_key.id(), TIMEOUT)
+            .await
+            .expect("Directory contract should propagate to node-2");
 
         client_b
             .send(ClientRequest::ContractOp(ContractRequest::Subscribe {
@@ -103,8 +113,8 @@ async fn cumulative_node_tests() {
     // ═══════════════════════════════════════════════════════════════════
     println!("── Step 2: storefront_subscribe_notifies_on_product_add ──");
     {
-        let mut client_a = connect_to_node().await;
-        let mut client_b = connect_to_node().await;
+        let mut client_a = connect_to_node_at(&node_url(3001)).await;
+        let mut client_b = connect_to_node_at(&node_url(3003)).await;
 
         let (supplier_id, vk) = make_dummy_supplier("Notify Farm");
         let (sf_contract, sf_key) = make_storefront_contract(&vk);
@@ -134,6 +144,11 @@ async fn cumulative_node_tests() {
 
         let put_resp = recv_matching(&mut client_a, is_put_response, TIMEOUT).await;
         assert!(put_resp.is_some(), "Expected PutResponse for storefront");
+
+        // Wait for storefront to propagate to node-2 before subscribing
+        wait_for_get(&mut client_b, *sf_key.id(), TIMEOUT)
+            .await
+            .expect("Storefront contract should propagate to node-2");
 
         client_b
             .send(ClientRequest::ContractOp(ContractRequest::Subscribe {
@@ -184,9 +199,9 @@ async fn cumulative_node_tests() {
     // ═══════════════════════════════════════════════════════════════════
     println!("── Step 3: get_subscribe_flag_vs_explicit_subscribe ──");
     {
-        let mut client_a = connect_to_node().await;
-        let mut client_b_get = connect_to_node().await;
-        let mut client_b_sub = connect_to_node().await;
+        let mut client_a = connect_to_node_at(&node_url(3001)).await;
+        let mut client_b_get = connect_to_node_at(&node_url(3003)).await;
+        let mut client_b_sub = connect_to_node_at(&node_url(3003)).await;
 
         let (supplier_id, vk) = make_dummy_supplier("Diagnostic Farm");
         let (sf_contract, sf_key) = make_storefront_contract(&vk);
@@ -217,6 +232,15 @@ async fn cumulative_node_tests() {
         recv_matching(&mut client_a, is_put_response, TIMEOUT)
             .await
             .expect("PutResponse");
+
+        // Wait for storefront to propagate to node-2 before GET+subscribe
+        {
+            let mut probe = connect_to_node_at(&node_url(3003)).await;
+            wait_for_get(&mut probe, *sf_key.id(), TIMEOUT)
+                .await
+                .expect("Storefront contract should propagate to node-2");
+            drop(probe);
+        }
 
         client_b_get
             .send(ClientRequest::ContractOp(ContractRequest::Get {
@@ -287,8 +311,8 @@ async fn cumulative_node_tests() {
     // ═══════════════════════════════════════════════════════════════════
     println!("── Step 4: product_count_increments_for_subscriber ──");
     {
-        let mut supplier = connect_to_node().await;
-        let mut customer = connect_to_node().await;
+        let mut supplier = connect_to_node_at(&node_url(3001)).await;
+        let mut customer = connect_to_node_at(&node_url(3003)).await;
 
         let (supplier_id, vk) = make_dummy_supplier("Count Farm");
         let (sf_contract, sf_key) = make_storefront_contract(&vk);
@@ -319,6 +343,11 @@ async fn cumulative_node_tests() {
         recv_matching(&mut supplier, is_put_response, TIMEOUT)
             .await
             .expect("PutResponse for storefront");
+
+        // Wait for storefront to propagate to node-2 before customer GETs
+        wait_for_get(&mut customer, *sf_key.id(), TIMEOUT)
+            .await
+            .expect("Storefront contract should propagate to node-2");
 
         customer
             .send(ClientRequest::ContractOp(ContractRequest::Get {

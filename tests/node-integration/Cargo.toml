@@ -5,7 +5,6 @@ edition = "2021"
 
 [features]
 node-tests = []
-multi-node-tests = []
 
 [dependencies]
 cream-common = { path = "../../common", features = ["dev"] }

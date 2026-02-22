@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use freenet_stdlib::client_api::{ContractResponse, HostResponse, WebApi};
+use freenet_stdlib::client_api::{ClientRequest, ContractRequest, ContractResponse, HostResponse, WebApi};
 use freenet_stdlib::prelude::*;
 use tokio::time::Instant;
 
@@ -12,8 +12,6 @@ use cream_common::product::{Product, ProductCategory, ProductId};
 use cream_common::storefront::{SignedProduct, StorefrontParameters};
 
 pub mod harness;
-
-const NODE_URL: &str = "ws://localhost:3001/v1/contract/command?encodingProtocol=native";
 
 /// Build a full WebSocket URL for a Freenet node on the given port.
 pub fn node_url(port: u16) -> String {
@@ -26,11 +24,6 @@ pub async fn connect_to_node_at(url: &str) -> WebApi {
         .await
         .unwrap_or_else(|e| panic!("Failed to connect to Freenet node at {url}: {e}"));
     WebApi::start(ws_conn)
-}
-
-/// Connect a native WebApi client to the local Freenet node (port 3001).
-pub async fn connect_to_node() -> WebApi {
-    connect_to_node_at(NODE_URL).await
 }
 
 /// Build a ContractContainer from WASM bytes and parameters.
@@ -203,6 +196,50 @@ pub fn extract_get_response_state(resp: &HostResponse) -> Option<Vec<u8>> {
         Some(state.as_ref().to_vec())
     } else {
         None
+    }
+}
+
+/// Retry GET on a contract until it succeeds or the timeout expires.
+/// Returns the state bytes on success, None on timeout.
+pub async fn wait_for_get(
+    api: &mut WebApi,
+    key: ContractInstanceId,
+    timeout: Duration,
+) -> Option<Vec<u8>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+
+        api.send(ClientRequest::ContractOp(ContractRequest::Get {
+            key,
+            return_contract_code: false,
+            subscribe: false,
+            blocking_subscribe: false,
+        }))
+        .await
+        .unwrap();
+
+        match tokio::time::timeout(Duration::from_secs(5), api.recv()).await {
+            Ok(Ok(HostResponse::ContractResponse(ContractResponse::GetResponse {
+                state, ..
+            }))) => {
+                return Some(state.as_ref().to_vec());
+            }
+            Ok(Ok(other)) => {
+                tracing::debug!("wait_for_get: non-GET response: {:?}", other);
+            }
+            Ok(Err(e)) => {
+                tracing::debug!("wait_for_get: error: {:?}", e);
+            }
+            Err(_) => {
+                tracing::debug!("wait_for_get: recv timeout, will retry");
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 

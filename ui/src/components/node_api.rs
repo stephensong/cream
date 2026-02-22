@@ -128,11 +128,32 @@ mod wasm_impl {
         let key_manager_signal: Signal<Option<KeyManager>> = use_context();
 
         // ── Connect to node via WebSocket ───────────────────────────────
+        // Default node URL; overridable at compile-time via CREAM_NODE_URL env var,
+        // or at runtime via ?node=<port> query parameter (e.g. ?node=3003).
         const DEFAULT_NODE_URL: &str =
             "ws://localhost:3001/v1/contract/command?encodingProtocol=native";
-        let node_url = option_env!("CREAM_NODE_URL").unwrap_or(DEFAULT_NODE_URL);
+        let compile_time_url = option_env!("CREAM_NODE_URL").unwrap_or(DEFAULT_NODE_URL);
 
-        let conn = match web_sys::WebSocket::new(node_url) {
+        let node_url = {
+            let url = web_sys::window()
+                .and_then(|w| w.location().search().ok())
+                .and_then(|qs| {
+                    web_sys::UrlSearchParams::new_with_str(&qs)
+                        .ok()?
+                        .get("node")
+                })
+                .map(|port| {
+                    format!(
+                        "ws://localhost:{port}/v1/contract/command?encodingProtocol=native"
+                    )
+                });
+            match url {
+                Some(u) => u,
+                None => compile_time_url.to_string(),
+            }
+        };
+
+        let conn = match web_sys::WebSocket::new(&node_url) {
             Ok(c) => c,
             Err(e) => {
                 shared.write().last_error =
