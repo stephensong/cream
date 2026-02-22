@@ -52,6 +52,7 @@ args = ["serve"]
 
 [tasks.dev-example-no-sync]
 description = "Run UI dev server with example data and no sync"
+dependencies = ["tailwind-install", "tailwind-build"]
 cwd = "ui"
 command = "dx"
 args = ["serve"]
