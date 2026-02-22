@@ -113,14 +113,22 @@ pub fn SupplierDashboard() -> Element {
                                 .cloned()
                                 .unwrap_or_else(|| order.product_id.0.clone());
                             let status = order.status.to_string();
-                            let tier = order.deposit_tier.to_string();
+                            let deposit_info = match &order.status {
+                                cream_common::order::OrderStatus::Reserved { expires_at } => {
+                                    let pct = (order.deposit_tier.deposit_fraction() * 100.0) as u32;
+                                    format!("Held until {} ({pct}% deposit: {} CURD)", expires_at.format("%d %b %Y"), order.deposit_amount)
+                                }
+                                _ => {
+                                    format!("Deposit: {} ({} CURD)", order.deposit_tier, order.deposit_amount)
+                                }
+                            };
                             rsx! {
                                 div { class: "order-card",
                                     key: "{oid}",
                                     span { class: "order-id", "Order #{short_id}" }
                                     span { class: "order-status", " — {status}" }
                                     p { "{product_name} x{order.quantity} — {order.total_price} CURD" }
-                                    p { "Deposit: {tier} ({order.deposit_amount} CURD)" }
+                                    p { "{deposit_info}" }
                                 }
                             }
                         })}
