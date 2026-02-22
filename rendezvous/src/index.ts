@@ -1,4 +1,11 @@
-import { verify } from '@noble/ed25519';
+import { verifyAsync, etc } from '@noble/ed25519';
+
+// @noble/ed25519 v2+ requires explicit SHA-512 — use Web Crypto (available in Workers)
+etc.sha512Async = async (...messages: Uint8Array[]) => {
+  const combined = etc.concatBytes(...messages);
+  const digest = await crypto.subtle.digest('SHA-512', combined);
+  return new Uint8Array(digest);
+};
 
 interface Env {
   SUPPLIERS: KVNamespace;
@@ -56,7 +63,7 @@ async function verifySignature(
     const msgBytes = new TextEncoder().encode(message);
     const sigBytes = hexToBytes(signatureHex);
     const pubBytes = hexToBytes(publicKeyHex);
-    return await verify(sigBytes, msgBytes, pubBytes);
+    return await verifyAsync(sigBytes, msgBytes, pubBytes);
   } catch {
     return false;
   }

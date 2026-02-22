@@ -306,6 +306,20 @@ args = ["clippy", "--all-targets"]
 description = "Format and lint"
 dependencies = ["fmt", "clippy"]
 
+# ─── Rendezvous Service ──────────────────────────────────────────────────────
+
+[tasks.rendezvous-install]
+description = "Install rendezvous service dependencies"
+cwd = "rendezvous"
+script = ["npm install"]
+
+[tasks.dev-rendezvous]
+description = "Run rendezvous service locally (wrangler dev)"
+dependencies = ["rendezvous-install"]
+cwd = "rendezvous"
+command = "npx"
+args = ["wrangler", "dev"]
+
 # ─── Tailwind CSS ─────────────────────────────────────────────────────────────
 
 [tasks.tailwind-install]
