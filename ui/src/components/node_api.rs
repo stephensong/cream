@@ -41,6 +41,8 @@ pub enum NodeAction {
     /// Subscribe to a specific storefront's updates.
     #[allow(dead_code)] // auto-subscribed via directory; kept for manual use
     SubscribeStorefront { supplier_name: String },
+    /// Customer mode: subscribe to the supplier's storefront after setup completes.
+    SubscribeCustomerStorefront { storefront_key: String },
 }
 
 /// Get a handle to send actions to the node communication coroutine.
@@ -145,7 +147,6 @@ mod wasm_impl {
     pub async fn node_comms(mut rx: UnboundedReceiver<NodeAction>) {
         let mut shared = use_shared_state();
         let key_manager_signal: Signal<Option<KeyManager>> = use_context();
-        #[allow(unused_variables)] // used in customer mode
         let user_state: Signal<crate::components::user_state::UserState> = use_context();
 
         // ── Connect to node via WebSocket ───────────────────────────────
@@ -158,10 +159,7 @@ mod wasm_impl {
 
         let node_url = {
             // Customer mode: use supplier node URL from UserState if available
-            #[cfg(feature = "customer")]
             let customer_url = user_state.read().supplier_node_url.clone();
-            #[cfg(not(feature = "customer"))]
-            let customer_url: Option<String> = None;
 
             if let Some(url) = customer_url {
                 url
@@ -236,46 +234,16 @@ mod wasm_impl {
             make_contract(DIRECTORY_CONTRACT_WASM, Parameters::from(vec![]));
         let directory_key = directory_contract.key();
 
+        let is_customer = user_state.read().connected_supplier.is_some();
+
         // In customer mode, we use a dummy directory instance ID that will never
         // match any response, since we skip directory operations entirely.
-        #[cfg(feature = "customer")]
-        let directory_instance_id = {
-            // Subscribe directly to the single supplier's storefront.
-            // The storefront key is stored as a Base58-encoded ContractInstanceId.
-            if let Some(sf_key_str) = user_state.read().supplier_storefront_key.clone() {
-                match ContractInstanceId::from_bytes(&sf_key_str) {
-                    Ok(sf_instance_id) => {
-                        clog(&format!("[CREAM] Customer mode: subscribing to storefront {:?}", sf_instance_id));
-                        // GET the storefront state
-                        let get_sf = ClientRequest::ContractOp(ContractRequest::Get {
-                            key: sf_instance_id,
-                            return_contract_code: false,
-                            subscribe: false,
-                            blocking_subscribe: false,
-                        });
-                        if let Err(e) = api.send(get_sf).await {
-                            clog(&format!("[CREAM] ERROR: Failed to GET storefront: {:?}", e));
-                        }
-                        // Subscribe for live updates
-                        let sub_sf = ClientRequest::ContractOp(ContractRequest::Subscribe {
-                            key: sf_instance_id,
-                            summary: None,
-                        });
-                        if let Err(e) = api.send(sub_sf).await {
-                            clog(&format!("[CREAM] ERROR: Failed to subscribe to storefront: {:?}", e));
-                        }
-                    }
-                    Err(e) => {
-                        clog(&format!("[CREAM] ERROR: Invalid storefront key '{}': {:?}", sf_key_str, e));
-                    }
-                }
-            }
-            // Use a zeroed-out dummy so no response matches the directory branch
+        let directory_instance_id = if is_customer {
+            // Customer mode: storefront subscription is triggered by
+            // SubscribeCustomerStorefront action after setup completes.
+            // Use a zeroed-out dummy so no response matches the directory branch.
             ContractInstanceId::new([0u8; 32])
-        };
-
-        #[cfg(not(feature = "customer"))]
-        let directory_instance_id = {
+        } else {
             let id = *directory_key.id();
 
             tracing::info!("Directory contract key: {:?}", directory_key);
@@ -341,6 +309,7 @@ mod wasm_impl {
                         &mut sf_contract_keys,
                         &km,
                         &node_url,
+                        is_customer,
                     ).await;
                 }
 
@@ -348,11 +317,13 @@ mod wasm_impl {
                     let Some(response) = response else { break };
                     match response {
                         Ok(HostResponse::ContractResponse(cr)) => {
+                            let csn = user_state.read().connected_supplier.clone();
                             let follow_ups = handle_contract_response(
                                 &mut shared, cr, directory_instance_id,
                                 &mut subscribed_storefronts,
                                 &mut instance_to_name,
                                 &mut sf_contract_keys,
+                                csn.as_deref(),
                             );
                             for follow_up in follow_ups {
                                 if let Err(e) = api.send(follow_up).await {
@@ -429,6 +400,7 @@ mod wasm_impl {
         sf_contract_keys: &mut BTreeMap<String, ContractKey>,
         key_manager: &KeyManager,
         #[allow(unused_variables)] node_url: &str,
+        is_customer: bool,
     ) {
         match action {
             NodeAction::RegisterSupplier {
@@ -452,6 +424,31 @@ mod wasm_impl {
                     sf_contract_keys.insert(name.clone(), sf_key);
                     shared.write().storefront_keys
                         .insert(name.clone(), format!("{}", sf_key));
+
+                    // Still register with rendezvous service so customers can discover us
+                    if !is_customer {
+                        let rendezvous_name = name.to_lowercase().replace(' ', "-");
+                        let node_address = node_url.to_string();
+                        let sf_key_str = format!("{}", sf_key);
+                        let pub_key_bytes = key_manager.supplier_verifying_key().as_bytes().to_vec();
+                        let pub_key_hex: String = pub_key_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                        let sign_msg = format!("{}|{}|{}", rendezvous_name, node_address, sf_key_str);
+                        let sig_bytes = key_manager.sign_raw(sign_msg.as_bytes());
+                        let sig_hex: String = sig_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+
+                        let rname = rendezvous_name.clone();
+                        let raddr = node_address.clone();
+                        let reg_pub_hex = pub_key_hex.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            match crate::components::rendezvous::register_supplier(
+                                &rname, &raddr, &sf_key_str, &reg_pub_hex, &sig_hex,
+                            ).await {
+                                Ok(()) => clog(&format!("[CREAM] Registered with rendezvous as '{}'", rname)),
+                                Err(e) => clog(&format!("[CREAM] WARNING: Rendezvous registration failed: {}", e)),
+                            }
+                        });
+                    }
+
                     return;
                 }
 
@@ -551,8 +548,7 @@ mod wasm_impl {
                 }
 
                 // Register with rendezvous service (supplier mode only)
-                #[cfg(not(feature = "customer"))]
-                {
+                if !is_customer {
                     let rendezvous_name = name.to_lowercase().replace(' ', "-");
                     let node_address = node_url.to_string();
                     let sf_key_str = format!("{}", sf_key);
@@ -837,6 +833,35 @@ mod wasm_impl {
                     );
                 }
             }
+
+            NodeAction::SubscribeCustomerStorefront { storefront_key } => {
+                clog(&format!("[CREAM] Customer mode: subscribing to storefront key '{}'", storefront_key));
+                match ContractInstanceId::from_bytes(&storefront_key) {
+                    Ok(sf_instance_id) => {
+                        // GET the storefront state
+                        let get_sf = ClientRequest::ContractOp(ContractRequest::Get {
+                            key: sf_instance_id,
+                            return_contract_code: false,
+                            subscribe: false,
+                            blocking_subscribe: false,
+                        });
+                        if let Err(e) = api.send(get_sf).await {
+                            clog(&format!("[CREAM] ERROR: Failed to GET storefront: {:?}", e));
+                        }
+                        // Subscribe for live updates
+                        let sub_sf = ClientRequest::ContractOp(ContractRequest::Subscribe {
+                            key: sf_instance_id,
+                            summary: None,
+                        });
+                        if let Err(e) = api.send(sub_sf).await {
+                            clog(&format!("[CREAM] ERROR: Failed to subscribe to storefront: {:?}", e));
+                        }
+                    }
+                    Err(e) => {
+                        clog(&format!("[CREAM] ERROR: Invalid storefront key '{}': {:?}", storefront_key, e));
+                    }
+                }
+            }
         }
     }
 
@@ -850,6 +875,7 @@ mod wasm_impl {
         subscribed: &mut HashSet<ContractInstanceId>,
         instance_to_name: &mut std::collections::HashMap<ContractInstanceId, String>,
         sf_contract_keys: &mut BTreeMap<String, ContractKey>,
+        customer_supplier_name: Option<&str>,
     ) -> Vec<ClientRequest<'static>> {
         match response {
             ContractResponse::GetResponse { key, state, .. } => {
@@ -887,7 +913,10 @@ mod wasm_impl {
                                     .map(|e| e.name.clone())
                             };
                             let name_from_map = instance_to_name.get(key.id()).cloned();
-                            let name = dir_name
+                            // In customer mode, use the connected_supplier name so StorefrontView
+                            // can look it up by the route parameter (which comes from rendezvous).
+                            let name = customer_supplier_name.map(|s| s.to_string())
+                                .or(dir_name)
                                 .or(name_from_map)
                                 .unwrap_or_else(|| storefront.info.name.clone());
                             clog(&format!("[CREAM] Storefront GET: keyed as '{}' (info.name='{}', owner={:?}, {} products)",
@@ -937,7 +966,8 @@ mod wasm_impl {
                                     .map(|e| e.name.clone())
                             };
                             let name_from_map = instance_to_name.get(key.id()).cloned();
-                            let name = dir_name
+                            let name = customer_supplier_name.map(|s| s.to_string())
+                                .or(dir_name)
                                 .or(name_from_map)
                                 .unwrap_or_else(|| sf_update.info.name.clone());
                             clog(&format!("[CREAM] Storefront notification: keyed as '{}' ({} products)",

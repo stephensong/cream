@@ -17,6 +17,20 @@ use super::supplier_dashboard::SupplierDashboard;
 use super::user_state::{use_user_state, UserState};
 use super::wallet_view::WalletView;
 
+/// Read `?supplier=X` from the browser URL bar. Returns `None` outside WASM.
+fn get_supplier_query_param() -> Option<String> {
+    #[cfg(target_family = "wasm")]
+    {
+        let search = web_sys::window()?.location().search().ok()?;
+        let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+        params.get("supplier").filter(|s| !s.is_empty())
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        None
+    }
+}
+
 /// Normalize a name to title case: "gary" → "Gary", "GARY" → "Gary".
 fn title_case(s: &str) -> String {
     let s = s.trim();
@@ -41,14 +55,7 @@ pub enum Route {
     Dashboard {},
     #[route("/wallet")]
     Wallet {},
-    #[cfg_attr(
-        not(feature = "customer"),
-        redirect("/", || Route::Directory {})
-    )]
-    #[cfg_attr(
-        feature = "customer",
-        redirect("/", || Route::Orders {})
-    )]
+    #[redirect("/", || Route::Directory {})]
     #[route("/:..segments")]
     NotFound { segments: Vec<String> },
 }
@@ -67,10 +74,7 @@ pub fn App() -> Element {
     let key_manager: Signal<Option<KeyManager>> = use_context();
     let user_state = use_user_state();
 
-    let mut setup_needed = key_manager.read().is_none() || user_state.read().moniker.is_none();
-    if cfg!(feature = "customer") {
-        setup_needed = setup_needed || user_state.read().connected_supplier.is_none();
-    }
+    let setup_needed = key_manager.read().is_none() || user_state.read().moniker.is_none();
 
     let content = if setup_needed {
         rsx! { SetupScreen {} }
@@ -85,53 +89,52 @@ pub fn App() -> Element {
 }
 
 /// Render the navigation buttons for the app header.
-#[cfg(not(feature = "customer"))]
-fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_supplier: bool, _connected_supplier: String) -> Element {
-    rsx! {
-        nav {
-            button {
-                onclick: move |_| { nav.push(Route::Directory {}); },
-                "Browse Suppliers"
-            }
-            button {
-                onclick: move |_| { nav.push(Route::Orders {}); },
-                "My Orders ({order_count})"
-            }
-            if is_supplier {
-                button {
-                    onclick: move |_| { nav.push(Route::Dashboard {}); },
-                    "My Storefront"
-                }
-            }
-            button {
-                onclick: move |_| { nav.push(Route::Wallet {}); },
-                "Wallet ({displayed_balance} CURD)"
-            }
-        }
-    }
-}
-
-/// Render the navigation buttons for the app header (customer mode).
-#[cfg(feature = "customer")]
-fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, _is_supplier: bool, connected_supplier: String) -> Element {
-    rsx! {
-        nav {
-            {
-                let supplier = connected_supplier.clone();
-                rsx! {
-                    button {
-                        onclick: move |_| { nav.push(Route::Supplier { name: supplier.clone() }); },
-                        "Storefront"
+fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_supplier: bool, connected_supplier: Option<String>) -> Element {
+    if let Some(supplier) = connected_supplier {
+        // Customer mode: single-storefront nav
+        rsx! {
+            nav {
+                {
+                    let supplier_clone = supplier.clone();
+                    rsx! {
+                        button {
+                            onclick: move |_| { nav.push(Route::Supplier { name: supplier_clone.clone() }); },
+                            "Storefront"
+                        }
                     }
                 }
+                button {
+                    onclick: move |_| { nav.push(Route::Orders {}); },
+                    "My Orders ({order_count})"
+                }
+                button {
+                    onclick: move |_| { nav.push(Route::Wallet {}); },
+                    "Wallet ({displayed_balance} CURD)"
+                }
             }
-            button {
-                onclick: move |_| { nav.push(Route::Orders {}); },
-                "My Orders ({order_count})"
-            }
-            button {
-                onclick: move |_| { nav.push(Route::Wallet {}); },
-                "Wallet ({displayed_balance} CURD)"
+        }
+    } else {
+        // Supplier / browser mode: full directory nav
+        rsx! {
+            nav {
+                button {
+                    onclick: move |_| { nav.push(Route::Directory {}); },
+                    "Browse Suppliers"
+                }
+                button {
+                    onclick: move |_| { nav.push(Route::Orders {}); },
+                    "My Orders ({order_count})"
+                }
+                if is_supplier {
+                    button {
+                        onclick: move |_| { nav.push(Route::Dashboard {}); },
+                        "My Storefront"
+                    }
+                }
+                button {
+                    onclick: move |_| { nav.push(Route::Wallet {}); },
+                    "Wallet ({displayed_balance} CURD)"
+                }
             }
         }
     }
@@ -158,16 +161,14 @@ fn AppLayout() -> Element {
     let locality = state.locality.clone();
     let postcode_display = format_postcode(&postcode_raw, locality.as_deref());
     let order_count = state.orders.len();
-    #[cfg(not(feature = "customer"))]
+    let is_customer = state.connected_supplier.is_some();
     let is_supplier = state.is_supplier;
-    let is_supplier_display = if cfg!(feature = "customer") { false } else { state.is_supplier };
     let balance = state.balance;
-    let connected_supplier = state.connected_supplier.clone().unwrap_or_default();
+    let connected_supplier = state.connected_supplier.clone();
     drop(state);
 
     // Compute displayed balance: base + incoming deposit credits for suppliers
-    #[cfg(not(feature = "customer"))]
-    let incoming_deposits: u64 = if is_supplier {
+    let incoming_deposits: u64 = if !is_customer && is_supplier {
         let shared = use_shared_state();
         let shared_read = shared.read();
         shared_read
@@ -178,8 +179,6 @@ fn AppLayout() -> Element {
     } else {
         0
     };
-    #[cfg(feature = "customer")]
-    let incoming_deposits: u64 = 0;
     let displayed_balance = balance + incoming_deposits;
 
     rsx! {
@@ -190,7 +189,7 @@ fn AppLayout() -> Element {
                     div { class: "user-info",
                         span { class: "user-moniker", "{moniker}" }
                         span { class: "user-postcode", " - {postcode_display}" }
-                        if !cfg!(feature = "customer") && is_supplier_display {
+                        if !is_customer && is_supplier {
                             span { class: "supplier-badge", " [Supplier]" }
                         }
                         a {
@@ -206,7 +205,7 @@ fn AppLayout() -> Element {
                     }
                 }
                 p { "CURD Retail Exchange And Marketplace" }
-                {nav_buttons(nav.clone(), order_count, displayed_balance, is_supplier_display, connected_supplier.clone())}
+                {nav_buttons(nav.clone(), order_count, displayed_balance, is_supplier, connected_supplier.clone())}
             }
             main {
                 Outlet::<Route> {}
@@ -218,10 +217,10 @@ fn AppLayout() -> Element {
 /// Route component: renders the directory view.
 #[component]
 fn Directory() -> Element {
-    if cfg!(feature = "customer") {
+    let user_state = use_user_state();
+    let connected = user_state.read().connected_supplier.clone();
+    if let Some(supplier) = connected {
         let nav = use_navigator();
-        let user_state = use_user_state();
-        let supplier = user_state.read().connected_supplier.clone().unwrap_or_default();
         nav.push(Route::Supplier { name: supplier });
         rsx! {}
     } else {
@@ -244,14 +243,13 @@ fn Orders() -> Element {
 /// Route component: renders the supplier dashboard.
 #[component]
 fn Dashboard() -> Element {
-    if cfg!(feature = "customer") {
+    let user_state = use_user_state();
+    let connected = user_state.read().connected_supplier.clone();
+    if let Some(supplier) = connected {
         let nav = use_navigator();
-        let user_state = use_user_state();
-        let supplier = user_state.read().connected_supplier.clone().unwrap_or_default();
         nav.push(Route::Supplier { name: supplier });
         rsx! {}
     } else {
-        let user_state = use_user_state();
         let is_supplier = user_state.read().is_supplier;
 
         if is_supplier {
@@ -272,9 +270,8 @@ fn Wallet() -> Element {
 #[component]
 fn NotFound(segments: Vec<String>) -> Element {
     let nav = use_navigator();
-    if cfg!(feature = "customer") {
-        let user_state = use_user_state();
-        let supplier = user_state.read().connected_supplier.clone().unwrap_or_default();
+    let user_state = use_user_state();
+    if let Some(supplier) = user_state.read().connected_supplier.clone() {
         nav.push(Route::Supplier { name: supplier });
     } else {
         nav.push(Route::Directory {});
@@ -310,12 +307,36 @@ fn SetupScreen() -> Element {
     // Returning user detection (supplier mode only)
     let welcome_back = use_signal(|| None::<String>);
 
-    // Customer mode: supplier name lookup
-    let mut supplier_name_input = use_signal(String::new);
+    // Auto-connect via ?supplier= query param
+    let url_supplier = use_signal(|| get_supplier_query_param());
+    let auto_connect_mode = url_supplier.read().is_some();
+
+    // Supplier name lookup (customer mode)
+    let mut supplier_name_input = use_signal(|| {
+        get_supplier_query_param().unwrap_or_default()
+    });
     let mut supplier_lookup_error = use_signal(|| None::<String>);
     let mut supplier_lookup_loading = use_signal(|| false);
     let mut supplier_lookup_result =
         use_signal(|| None::<super::rendezvous::RendezvousEntry>);
+
+    // Auto-trigger lookup when ?supplier= param is present
+    use_effect(move || {
+        if let Some(name) = url_supplier.read().clone() {
+            supplier_lookup_loading.set(true);
+            spawn(async move {
+                match super::rendezvous::lookup_supplier(&name).await {
+                    Ok(entry) => {
+                        supplier_lookup_result.set(Some(entry));
+                    }
+                    Err(e) => {
+                        supplier_lookup_error.set(Some(e));
+                    }
+                }
+                supplier_lookup_loading.set(false);
+            });
+        }
+    });
 
     let mut password = use_signal(String::new);
     let mut password_confirm = use_signal(String::new);
@@ -333,7 +354,8 @@ fn SetupScreen() -> Element {
                 let postcode_ok = is_valid_au_postcode(postcode_input.read().trim());
                 let locality_ok = localities.read().len() <= 1
                     || selected_locality.read().is_some();
-                let supplier_ok = if cfg!(feature = "customer") {
+                let supplier_ok = if auto_connect_mode {
+                    // In auto-connect mode, need a successful lookup
                     supplier_lookup_result.read().is_some()
                 } else {
                     !*is_supplier.read() || !supplier_desc.read().trim().is_empty()
@@ -430,13 +452,77 @@ fn SetupScreen() -> Element {
                             }
                         }
 
-                        if !cfg!(feature = "customer") {
+                        if auto_connect_mode {
+                            // Auto-connect via ?supplier= URL param
+                            div { class: "form-group",
+                                if *supplier_lookup_loading.read() {
+                                    p { "Connecting to supplier: {supplier_name_input}..." }
+                                } else if let Some(entry) = supplier_lookup_result.read().as_ref() {
+                                    p { class: "welcome-back",
+                                        "Connected to: {entry.name}"
+                                    }
+                                } else if let Some(err) = supplier_lookup_error.read().as_ref() {
+                                    span { class: "field-error", "{err}" }
+                                    // Fall back to manual lookup on error
+                                    div { class: "supplier-lookup-row",
+                                        input {
+                                            r#type: "text",
+                                            placeholder: "e.g. garys-farm",
+                                            value: "{supplier_name_input}",
+                                            oninput: move |evt| {
+                                                supplier_name_input.set(evt.value());
+                                                supplier_lookup_error.set(None);
+                                                supplier_lookup_result.set(None);
+                                            },
+                                        }
+                                        button {
+                                            disabled: supplier_name_input.read().trim().is_empty()
+                                                || *supplier_lookup_loading.read(),
+                                            onclick: move |_| {
+                                                let name = supplier_name_input.read().trim().to_string();
+                                                if name.is_empty() {
+                                                    return;
+                                                }
+                                                supplier_lookup_loading.set(true);
+                                                supplier_lookup_error.set(None);
+                                                supplier_lookup_result.set(None);
+                                                spawn(async move {
+                                                    match super::rendezvous::lookup_supplier(&name).await {
+                                                        Ok(entry) => {
+                                                            supplier_lookup_result.set(Some(entry));
+                                                        }
+                                                        Err(e) => {
+                                                            supplier_lookup_error.set(Some(e));
+                                                        }
+                                                    }
+                                                    supplier_lookup_loading.set(false);
+                                                });
+                                            },
+                                            if *supplier_lookup_loading.read() {
+                                                "Looking up..."
+                                            } else {
+                                                "Look up"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // Normal flow: supplier checkbox + manual lookup
                             div { class: "form-group",
                                 label {
                                     input {
                                         r#type: "checkbox",
                                         checked: *is_supplier.read(),
-                                        onchange: move |evt| is_supplier.set(evt.checked()),
+                                        onchange: move |evt| {
+                                            is_supplier.set(evt.checked());
+                                            if evt.checked() {
+                                                // Clear supplier lookup state when switching to supplier mode
+                                                supplier_name_input.set(String::new());
+                                                supplier_lookup_error.set(None);
+                                                supplier_lookup_result.set(None);
+                                            }
+                                        },
                                     }
                                     " I want to sell products (register as supplier)"
                                 }
@@ -452,58 +538,58 @@ fn SetupScreen() -> Element {
                                     }
                                 }
                             }
-                        }
 
-                        if cfg!(feature = "customer") {
-                            div { class: "form-group",
-                                label { "Supplier name:" }
-                                div { class: "supplier-lookup-row",
-                                    input {
-                                        r#type: "text",
-                                        placeholder: "e.g. garys-farm",
-                                        value: "{supplier_name_input}",
-                                        oninput: move |evt| {
-                                            supplier_name_input.set(evt.value());
-                                            supplier_lookup_error.set(None);
-                                            supplier_lookup_result.set(None);
-                                        },
-                                    }
-                                    button {
-                                        disabled: supplier_name_input.read().trim().is_empty()
-                                            || *supplier_lookup_loading.read(),
-                                        onclick: move |_| {
-                                            let name = supplier_name_input.read().trim().to_string();
-                                            if name.is_empty() {
-                                                return;
-                                            }
-                                            supplier_lookup_loading.set(true);
-                                            supplier_lookup_error.set(None);
-                                            supplier_lookup_result.set(None);
-                                            spawn(async move {
-                                                match super::rendezvous::lookup_supplier(&name).await {
-                                                    Ok(entry) => {
-                                                        supplier_lookup_result.set(Some(entry));
-                                                    }
-                                                    Err(e) => {
-                                                        supplier_lookup_error.set(Some(e));
-                                                    }
+                            if !*is_supplier.read() {
+                                div { class: "form-group",
+                                    label { "Or connect to a specific supplier:" }
+                                    div { class: "supplier-lookup-row",
+                                        input {
+                                            r#type: "text",
+                                            placeholder: "e.g. garys-farm",
+                                            value: "{supplier_name_input}",
+                                            oninput: move |evt| {
+                                                supplier_name_input.set(evt.value());
+                                                supplier_lookup_error.set(None);
+                                                supplier_lookup_result.set(None);
+                                            },
+                                        }
+                                        button {
+                                            disabled: supplier_name_input.read().trim().is_empty()
+                                                || *supplier_lookup_loading.read(),
+                                            onclick: move |_| {
+                                                let name = supplier_name_input.read().trim().to_string();
+                                                if name.is_empty() {
+                                                    return;
                                                 }
-                                                supplier_lookup_loading.set(false);
-                                            });
-                                        },
-                                        if *supplier_lookup_loading.read() {
-                                            "Looking up..."
-                                        } else {
-                                            "Look up"
+                                                supplier_lookup_loading.set(true);
+                                                supplier_lookup_error.set(None);
+                                                supplier_lookup_result.set(None);
+                                                spawn(async move {
+                                                    match super::rendezvous::lookup_supplier(&name).await {
+                                                        Ok(entry) => {
+                                                            supplier_lookup_result.set(Some(entry));
+                                                        }
+                                                        Err(e) => {
+                                                            supplier_lookup_error.set(Some(e));
+                                                        }
+                                                    }
+                                                    supplier_lookup_loading.set(false);
+                                                });
+                                            },
+                                            if *supplier_lookup_loading.read() {
+                                                "Looking up..."
+                                            } else {
+                                                "Look up"
+                                            }
                                         }
                                     }
-                                }
-                                if let Some(err) = supplier_lookup_error.read().as_ref() {
-                                    span { class: "field-error", "{err}" }
-                                }
-                                if let Some(entry) = supplier_lookup_result.read().as_ref() {
-                                    p { class: "welcome-back",
-                                        "Found supplier: {entry.name}"
+                                    if let Some(err) = supplier_lookup_error.read().as_ref() {
+                                        span { class: "field-error", "{err}" }
+                                    }
+                                    if let Some(entry) = supplier_lookup_result.read().as_ref() {
+                                        p { class: "welcome-back",
+                                            "Found supplier: {entry.name}"
+                                        }
                                     }
                                 }
                             }
@@ -596,19 +682,19 @@ fn SetupScreen() -> Element {
                                 let locality_val = selected_locality.read().clone();
                                 let is_sup = *is_supplier.read();
                                 let desc = supplier_desc.read().trim().to_string();
+                                let lookup_result = supplier_lookup_result.read().clone();
 
                                 {
                                     let mut state = user_state.write();
                                     state.moniker = Some(name.clone());
                                     state.postcode = Some(postcode.clone());
                                     state.locality = locality_val.clone();
-                                    if cfg!(feature = "customer") {
+                                    if let Some(entry) = lookup_result.as_ref() {
+                                        // Customer mode: connected to a specific supplier
                                         state.is_supplier = false;
-                                        if let Some(entry) = supplier_lookup_result.read().as_ref() {
-                                            state.connected_supplier = Some(entry.name.clone());
-                                            state.supplier_node_url = Some(entry.address.clone());
-                                            state.supplier_storefront_key = Some(entry.storefront_key.clone());
-                                        }
+                                        state.connected_supplier = Some(entry.name.clone());
+                                        state.supplier_node_url = Some(entry.address.clone());
+                                        state.supplier_storefront_key = Some(entry.storefront_key.clone());
                                     } else {
                                         state.is_supplier = is_sup;
                                         if is_sup {
@@ -628,12 +714,19 @@ fn SetupScreen() -> Element {
                                 key_manager.set(Some(km));
 
                                 #[cfg(feature = "use-node")]
-                                if !cfg!(feature = "customer") && is_sup {
+                                if lookup_result.is_none() && is_sup {
                                     node.send(NodeAction::RegisterSupplier {
                                         name,
                                         postcode,
                                         locality: locality_val,
                                         description: desc,
+                                    });
+                                }
+
+                                #[cfg(feature = "use-node")]
+                                if let Some(sf_key) = lookup_result.as_ref().map(|e| e.storefront_key.clone()) {
+                                    node.send(NodeAction::SubscribeCustomerStorefront {
+                                        storefront_key: sf_key,
                                     });
                                 }
                             },

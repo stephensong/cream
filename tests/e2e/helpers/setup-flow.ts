@@ -8,13 +8,19 @@ export interface SetupOptions {
   isSupplier?: boolean;
   description?: string;
   locality?: string;
+  /** Customer mode: supplier name to look up via rendezvous service. */
+  supplierName?: string;
+  /** Skip initial navigation (page already loaded via waitForAppLoadAt). */
+  skipNav?: boolean;
 }
 
 /**
  * Complete the full setup wizard (profile + password) and land on the main app.
  */
 export async function completeSetup(page: Page, opts: SetupOptions): Promise<void> {
-  await waitForAppLoad(page);
+  if (!opts.skipNav) {
+    await waitForAppLoad(page);
+  }
 
   // Step 1: Profile
   await expect(page.locator('.user-setup')).toBeVisible();
@@ -39,6 +45,18 @@ export async function completeSetup(page: Page, opts: SetupOptions): Promise<voi
     if (opts.description) {
       await page.fill('textarea[placeholder="Describe your farm or dairy..."]', opts.description);
     }
+  }
+
+  // Customer mode: look up supplier via rendezvous service
+  if (opts.supplierName) {
+    // Check if auto-connect already resolved (URL-based ?supplier= flow)
+    const alreadyConnected = await page.locator('.welcome-back').isVisible({ timeout: 500 }).catch(() => false);
+    if (!alreadyConnected) {
+      // Manual lookup flow
+      await page.fill('input[placeholder="e.g. garys-farm"]', opts.supplierName);
+      await page.click('button:has-text("Look up")');
+    }
+    await expect(page.locator('.welcome-back')).toBeVisible({ timeout: 15_000 });
   }
 
   await page.click('button:has-text("Next")');

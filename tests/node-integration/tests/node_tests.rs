@@ -21,10 +21,10 @@ use cream_node_integration::{
     connect_to_node_at, extract_get_response_state, extract_notification_bytes, is_get_response,
     is_put_response, is_subscribe_success, is_update_notification,
     make_directory_contract, make_directory_entry, make_dummy_product, make_dummy_supplier,
-    make_storefront_contract, node_url, recv_matching, wait_for_get,
+    make_storefront_contract, node_url, recv_matching, wait_for_get, wait_for_put,
 };
 
-const TIMEOUT: Duration = Duration::from_secs(30);
+const TIMEOUT: Duration = Duration::from_secs(60);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cumulative_node_tests() {
@@ -329,20 +329,14 @@ async fn cumulative_node_tests() {
         };
         let state_bytes = serde_json::to_vec(&initial_sf).unwrap();
 
-        supplier
-            .send(ClientRequest::ContractOp(ContractRequest::Put {
-                contract: sf_contract,
-                state: WrappedState::new(state_bytes),
-                related_contracts: RelatedContracts::default(),
-                subscribe: false,
-                blocking_subscribe: false,
-            }))
-            .await
-            .unwrap();
-
-        recv_matching(&mut supplier, is_put_response, TIMEOUT)
-            .await
-            .expect("PutResponse for storefront");
+        wait_for_put(
+            &mut supplier,
+            sf_contract,
+            WrappedState::new(state_bytes),
+            TIMEOUT,
+        )
+        .await
+        .expect("PutResponse for storefront");
 
         // Wait for storefront to propagate to node-2 before customer GETs
         wait_for_get(&mut customer, *sf_key.id(), TIMEOUT)

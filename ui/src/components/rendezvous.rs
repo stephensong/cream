@@ -142,7 +142,7 @@ mod wasm_impl {
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /// Look up a supplier by name from the rendezvous service.
-#[allow(dead_code)] // used in customer builds
+#[allow(dead_code)] // used in WASM builds
 pub async fn lookup_supplier(name: &str) -> Result<RendezvousEntry, String> {
     #[cfg(target_family = "wasm")]
     {
@@ -156,7 +156,7 @@ pub async fn lookup_supplier(name: &str) -> Result<RendezvousEntry, String> {
 }
 
 /// Register a supplier with the rendezvous service.
-#[allow(dead_code)] // used in supplier builds
+#[allow(dead_code)] // used in WASM builds
 pub async fn register_supplier(
     name: &str,
     address: &str,
@@ -177,7 +177,7 @@ pub async fn register_supplier(
 }
 
 /// Send a heartbeat to the rendezvous service.
-#[allow(dead_code)] // used in supplier builds
+#[allow(dead_code)] // used in WASM builds
 pub async fn heartbeat(
     name: &str,
     address: &str,

@@ -114,33 +114,6 @@ args = ["build", "--release", "--platform", "ios", "--features", "mobile,use-nod
 [tasks.build-ios.env]
 CREAM_NODE_URL = { value = "${CREAM_NODE_URL}", condition = { env_set = ["CREAM_NODE_URL"] } }
 
-# ─── Customer App ─────────────────────────────────────────────────────────────
-
-[tasks.dev-customer-web]
-description = "Run customer web app for browser testing (single storefront, rendezvous lookup)"
-dependencies = ["build-contracts-dev"]
-cwd = "ui"
-command = "dx"
-args = ["serve", "--features", "use-node,customer"]
-
-[tasks.dev-customer-android]
-description = "Run customer Android app in emulator"
-dependencies = ["build-contracts-dev"]
-cwd = "ui"
-command = "dx"
-args = ["serve", "--platform", "android", "--features", "mobile,use-node,customer", "--no-default-features"]
-[tasks.dev-customer-android.env]
-CREAM_NODE_URL = { value = "${CREAM_NODE_URL}", condition = { env_set = ["CREAM_NODE_URL"] } }
-
-[tasks.build-customer-android]
-description = "Build release customer APK for Android"
-dependencies = ["build-contracts"]
-cwd = "ui"
-command = "dx"
-args = ["build", "--release", "--platform", "android", "--features", "mobile,use-node,customer", "--no-default-features"]
-[tasks.build-customer-android.env]
-CREAM_NODE_URL = { value = "${CREAM_NODE_URL}", condition = { env_set = ["CREAM_NODE_URL"] } }
-
 [tasks.reset-node]
 description = "Stop Freenet node, wipe contract state, and restart (dev only)"
 script = [
@@ -165,11 +138,40 @@ command = "cargo"
 args = ["test", "-p", "cream-node-integration", "--features", "node-tests", "--", "--nocapture"]
 
 [tasks.fixture]
-description = "Full manual-testing fixture: build contracts, start network, run tests, launch UI dev server"
-dependencies = ["test-node"]
+description = "Full manual-testing fixture: build contracts, start network, run tests, start rendezvous, launch UI dev server"
+dependencies = ["test-node", "restart-rendezvous"]
 cwd = "ui"
 command = "dx"
 args = ["serve", "--features", "use-node"]
+[tasks.fixture.env]
+CREAM_RENDEZVOUS_URL = "http://localhost:8787"
+
+[tasks.restart-rendezvous]
+description = "Kill any stale wrangler and start fresh rendezvous service on port 8787"
+dependencies = ["rendezvous-install"]
+script = [
+    '''
+    set -euo pipefail
+    # Kill any existing wrangler processes
+    pkill -f "wrangler dev" 2>/dev/null || true
+    sleep 1
+
+    cd rendezvous
+    nohup npx wrangler dev --port 8787 > /tmp/cream-rendezvous.log 2>&1 &
+    echo $! > /tmp/cream-rendezvous.pid
+
+    # Wait for it to be ready
+    for i in $(seq 1 15); do
+        if curl -s "http://localhost:8787" > /dev/null 2>&1; then
+            echo "Rendezvous service ready on port 8787"
+            exit 0
+        fi
+        sleep 1
+    done
+    echo "Timed out waiting for rendezvous service"
+    exit 1
+    ''',
+]
 
 [tasks.reset-network]
 description = "Stop all Freenet processes, wipe state, start multi-node network (1 gateway + 2 nodes)"
@@ -338,6 +340,74 @@ cwd = "ui"
 script = ["npx @tailwindcss/cli -i ./input.css -o ./assets/tailwind.css --watch"]
 
 # ─── E2E Browser Tests ───────────────────────────────────────────────────────
+
+[tasks.e2e-build-rendezvous]
+description = "Build UI for E2E rendezvous test (rendezvous URL → local wrangler)"
+dependencies = ["tailwind-install", "tailwind-build"]
+cwd = "ui"
+command = "dx"
+args = ["build", "--features", "use-node"]
+[tasks.e2e-build-rendezvous.env]
+CREAM_RENDEZVOUS_URL = "http://localhost:8787"
+
+[tasks.e2e-serve-rendezvous]
+description = "Start UI (8080) and rendezvous service (8787)"
+dependencies = ["e2e-build-rendezvous", "restart-rendezvous"]
+script = [
+    '''
+    set -euo pipefail
+
+    # Start UI on port 8080
+    nohup python3 -m http.server 8080 --directory ui/target/dx/cream-ui/debug/web/public > /tmp/cream-e2e-server.log 2>&1 &
+    echo $! > /tmp/cream-e2e-server.pid
+
+    # Wait for static server to be ready
+    for i in $(seq 1 15); do
+        if curl -s "http://localhost:8080" > /dev/null 2>&1; then
+            echo "Server ready on port 8080"
+            break
+        fi
+        if [ "$i" -eq 15 ]; then
+            echo "Timed out waiting for port 8080"
+            exit 1
+        fi
+        sleep 1
+    done
+    echo "Both servers ready (UI=8080, rendezvous=8787)"
+    ''',
+]
+
+[tasks.e2e-stop-rendezvous]
+description = "Stop rendezvous E2E servers and clean up"
+script = [
+    '''
+    for pidfile in /tmp/cream-e2e-server.pid /tmp/cream-e2e-rendezvous.pid; do
+        if [ -f "$pidfile" ]; then
+            kill $(cat "$pidfile") 2>/dev/null || true
+            rm -f "$pidfile"
+        fi
+    done
+    echo "Rendezvous E2E servers stopped and cleaned up"
+    ''',
+]
+
+[tasks.test-e2e-rendezvous]
+description = "Full E2E rendezvous pipeline: contracts → network → integration tests → UI build → 2 servers → Playwright → cleanup"
+dependencies = ["build-contracts-dev", "test-node", "e2e-install", "e2e-serve-rendezvous"]
+script = [
+    '''
+    cleanup() {
+        for pidfile in /tmp/cream-e2e-server.pid /tmp/cream-e2e-rendezvous.pid; do
+            if [ -f "$pidfile" ]; then
+                kill $(cat "$pidfile") 2>/dev/null || true
+                rm -f "$pidfile"
+            fi
+        done
+    }
+    trap cleanup EXIT
+    cd tests/e2e && npx playwright test --project rendezvous
+    ''',
+]
 
 [tasks.e2e-install]
 description = "Install Playwright and browser dependencies"

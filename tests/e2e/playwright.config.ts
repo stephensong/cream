@@ -21,6 +21,12 @@ export default defineConfig({
     {
       name: 'chromium',
       use: { browserName: 'chromium' },
+      testIgnore: /12-customer-rendezvous/,
+    },
+    {
+      name: 'rendezvous',
+      use: { browserName: 'chromium' },
+      testMatch: /12-customer-rendezvous/,
     },
   ],
 });

@@ -13,6 +13,16 @@ export async function waitForAppLoad(page: Page): Promise<void> {
 }
 
 /**
+ * Navigate to an explicit URL and wait for WASM to load.
+ */
+export async function waitForAppLoadAt(page: Page, url: string): Promise<void> {
+  await page.goto(url);
+  await expect(
+    page.locator('.user-setup, .app-header').first()
+  ).toBeVisible({ timeout: 30_000 });
+}
+
+/**
  * Wait for the Freenet connection status to show "Connected".
  */
 export async function waitForConnected(page: Page): Promise<void> {

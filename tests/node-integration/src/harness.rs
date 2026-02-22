@@ -15,10 +15,10 @@ use crate::{
     connect_to_node_at, extract_get_response_state, extract_notification_bytes, is_get_response,
     is_put_response, is_subscribe_success, is_update_notification, is_update_response,
     make_directory_contract, make_directory_entry, make_dummy_customer, make_dummy_supplier,
-    make_storefront_contract, node_url, recv_matching, wait_for_get,
+    make_storefront_contract, node_url, recv_matching, wait_for_get, wait_for_put,
 };
 
-const TIMEOUT: Duration = Duration::from_secs(30);
+const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A supplier participant in the test harness.
 pub struct Supplier {
@@ -341,21 +341,14 @@ fn make_initial_storefront(owner: &SupplierId, name: &str) -> StorefrontState {
 /// PUT a storefront contract via the supplier's connection and wait for confirmation.
 async fn put_storefront(supplier: &mut Supplier, contract: ContractContainer) {
     let state_bytes = serde_json::to_vec(&supplier.storefront).unwrap();
-    supplier
-        .api
-        .send(ClientRequest::ContractOp(ContractRequest::Put {
-            contract,
-            state: WrappedState::new(state_bytes),
-            related_contracts: RelatedContracts::default(),
-            subscribe: false,
-            blocking_subscribe: false,
-        }))
-        .await
-        .unwrap();
-
-    recv_matching(&mut supplier.api, is_put_response, TIMEOUT)
-        .await
-        .unwrap_or_else(|| panic!("PutResponse for {}'s storefront", supplier.name));
+    wait_for_put(
+        &mut supplier.api,
+        contract,
+        WrappedState::new(state_bytes),
+        TIMEOUT,
+    )
+    .await
+    .unwrap_or_else(|| panic!("PutResponse for {}'s storefront", supplier.name));
 }
 
 /// Register a supplier in the directory via Update.

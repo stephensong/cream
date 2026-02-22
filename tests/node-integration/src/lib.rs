@@ -243,6 +243,68 @@ pub async fn wait_for_get(
     }
 }
 
+/// Send PUT and drain messages until a PutResponse is received, or timeout expires.
+/// If the recv times out without a PutResponse, re-sends the PUT and tries again.
+pub async fn wait_for_put(
+    api: &mut WebApi,
+    contract: ContractContainer,
+    state: WrappedState,
+    timeout: Duration,
+) -> Option<HostResponse> {
+    let deadline = Instant::now() + timeout;
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            tracing::error!("wait_for_put: timed out after {attempt} attempts");
+            return None;
+        }
+
+        api.send(ClientRequest::ContractOp(ContractRequest::Put {
+            contract: contract.clone(),
+            state: state.clone(),
+            related_contracts: RelatedContracts::default(),
+            subscribe: false,
+            blocking_subscribe: false,
+        }))
+        .await
+        .unwrap();
+
+        // Drain messages for up to 30s looking for the PutResponse
+        let drain_deadline = Instant::now() + Duration::from_secs(30).min(remaining);
+        loop {
+            let drain_remaining = drain_deadline.saturating_duration_since(Instant::now());
+            if drain_remaining.is_zero() {
+                tracing::debug!("wait_for_put: drain timeout on attempt {attempt}, will re-send");
+                break;
+            }
+            match tokio::time::timeout(drain_remaining, api.recv()).await {
+                Ok(Ok(resp)) if is_put_response(&resp) => {
+                    if attempt > 1 {
+                        tracing::info!("wait_for_put: succeeded on attempt {attempt}");
+                    }
+                    return Some(resp);
+                }
+                Ok(Ok(_other)) => {
+                    // Non-PUT message (e.g. notification), keep draining
+                    continue;
+                }
+                Ok(Err(e)) => {
+                    tracing::debug!("wait_for_put: error on attempt {attempt}: {:?}", e);
+                    break;
+                }
+                Err(_) => {
+                    tracing::debug!("wait_for_put: drain timeout on attempt {attempt}, will re-send");
+                    break;
+                }
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
 /// Extract UpdateNotification bytes from a HostResponse.
 pub fn extract_notification_bytes(resp: &HostResponse) -> Option<Vec<u8>> {
     if let HostResponse::ContractResponse(ContractResponse::UpdateNotification { update, .. }) =

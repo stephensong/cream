@@ -10,7 +10,6 @@ mobile = ["dioxus/mobile", "dioxus/router"]
 example-data = []
 no-sync = []
 use-node = []
-customer = []
 
 [dependencies]
 cream-common = { path = "../common", features = ["dev"] }
@@ -29,9 +28,11 @@ freenet-stdlib = { version = "0.1", features = ["net"] }
 web-sys = { version = "0.3", features = [
     "BinaryType",
     "Blob",
+    "Clipboard",
     "console",
     "ErrorEvent",
     "Location",
+    "Navigator",
     "Storage",
     "UrlSearchParams",
     "WebSocket",

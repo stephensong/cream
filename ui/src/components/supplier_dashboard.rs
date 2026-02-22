@@ -54,6 +54,7 @@ pub fn SupplierDashboard() -> Element {
                 p { "Name: {moniker}" }
                 p { "Location: {postcode}" }
                 p { "Description: {description}" }
+                ShareableUrl { moniker: moniker.clone() }
             }
 
             div { class: "dashboard-section",
@@ -223,4 +224,50 @@ fn AddProductForm(on_added: EventHandler<()>) -> Element {
             }
         }
     }
+}
+
+#[component]
+fn ShareableUrl(moniker: String) -> Element {
+    #[cfg(target_family = "wasm")]
+    {
+        let shareable_url = web_sys::window()
+            .and_then(|w| w.location().origin().ok())
+            .map(|origin| format!("{}/?supplier={}", origin, moniker.to_lowercase()));
+
+        let mut copy_status = use_signal(|| None::<&'static str>);
+
+        if let Some(url) = shareable_url {
+            return rsx! {
+                div { class: "shareable-url",
+                    label { "Share with customers:" }
+                    div { class: "url-copy-row",
+                        code { "{url}" }
+                        button {
+                            onclick: {
+                                let url = url.clone();
+                                move |_| {
+                                    let url = url.clone();
+                                    spawn(async move {
+                                        if let Some(window) = web_sys::window() {
+                                            let clipboard = window.navigator().clipboard();
+                                            let promise = clipboard.write_text(&url);
+                                            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+                                            copy_status.set(Some("Copied!"));
+                                        }
+                                    });
+                                }
+                            },
+                            if let Some(status) = *copy_status.read() {
+                                "{status}"
+                            } else {
+                                "Copy"
+                            }
+                        }
+                    }
+                }
+            };
+        }
+    }
+
+    rsx! {}
 }
