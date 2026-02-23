@@ -71,13 +71,14 @@ pub fn WalletView() -> Element {
                     },
                     {Currency::all().iter().map(|c| {
                         let label = c.label();
+                        let is_selected = *c == currency;
                         let desc = match c {
                             Currency::Curds => "Curds (CURD)",
                             Currency::Sats => "Sats (Bitcoin)",
                             Currency::Cents => "AUD (illustrative)",
                         };
                         rsx! {
-                            option { value: "{label}", "{desc}" }
+                            option { value: "{label}", selected: is_selected, "{desc}" }
                         }
                     })}
                 }
