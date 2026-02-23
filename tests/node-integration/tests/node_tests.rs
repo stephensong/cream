@@ -689,5 +689,70 @@ async fn cumulative_node_tests() {
     }
     println!("   PASSED");
 
+    // ═══════════════════════════════════════════════════════════════════
+    // Step 8: Insufficient balance rejects order
+    //
+    // Creates a customer with 0 balance and verifies that placing an
+    // order is rejected without touching the supplier's storefront.
+    // ═══════════════════════════════════════════════════════════════════
+    println!("── Step 8: insufficient_balance_rejects_order ──");
+    {
+        use cream_node_integration::harness::Customer;
+        use cream_node_integration::make_dummy_customer;
+
+        let (zara_id, zara_vk) = make_dummy_customer("Zara");
+        let api_zara = connect_to_node_at(&node_url(3001)).await;
+
+        let mut zara = Customer {
+            name: "Zara".to_string(),
+            id: zara_id.clone(),
+            verifying_key: zara_vk,
+            api: api_zara,
+            balance: 0,
+        };
+
+        // Subscribe Zara to Gary's storefront
+        zara.subscribe_to_storefront(&h.gary).await;
+
+        // Count Gary's current orders
+        let orders_before = h.gary.storefront.orders.len();
+
+        // Build an order for Gary's Expiry Test Milk (price 500, 2-Day Reserve tier)
+        let now = chrono::Utc::now();
+        let order = make_dummy_order(
+            &h.gary
+                .storefront
+                .products
+                .values()
+                .find(|sp| sp.product.name == "Expiry Test Milk")
+                .expect("Gary should have Expiry Test Milk")
+                .product
+                .id,
+            &zara_id,
+            DepositTier::Reserve2Days,
+            2,
+            500,
+            now,
+        );
+
+        // Attempt to place the order — should fail
+        let result = zara.place_order(order, &mut h.gary).await;
+        assert!(
+            result.is_err(),
+            "8: order should be rejected with 0 balance"
+        );
+
+        // Gary's storefront order count should be unchanged
+        assert_eq!(
+            h.gary.storefront.orders.len(),
+            orders_before,
+            "8: Gary's order count should be unchanged"
+        );
+
+        // Zara's balance should still be 0
+        assert_eq!(zara.balance, 0, "8: Zara's balance should still be 0");
+    }
+    println!("   PASSED");
+
     println!("\n══ All node-integration steps passed ══");
 }

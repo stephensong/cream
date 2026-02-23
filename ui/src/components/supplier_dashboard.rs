@@ -16,6 +16,9 @@ pub fn SupplierDashboard() -> Element {
     let mut shared_state = use_shared_state();
     let mut show_add_product = use_signal(|| false);
     let mut editing_schedule = use_signal(|| false);
+    let mut editing_product = use_signal(|| None::<String>);
+    let mut edit_price = use_signal(String::new);
+    let mut edit_quantity = use_signal(String::new);
 
     let state = user_state.read();
     let moniker = state.moniker.clone().unwrap_or_default();
@@ -132,6 +135,12 @@ pub fn SupplierDashboard() -> Element {
                         {products.iter().map(|(product, available)| {
                             let pid = product.id.0.clone();
                             let price_str = format_amount(product.price_curd, &currency);
+                            let is_editing = editing_product.read().as_deref() == Some(&pid);
+                            let pid_edit = pid.clone();
+                            #[allow(unused_variables)]
+                            let pid_save = pid.clone();
+                            let current_price = product.price_curd;
+                            let current_qty = product.quantity_total;
                             rsx! {
                                 div { class: "product-card",
                                     key: "{pid}",
@@ -140,7 +149,65 @@ pub fn SupplierDashboard() -> Element {
                                         span { class: "category", "{product.category:?}" }
                                     }
                                     p { "{product.description}" }
-                                    p { "Price: {price_str} | Available: {available}" }
+                                    if is_editing {
+                                        div { class: "edit-product-form",
+                                            div { class: "form-group",
+                                                label { "Price (CURD):" }
+                                                input {
+                                                    r#type: "number",
+                                                    min: "1",
+                                                    value: "{edit_price}",
+                                                    oninput: move |evt| edit_price.set(evt.value()),
+                                                }
+                                            }
+                                            div { class: "form-group",
+                                                label { "Quantity:" }
+                                                input {
+                                                    r#type: "number",
+                                                    min: "0",
+                                                    value: "{edit_quantity}",
+                                                    oninput: move |evt| edit_quantity.set(evt.value()),
+                                                }
+                                            }
+                                            button {
+                                                onclick: move |_| {
+                                                    #[allow(unused_variables)]
+                                                    let p = edit_price.read().trim().parse::<u64>().unwrap_or(0);
+                                                    #[allow(unused_variables)]
+                                                    let q = edit_quantity.read().trim().parse::<u32>().unwrap_or(0);
+                                                    if p > 0 {
+                                                        #[cfg(feature = "use-node")]
+                                                        {
+                                                            let node = use_node_action();
+                                                            node.send(NodeAction::UpdateProduct {
+                                                                product_id: pid_save.clone(),
+                                                                price_curd: p,
+                                                                quantity_total: q,
+                                                            });
+                                                        }
+                                                    }
+                                                    editing_product.set(None);
+                                                },
+                                                "Save"
+                                            }
+                                            button {
+                                                onclick: move |_| {
+                                                    editing_product.set(None);
+                                                },
+                                                "Cancel"
+                                            }
+                                        }
+                                    } else {
+                                        p { class: "quantity", "Price: {price_str} | Available: {available}" }
+                                        button {
+                                            onclick: move |_| {
+                                                editing_product.set(Some(pid_edit.clone()));
+                                                edit_price.set(current_price.to_string());
+                                                edit_quantity.set(current_qty.to_string());
+                                            },
+                                            "Edit"
+                                        }
+                                    }
                                 }
                             }
                         })}
@@ -173,6 +240,13 @@ pub fn SupplierDashboard() -> Element {
                                     format!("Deposit: {} ({deposit_str})", order.deposit_tier)
                                 }
                             };
+                            let can_cancel = matches!(
+                                order.status,
+                                cream_common::order::OrderStatus::Reserved { .. }
+                                    | cream_common::order::OrderStatus::Paid
+                            );
+                            #[allow(unused_variables)]
+                            let cancel_oid = oid.clone();
                             rsx! {
                                 div { class: "order-card",
                                     key: "{oid}",
@@ -180,6 +254,21 @@ pub fn SupplierDashboard() -> Element {
                                     span { class: "order-status", " — {status}" }
                                     p { "{product_name} x{order.quantity} — {total_str}" }
                                     p { "{deposit_info}" }
+                                    if can_cancel {
+                                        button {
+                                            class: "cancel-order-btn",
+                                            onclick: move |_| {
+                                                #[cfg(feature = "use-node")]
+                                                {
+                                                    let node = use_node_action();
+                                                    node.send(NodeAction::CancelOrder {
+                                                        order_id: cancel_oid.clone(),
+                                                    });
+                                                }
+                                            },
+                                            "Cancel Order"
+                                        }
+                                    }
                                 }
                             }
                         })}

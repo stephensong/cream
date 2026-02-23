@@ -174,7 +174,19 @@ fn AppLayout() -> Element {
         shared_read
             .storefronts
             .get(&moniker)
-            .map(|sf| sf.orders.values().map(|o| o.deposit_amount).sum())
+            .map(|sf| {
+                sf.orders
+                    .values()
+                    .filter(|o| {
+                        matches!(
+                            o.status,
+                            cream_common::order::OrderStatus::Reserved { .. }
+                                | cream_common::order::OrderStatus::Paid
+                        )
+                    })
+                    .map(|o| o.deposit_amount)
+                    .sum()
+            })
             .unwrap_or(0)
     } else {
         0

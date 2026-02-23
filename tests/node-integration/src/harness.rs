@@ -172,9 +172,30 @@ pub struct Customer {
     pub id: CustomerId,
     pub verifying_key: VerifyingKey,
     pub api: WebApi,
+    /// Mock CURD wallet balance (matches UI default of 10,000).
+    pub balance: u64,
 }
 
 impl Customer {
+    /// Place an order if balance is sufficient. Decrements balance and pushes the order
+    /// to the supplier's storefront. Returns `Err` if the customer can't afford the deposit.
+    pub async fn place_order(
+        &mut self,
+        order: Order,
+        supplier: &mut Supplier,
+    ) -> Result<(), String> {
+        let deposit = order.deposit_amount;
+        if self.balance < deposit {
+            return Err(format!(
+                "Insufficient balance: have {}, need {} deposit",
+                self.balance, deposit
+            ));
+        }
+        self.balance -= deposit;
+        supplier.add_order(order).await;
+        Ok(())
+    }
+
     /// GET a supplier's storefront state.
     pub async fn get_storefront(&mut self, supplier: &Supplier) -> StorefrontState {
         self.api
@@ -344,12 +365,14 @@ impl TestHarness {
             id: alice_id,
             verifying_key: alice_vk,
             api: api_alice,
+            balance: 10_000,
         };
         let bob = Customer {
             name: "Bob".to_string(),
             id: bob_id,
             verifying_key: bob_vk,
             api: api_bob,
+            balance: 10_000,
         };
 
         // PUT directory contract (via Gary's connection).

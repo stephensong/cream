@@ -47,6 +47,14 @@ pub enum NodeAction {
     UpdateSchedule {
         schedule: cream_common::storefront::WeeklySchedule,
     },
+    /// Cancel an order on the supplier's storefront (refund deposit).
+    CancelOrder { order_id: String },
+    /// Update a product's price and/or quantity on the supplier's storefront.
+    UpdateProduct {
+        product_id: String,
+        price_curd: u64,
+        quantity_total: u32,
+    },
 }
 
 /// Get a handle to send actions to the node communication coroutine.
@@ -963,6 +971,148 @@ mod wasm_impl {
                         ));
                     } else {
                         clog("[CREAM] UpdateSchedule: sent successfully");
+                    }
+                } else {
+                    clog(&format!(
+                        "[CREAM] ERROR: Storefront state not found for {}",
+                        supplier_name
+                    ));
+                }
+            }
+
+            NodeAction::CancelOrder { order_id } => {
+                clog(&format!("[CREAM] CancelOrder: {}", order_id));
+                let my_supplier_id = key_manager.supplier_id();
+                let (supplier_name, sf_key) = {
+                    let state = shared.read();
+                    state
+                        .directory
+                        .entries
+                        .get(&my_supplier_id)
+                        .map(|entry| (entry.name.clone(), entry.storefront_key))
+                        .or_else(|| {
+                            sf_contract_keys
+                                .iter()
+                                .next()
+                                .map(|(name, key)| (name.clone(), *key))
+                        })
+                        .unzip()
+                };
+
+                let (Some(supplier_name), Some(sf_key)) = (supplier_name, sf_key) else {
+                    clog("[CREAM] ERROR: No storefront found, can't cancel order");
+                    return;
+                };
+
+                let existing_sf = shared.read().storefronts.get(&supplier_name).cloned();
+                if let Some(mut sf) = existing_sf {
+                    let oid = OrderId(order_id.clone());
+                    if let Some(order) = sf.orders.get_mut(&oid) {
+                        if !order.status.can_transition_to(&OrderStatus::Cancelled) {
+                            clog(&format!(
+                                "[CREAM] ERROR: Cannot cancel order {} in status {}",
+                                order_id, order.status
+                            ));
+                            return;
+                        }
+                        order.status = OrderStatus::Cancelled;
+
+                        let sf_bytes = serde_json::to_vec(&sf).unwrap();
+                        let update = ClientRequest::ContractOp(ContractRequest::Update {
+                            key: sf_key,
+                            data: UpdateData::State(State::from(sf_bytes)),
+                        });
+                        shared
+                            .write()
+                            .storefronts
+                            .insert(supplier_name.clone(), sf);
+
+                        if let Err(e) = api.send(update).await {
+                            clog(&format!(
+                                "[CREAM] ERROR: Failed to cancel order: {:?}",
+                                e
+                            ));
+                        } else {
+                            clog("[CREAM] CancelOrder: sent successfully");
+                        }
+                    } else {
+                        clog(&format!(
+                            "[CREAM] ERROR: Order {} not found in storefront",
+                            order_id
+                        ));
+                    }
+                } else {
+                    clog(&format!(
+                        "[CREAM] ERROR: Storefront state not found for {}",
+                        supplier_name
+                    ));
+                }
+            }
+
+            NodeAction::UpdateProduct {
+                product_id,
+                price_curd,
+                quantity_total,
+            } => {
+                clog(&format!(
+                    "[CREAM] UpdateProduct: {} price={} qty={}",
+                    product_id, price_curd, quantity_total
+                ));
+                let my_supplier_id = key_manager.supplier_id();
+                let (supplier_name, sf_key) = {
+                    let state = shared.read();
+                    state
+                        .directory
+                        .entries
+                        .get(&my_supplier_id)
+                        .map(|entry| (entry.name.clone(), entry.storefront_key))
+                        .or_else(|| {
+                            sf_contract_keys
+                                .iter()
+                                .next()
+                                .map(|(name, key)| (name.clone(), *key))
+                        })
+                        .unzip()
+                };
+
+                let (Some(supplier_name), Some(sf_key)) = (supplier_name, sf_key) else {
+                    clog("[CREAM] ERROR: No storefront found, can't update product");
+                    return;
+                };
+
+                let existing_sf = shared.read().storefronts.get(&supplier_name).cloned();
+                if let Some(mut sf) = existing_sf {
+                    let pid = ProductId(product_id.clone());
+                    if let Some(signed_product) = sf.products.get_mut(&pid) {
+                        signed_product.product.price_curd = price_curd;
+                        signed_product.product.quantity_total = quantity_total;
+                        signed_product.product.updated_at = chrono::Utc::now();
+                        signed_product.signature =
+                            key_manager.sign_product(&signed_product.product);
+
+                        let sf_bytes = serde_json::to_vec(&sf).unwrap();
+                        let update = ClientRequest::ContractOp(ContractRequest::Update {
+                            key: sf_key,
+                            data: UpdateData::State(State::from(sf_bytes)),
+                        });
+                        shared
+                            .write()
+                            .storefronts
+                            .insert(supplier_name.clone(), sf);
+
+                        if let Err(e) = api.send(update).await {
+                            clog(&format!(
+                                "[CREAM] ERROR: Failed to update product: {:?}",
+                                e
+                            ));
+                        } else {
+                            clog("[CREAM] UpdateProduct: sent successfully");
+                        }
+                    } else {
+                        clog(&format!(
+                            "[CREAM] ERROR: Product {} not found in storefront",
+                            product_id
+                        ));
                     }
                 } else {
                     clog(&format!(

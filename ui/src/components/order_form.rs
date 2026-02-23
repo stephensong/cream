@@ -12,6 +12,7 @@ pub fn OrderForm(supplier_name: String, product_id: String, product_name: String
     let mut quantity = use_signal(|| 1u32);
     let mut deposit_tier = use_signal(|| "2-Day Reserve (10%)".to_string());
     let mut submitted_id = use_signal(|| None::<u32>);
+    let mut insufficient_funds = use_signal(|| false);
     let currency = user_state.read().currency.clone();
 
     if let Some(order_id) = *submitted_id.read() {
@@ -62,6 +63,9 @@ pub fn OrderForm(supplier_name: String, product_id: String, product_name: String
                 }
             }
             p { class: "order-total", "Total: {total_str}" }
+            if *insufficient_funds.read() {
+                p { class: "error-message", "Insufficient balance to place this order." }
+            }
             button {
                 onclick: {
                     let supplier = supplier_name.clone();
@@ -73,7 +77,7 @@ pub fn OrderForm(supplier_name: String, product_id: String, product_name: String
                         let tier = deposit_tier.read().clone();
 
                         // Place order in local state
-                        let id = user_state.write().place_order(
+                        let result = user_state.write().place_order(
                             supplier.clone(),
                             product.clone(),
                             qty,
@@ -81,20 +85,29 @@ pub fn OrderForm(supplier_name: String, product_id: String, product_name: String
                             price_per_unit,
                         );
 
-                        // Send to node if connected
-                        #[cfg(feature = "use-node")]
-                        {
-                            let node = use_node_action();
-                            node.send(NodeAction::PlaceOrder {
-                                storefront_name: supplier.clone(),
-                                product_id: product_id.clone(),
-                                quantity: qty,
-                                deposit_tier: tier,
-                                price_per_unit,
-                            });
-                        }
+                        match result {
+                            Some(id) => {
+                                insufficient_funds.set(false);
 
-                        submitted_id.set(Some(id));
+                                // Send to node if connected
+                                #[cfg(feature = "use-node")]
+                                {
+                                    let node = use_node_action();
+                                    node.send(NodeAction::PlaceOrder {
+                                        storefront_name: supplier.clone(),
+                                        product_id: product_id.clone(),
+                                        quantity: qty,
+                                        deposit_tier: tier,
+                                        price_per_unit,
+                                    });
+                                }
+
+                                submitted_id.set(Some(id));
+                            }
+                            None => {
+                                insufficient_funds.set(true);
+                            }
+                        }
                     }
                 },
                 "Place Order"

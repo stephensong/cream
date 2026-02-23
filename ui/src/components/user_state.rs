@@ -164,18 +164,22 @@ impl UserState {
         quantity: u32,
         deposit_tier: String,
         price_per_unit: u64,
-    ) -> u32 {
-        let id = self.next_order_id;
-        self.next_order_id += 1;
-
-        // Deduct deposit from wallet balance
+    ) -> Option<u32> {
+        // Calculate deposit required
         let total = price_per_unit * quantity as u64;
         let deposit = match deposit_tier.as_str() {
             "2-Day Reserve (10%)" => total / 10,
             "1-Week Reserve (20%)" => total / 5,
             _ => total, // Full Payment
         };
-        self.balance = self.balance.saturating_sub(deposit);
+
+        if self.balance < deposit {
+            return None;
+        }
+
+        let id = self.next_order_id;
+        self.next_order_id += 1;
+        self.balance -= deposit;
 
         self.orders.push(PlacedOrder {
             id,
@@ -187,7 +191,7 @@ impl UserState {
             status: "Reserved".into(),
         });
         self.save();
-        id
+        Some(id)
     }
 
     pub fn add_product(
