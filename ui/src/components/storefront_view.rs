@@ -1,5 +1,6 @@
 use dioxus::prelude::*;
 
+use cream_common::currency::format_amount;
 use cream_common::storefront::WeeklySchedule;
 
 use super::order_form::OrderForm;
@@ -29,7 +30,10 @@ pub fn StorefrontView(supplier_name: String) -> Element {
     }
 
     // Check if this is the current user's storefront
-    let is_own = user_state.read().moniker.as_ref() == Some(&supplier_name);
+    let state = user_state.read();
+    let is_own = state.moniker.as_ref() == Some(&supplier_name);
+    let currency = state.currency.clone();
+    drop(state);
 
     // Get schedule + timezone for the open/closed badge
     let (storefront_schedule, storefront_timezone): (Option<WeeklySchedule>, Option<String>) = {
@@ -61,8 +65,6 @@ pub fn StorefrontView(supplier_name: String) -> Element {
                     )
                 })
                 .collect()
-        } else if cfg!(feature = "example-data") {
-            example_products()
         } else {
             Vec::new()
         }
@@ -92,12 +94,13 @@ pub fn StorefrontView(supplier_name: String) -> Element {
                         let pid = product_id.clone();
                         let name_clone = name.clone();
                         let is_own_store = is_own;
+                        let price_str = format_amount(price, &currency);
                         rsx! {
                             div { class: "product-card",
                                 key: "{product_id}",
                                 h3 { "{name}" }
                                 span { class: "category", "{category}" }
-                                p { class: "price", "{price} CURD" }
+                                p { class: "price", "{price_str}" }
                                 p { class: "quantity", "Available: {qty}" }
                                 if !is_own_store {
                                     button {
@@ -168,12 +171,3 @@ fn get_utc_offset_minutes(tz: &str) -> Option<i32> {
     }
 }
 
-fn example_products() -> Vec<(String, String, String, u64, u32)> {
-    vec![
-        ("ex-1".into(), "Raw Whole Milk (1 gal)".into(), "Milk".into(), 800, 25),
-        ("ex-2".into(), "Aged Cheddar (1 lb)".into(), "Cheese".into(), 1200, 15),
-        ("ex-3".into(), "Cultured Butter (8 oz)".into(), "Butter".into(), 600, 30),
-        ("ex-4".into(), "Fresh Cream (1 pt)".into(), "Cream".into(), 500, 20),
-        ("ex-5".into(), "Plain Kefir (1 qt)".into(), "Kefir".into(), 700, 12),
-    ]
-}

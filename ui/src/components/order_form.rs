@@ -1,5 +1,7 @@
 use dioxus::prelude::*;
 
+use cream_common::currency::format_amount;
+
 #[cfg(feature = "use-node")]
 use super::node_api::{use_node_action, NodeAction};
 use super::user_state::use_user_state;
@@ -10,8 +12,10 @@ pub fn OrderForm(supplier_name: String, product_id: String, product_name: String
     let mut quantity = use_signal(|| 1u32);
     let mut deposit_tier = use_signal(|| "2-Day Reserve (10%)".to_string());
     let mut submitted_id = use_signal(|| None::<u32>);
+    let currency = user_state.read().currency.clone();
 
     if let Some(order_id) = *submitted_id.read() {
+        let confirm_total = format_amount(price_per_unit * *quantity.read() as u64, &currency);
         return rsx! {
             div { class: "order-confirmation",
                 h3 { "Order Submitted!" }
@@ -19,19 +23,21 @@ pub fn OrderForm(supplier_name: String, product_id: String, product_name: String
                 p { "Product: {product_name}" }
                 p { "Quantity: {quantity}" }
                 p { "Deposit tier: {deposit_tier}" }
-                p { "Total: {price_per_unit * *quantity.read() as u64} CURD" }
+                p { "Total: {confirm_total}" }
                 p { "Your reservation has been placed. View it in My Orders." }
             }
         };
     }
 
     let total = price_per_unit * *quantity.read() as u64;
+    let price_each_str = format_amount(price_per_unit, &currency);
+    let total_str = format_amount(total, &currency);
 
     rsx! {
         div { class: "order-form",
             h2 { "Order: {product_name}" }
             p { "From: {supplier_name}" }
-            p { "Price: {price_per_unit} CURD each" }
+            p { "Price: {price_each_str} each" }
             div { class: "form-group",
                 label { "Quantity:" }
                 input {
@@ -55,7 +61,7 @@ pub fn OrderForm(supplier_name: String, product_id: String, product_name: String
                     option { value: "Full Payment (100%)", "Full Payment (100%)" }
                 }
             }
-            p { class: "order-total", "Total: {total} CURD" }
+            p { class: "order-total", "Total: {total_str}" }
             button {
                 onclick: {
                     let supplier = supplier_name.clone();

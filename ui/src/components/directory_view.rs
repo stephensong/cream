@@ -112,24 +112,6 @@ pub fn DirectoryView() -> Element {
         }
     }
 
-    // Add example data when feature is enabled and not connected to node
-    if cfg!(feature = "example-data") {
-        let shared = shared_state.read();
-        if shared.directory.entries.is_empty() {
-            for (name, desc, postcode) in example_suppliers() {
-                let dist = distance_between_postcodes(&user_postcode, &postcode);
-                suppliers.push(SupplierEntry {
-                    name,
-                    description: desc,
-                    postcode,
-                    locality: None,
-                    distance_km: dist,
-                    product_count: 5,
-                });
-            }
-        }
-    }
-
     // Sort by distance (closest first), unknowns at the end
     suppliers.sort_by(|a, b| {
         let da = a.distance_km.unwrap_or(f64::MAX);
@@ -208,33 +190,3 @@ pub fn DirectoryView() -> Element {
     }
 }
 
-/// Example suppliers with Australian postcodes for development.
-fn example_suppliers() -> Vec<(String, String, String)> {
-    vec![
-        (
-            "Green Valley Farm".into(),
-            "Organic raw dairy from pastured cows".into(),
-            "2480".into(), // Lismore, NSW
-        ),
-        (
-            "Mountain Creamery".into(),
-            "Artisan cheese and butter".into(),
-            "3741".into(), // Bright, VIC
-        ),
-        (
-            "Sunrise Dairy".into(),
-            "Fresh raw milk and kefir".into(),
-            "4370".into(), // Warwick, QLD
-        ),
-        (
-            "South Coast Organics".into(),
-            "Certified organic dairy products".into(),
-            "2546".into(), // Moruya, NSW
-        ),
-        (
-            "Tasmania Pure".into(),
-            "Heritage breed dairy, small batch".into(),
-            "7250".into(), // Launceston, TAS
-        ),
-    ]
-}

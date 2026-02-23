@@ -7,8 +7,6 @@ edition = "2021"
 default = ["web"]
 web = ["dioxus/web", "dioxus/router"]
 mobile = ["dioxus/mobile", "dioxus/router"]
-example-data = []
-no-sync = []
 use-node = []
 
 [dependencies]

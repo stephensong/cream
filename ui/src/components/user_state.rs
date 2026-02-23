@@ -1,3 +1,4 @@
+use cream_common::currency::Currency;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +59,9 @@ pub struct UserState {
     /// Customer mode: Base58-encoded ContractInstanceId for the supplier's storefront.
     #[serde(default)]
     pub supplier_storefront_key: Option<String>,
+    /// Preferred display currency (prices are always stored in curds internally).
+    #[serde(default)]
+    pub currency: Currency,
 }
 
 impl UserState {
@@ -79,6 +83,7 @@ impl UserState {
             connected_supplier: None,
             supplier_node_url: None,
             supplier_storefront_key: None,
+            currency: Currency::default(),
         }
     }
 

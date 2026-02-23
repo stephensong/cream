@@ -1,11 +1,15 @@
 use dioxus::prelude::*;
 
+use cream_common::currency::format_amount;
+
 use super::user_state::use_user_state;
 
 #[component]
 pub fn MyOrders() -> Element {
     let user_state = use_user_state();
-    let orders = &user_state.read().orders;
+    let state = user_state.read();
+    let currency = state.currency.clone();
+    let orders = &state.orders;
 
     rsx! {
         div { class: "my-orders",
@@ -16,6 +20,7 @@ pub fn MyOrders() -> Element {
                 div { class: "order-list",
                     {orders.iter().map(|order| {
                         let total = order.price_per_unit * order.quantity as u64;
+                        let total_str = format_amount(total, &currency);
                         rsx! {
                             div { class: "order-card",
                                 key: "{order.id}",
@@ -26,7 +31,7 @@ pub fn MyOrders() -> Element {
                                 p { class: "order-product", "{order.product}" }
                                 p { class: "order-supplier", "From: {order.supplier}" }
                                 p { "Qty: {order.quantity} | Deposit: {order.deposit_tier}" }
-                                p { class: "order-total", "Total: {total} CURD" }
+                                p { class: "order-total", "Total: {total_str}" }
                             }
                         }
                     })}

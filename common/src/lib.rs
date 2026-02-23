@@ -1,4 +1,5 @@
 mod au_postcodes;
+pub mod currency;
 pub mod directory;
 pub mod identity;
 pub mod location;

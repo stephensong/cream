@@ -52,14 +52,12 @@ cream/
 | ui | `web` (default) | Enables Dioxus web renderer |
 | ui | `mobile` | Enables Dioxus mobile renderer (mutually exclusive with `web`) |
 | ui | `use-node` | Enables real Freenet WebSocket connection; without it, runs offline |
-| ui | `example-data` | Shows mock products when no network data available |
-| ui | `no-sync` | Disables network synchronization |
 
 ## Build Commands
 
 ```bash
-# Development (no network, example data)
-cargo make dev-example-no-sync
+# Development (full fixture with live nodes)
+cargo make fixture
 
 # Development connected to local Freenet node
 cargo make build-contracts-dev    # contracts with dev feature (no sig checks)

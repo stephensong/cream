@@ -50,16 +50,6 @@ cwd = "ui"
 command = "dx"
 args = ["serve"]
 
-[tasks.dev-example-no-sync]
-description = "Run UI dev server with example data and no sync"
-dependencies = ["tailwind-install", "tailwind-build"]
-cwd = "ui"
-command = "dx"
-args = ["serve"]
-[tasks.dev-example-no-sync.env]
-CARGO_FEATURE_EXAMPLE_DATA = "1"
-CARGO_FEATURE_NO_SYNC = "1"
-
 [tasks.dev-connected]
 description = "Run UI dev server connected to local Freenet node"
 dependencies = ["build-contracts-dev"]

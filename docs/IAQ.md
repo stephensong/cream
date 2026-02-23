@@ -184,6 +184,77 @@ Eventually, the name-to-address mapping could itself be a Freenet contract — a
 
 ---
 
+## How does CREAM handle currencies?
+
+CREAM allows each user to configure their wallet to work in one of three currencies: **cents**, **sats**, or **curds**.
+
+| Currency | What it is | Representation |
+|----------|-----------|----------------|
+| **cents** | Australian fiat currency (AUD) | Integer number of cents (e.g. 450 = $4.50) |
+| **sats** | Bitcoin satoshis | Integer (1 BTC = 100,000,000 sats) |
+| **curds** | Fedimint e-cash tokens | Integer (1 curd = 1 sat at present) |
+
+The default currency is **curds**. A user who only browses CREAM — viewing suppliers, checking prices — is never required to purchase curds. The currency choice only matters when money changes hands.
+
+### How curds work
+
+Curds are units of e-cash created by a [Fedimint](https://fedimint.org) federation. Each curd is currently worth exactly one satoshi, though this peg may change in the future. Curds provide the privacy guarantees of Chaumian blind signatures: the federation that issues a curd cannot link it back to who received it or trace how it's spent. All internal CREAM transactions — order deposits, payments, refunds — are conducted in curds.
+
+### Supplier currency choice
+
+A supplier can run their wallet in any of the three currencies. This affects how they see prices and balances:
+
+- **curds** (default): Prices and balances displayed in curds. No conversion needed — this is the native internal currency.
+- **sats**: Prices and balances displayed in satoshis. Since 1 curd = 1 sat at present, this is currently a no-op conversion, but exists as a distinct option for when/if the peg changes.
+- **cents**: Prices and balances displayed in AUD cents. Incoming payments (order deposits, etc.) are converted from curds to cents at the current BTC/AUD exchange rate, sourced from a reputable provider (e.g. CoinGecko, Coinbase). The supplier sees stable dollar amounts rather than volatile crypto values.
+
+### Customer currency choice
+
+Customers make the same choice. If a customer selects **cents**, amounts shown in the UI are converted from the underlying curd values to AUD cents at the current exchange rate. The customer thinks in dollars; the network transacts in curds.
+
+### How conversions work
+
+All transactions on the CREAM network are internally conducted in curds. Currency selection is a **display and conversion layer** at each end of a transaction:
+
+1. Customer sees a product priced at 450 cents ($4.50 AUD).
+2. At order time, CREAM converts 450 cents → equivalent curds at the current BTC/AUD rate.
+3. The order deposit is transmitted as curds through the Freenet network.
+4. The supplier receives curds. If they've selected "cents", their wallet converts the received curds back to cents for display.
+
+The exchange rate is fetched from an external price feed at transaction time. Both parties see amounts in their chosen currency; the network only ever moves curds.
+
+### Curd ↔ sat conversion
+
+Conversions between curds and sats are handled via the Fedimint federation's built-in **Lightning gateway**. A user can:
+
+- **Buy curds**: Send sats via Lightning → receive curds (peg-in).
+- **Sell curds**: Redeem curds → receive sats via Lightning (peg-out).
+
+This uses Fedimint's standard Lightning module — no custom integration needed.
+
+### Curd/sat ↔ cents conversion
+
+Converting between crypto and fiat is the hardest problem. At present, CREAM does not include a built-in fiat on/off-ramp. The "cents" currency option is purely a **display convenience** — it shows fiat-equivalent values based on the current exchange rate, but the user still holds curds underneath.
+
+How a user actually acquires or redeems AUD is left as a future problem. Possible approaches include integration with a Bitcoin/AUD exchange, peer-to-peer trading, or simply accepting that suppliers who choose "cents" are using it as a mental accounting tool while actually transacting in crypto.
+
+### Curds as network gas
+
+Curds also serve as the **fee currency for the CREAM network** — a sort of gas that pays for usage. Every network operation (listing a product, placing an order, updating a storefront) costs a small amount of curds. This prevents spam and abuse while funding the infrastructure (Fedimint federation guardians, Freenet node operators, etc.).
+
+The exact fee schedule and distribution mechanism are yet to be determined, but the fees will be very low — fractions of a cent per operation. The marketplace should feel free to use; fees exist to prevent abuse, not to extract revenue.
+
+### Why curds rather than raw sats?
+
+Curds provide two things that raw Bitcoin satoshis don't:
+
+1. **Privacy**: Chaumian blind signatures mean the federation cannot trace spending. Bitcoin on-chain transactions are fully traceable; even Lightning has routing metadata. Curds are genuinely private.
+2. **Speed and cost**: Curd transfers within CREAM are instant and free — they're just e-cash token exchanges. No on-chain fees, no Lightning routing fees, no channel capacity constraints.
+
+The trade-off is trust in the Fedimint federation (a threshold of guardians must remain honest), but for a local dairy marketplace this is an acceptable model — especially since the federation could be run by the supplier community itself.
+
+---
+
 ## What automated testing suites are deployed with the CREAM dApp to ensure highest quality control?
 
 CREAM uses a three-tier testing strategy: node integration tests (Rust), browser E2E tests (Playwright), and a development fixture that ties everything together. There are no Rust unit tests at present — all testing is integration or end-to-end.
