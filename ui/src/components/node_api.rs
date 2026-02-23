@@ -193,7 +193,7 @@ mod wasm_impl {
         };
 
         let (send_responses, mut host_responses) = mpsc::unbounded();
-        let (_send_half, mut requests) = mpsc::unbounded::<ClientRequest<'static>>();
+        let (send_half, mut requests) = mpsc::unbounded::<ClientRequest<'static>>();
 
         let result_handler = {
             let sender = send_responses.clone();
@@ -586,6 +586,51 @@ mod wasm_impl {
                             ).await {
                                 Ok(()) => clog("[CREAM] Heartbeat sent"),
                                 Err(e) => clog(&format!("[CREAM] WARNING: Heartbeat failed: {}", e)),
+                            }
+                        }
+                    });
+
+                    // Start background order-expiry task (checks once per hour,
+                    // expires Reserved orders whose hold date has passed).
+                    let expiry_supplier = name.clone();
+                    let mut expiry_shared = shared.clone();
+                    let expiry_sf_keys = sf_contract_keys.clone();
+                    let mut expiry_sender = send_half.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let mut last_run_date: Option<chrono::NaiveDate> = None;
+                        loop {
+                            gloo_timers_sleep(60 * 60 * 1000).await; // 1 hour
+                            let today = chrono::Utc::now().date_naive();
+                            if last_run_date == Some(today) {
+                                continue;
+                            }
+                            last_run_date = Some(today);
+
+                            // Clone the storefront, run expiry, and update if changed
+                            let sf_opt = expiry_shared.read().storefronts
+                                .get(&expiry_supplier).cloned();
+                            if let Some(mut sf) = sf_opt {
+                                let now = chrono::Utc::now();
+                                if sf.expire_orders(now) {
+                                    clog(&format!("[CREAM] Expired orders for '{}'", expiry_supplier));
+                                    expiry_shared.write().storefronts
+                                        .insert(expiry_supplier.clone(), sf.clone());
+                                    // Push to network via the internal request channel
+                                    if let Some(sf_key) = expiry_sf_keys.get(&expiry_supplier) {
+                                        let sf_bytes = serde_json::to_vec(&sf).unwrap();
+                                        let update = ClientRequest::ContractOp(
+                                            ContractRequest::Update {
+                                                key: *sf_key,
+                                                data: UpdateData::State(
+                                                    State::from(sf_bytes),
+                                                ),
+                                            },
+                                        );
+                                        if let Err(e) = expiry_sender.send(update).await {
+                                            clog(&format!("[CREAM] ERROR: Failed to send expiry update: {:?}", e));
+                                        }
+                                    }
+                                }
                             }
                         }
                     });

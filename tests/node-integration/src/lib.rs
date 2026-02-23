@@ -8,6 +8,7 @@ use tokio::time::Instant;
 use cream_common::directory::DirectoryEntry;
 use cream_common::identity::{CustomerId, SupplierId};
 use cream_common::location::GeoLocation;
+use cream_common::order::{DepositTier, Order, OrderId, OrderStatus};
 use cream_common::product::{Product, ProductCategory, ProductId};
 use cream_common::storefront::{SignedProduct, StorefrontParameters};
 
@@ -112,6 +113,40 @@ pub fn make_dummy_product(name: &str) -> SignedProduct {
             updated_at: now,
             created_at: now,
         },
+        signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+    }
+}
+
+/// Create a dummy order with a configurable deposit tier and creation timestamp.
+///
+/// The `created_at` parameter lets tests create backdated orders whose reservation
+/// has already expired relative to "now", enabling expiry tests without real waits.
+pub fn make_dummy_order(
+    product_id: &ProductId,
+    customer_id: &CustomerId,
+    tier: DepositTier,
+    quantity: u32,
+    price_per_unit: u64,
+    created_at: chrono::DateTime<chrono::Utc>,
+) -> Order {
+    let total_price = price_per_unit * quantity as u64;
+    let deposit_amount = tier.calculate_deposit(total_price);
+    let expires_at = match tier {
+        DepositTier::Reserve2Days => created_at + chrono::Duration::days(2),
+        DepositTier::Reserve1Week => created_at + chrono::Duration::weeks(1),
+        DepositTier::FullPayment => created_at + chrono::Duration::days(365),
+    };
+    let order_id = OrderId(format!("o-{}", created_at.timestamp_millis()));
+    Order {
+        id: order_id,
+        product_id: product_id.clone(),
+        customer: customer_id.clone(),
+        quantity,
+        deposit_tier: tier,
+        deposit_amount,
+        total_price,
+        status: OrderStatus::Reserved { expires_at },
+        created_at,
         signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
     }
 }

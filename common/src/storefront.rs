@@ -88,6 +88,21 @@ impl StorefrontState {
         total.saturating_sub(reserved)
     }
 
+    /// Transition all `Reserved` orders whose `expires_at` has passed to `Expired`.
+    /// Returns `true` if any orders were changed.
+    pub fn expire_orders(&mut self, now: DateTime<Utc>) -> bool {
+        let mut changed = false;
+        for order in self.orders.values_mut() {
+            if let OrderStatus::Reserved { expires_at } = order.status {
+                if expires_at < now {
+                    order.status = OrderStatus::Expired;
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
     /// Merge another storefront state into this one.
     ///
     /// - Products: LWW by `updated_at`
@@ -233,5 +248,83 @@ impl StorefrontState {
             products,
             orders,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::{CustomerId, SupplierId};
+    use crate::order::{DepositTier, Order, OrderId};
+    use crate::product::ProductId;
+    use chrono::{Duration, Utc};
+    use ed25519_dalek::{SigningKey, Signature};
+
+    fn dummy_storefront() -> StorefrontState {
+        let key = SigningKey::from_bytes(&[1u8; 32]);
+        StorefrontState {
+            info: StorefrontInfo {
+                owner: SupplierId(key.verifying_key()),
+                name: "Test Farm".into(),
+                description: "".into(),
+                location: GeoLocation::new(0.0, 0.0),
+            },
+            products: BTreeMap::new(),
+            orders: BTreeMap::new(),
+        }
+    }
+
+    fn dummy_order(id: &str, status: OrderStatus) -> Order {
+        let key = SigningKey::from_bytes(&[2u8; 32]);
+        Order {
+            id: OrderId(id.into()),
+            product_id: ProductId("p-1".into()),
+            customer: CustomerId(key.verifying_key()),
+            quantity: 1,
+            deposit_tier: DepositTier::Reserve2Days,
+            deposit_amount: 10,
+            total_price: 100,
+            status,
+            created_at: Utc::now(),
+            signature: Signature::from_bytes(&[0u8; 64]),
+        }
+    }
+
+    #[test]
+    fn expire_orders_transitions_past_reserved() {
+        let mut sf = dummy_storefront();
+        let yesterday = Utc::now() - Duration::days(1);
+        let tomorrow = Utc::now() + Duration::days(1);
+
+        sf.orders.insert(
+            OrderId("expired".into()),
+            dummy_order("expired", OrderStatus::Reserved { expires_at: yesterday }),
+        );
+        sf.orders.insert(
+            OrderId("active".into()),
+            dummy_order("active", OrderStatus::Reserved { expires_at: tomorrow }),
+        );
+        sf.orders.insert(
+            OrderId("paid".into()),
+            dummy_order("paid", OrderStatus::Paid),
+        );
+
+        let changed = sf.expire_orders(Utc::now());
+        assert!(changed);
+        assert_eq!(sf.orders[&OrderId("expired".into())].status, OrderStatus::Expired);
+        assert!(matches!(sf.orders[&OrderId("active".into())].status, OrderStatus::Reserved { .. }));
+        assert_eq!(sf.orders[&OrderId("paid".into())].status, OrderStatus::Paid);
+    }
+
+    #[test]
+    fn expire_orders_returns_false_when_nothing_changed() {
+        let mut sf = dummy_storefront();
+        let tomorrow = Utc::now() + Duration::days(1);
+        sf.orders.insert(
+            OrderId("active".into()),
+            dummy_order("active", OrderStatus::Reserved { expires_at: tomorrow }),
+        );
+
+        assert!(!sf.expire_orders(Utc::now()));
     }
 }

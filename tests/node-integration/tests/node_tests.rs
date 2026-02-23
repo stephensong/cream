@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use cream_common::directory::DirectoryState;
+use cream_common::order::{DepositTier, OrderStatus};
 use cream_common::product::ProductCategory;
 use cream_common::storefront::StorefrontState;
 use freenet_stdlib::client_api::{ClientRequest, ContractRequest};
@@ -19,8 +20,8 @@ use freenet_stdlib::prelude::*;
 use cream_node_integration::harness::TestHarness;
 use cream_node_integration::{
     connect_to_node_at, extract_get_response_state, extract_notification_bytes, is_get_response,
-    is_put_response, is_subscribe_success, is_update_notification,
-    make_directory_contract, make_directory_entry, make_dummy_product, make_dummy_supplier,
+    is_put_response, is_subscribe_success, is_update_notification, make_directory_contract,
+    make_directory_entry, make_dummy_order, make_dummy_product, make_dummy_supplier,
     make_storefront_contract, node_url, recv_matching, wait_for_get, wait_for_put,
 };
 
@@ -439,9 +440,8 @@ async fn cumulative_node_tests() {
     // Step 5: Harness — 3 suppliers with products (establishes fixture)
     // ═══════════════════════════════════════════════════════════════════
     println!("── Step 5: harness — 3 suppliers, products, multi-customer ──");
+    let mut h = TestHarness::setup().await;
     {
-        let mut h = TestHarness::setup().await;
-
         // Scenario 5a: product count increments for subscriber
         h.alice.subscribe_to_storefront(&h.gary).await;
 
@@ -478,6 +478,133 @@ async fn cumulative_node_tests() {
         let bob_sf = h.bob.recv_storefront_update().await;
         assert_eq!(alice_sf.products.len(), 3, "5c: Alice sees 3 products");
         assert_eq!(bob_sf.products.len(), 3, "5c: Bob sees 3 products");
+    }
+    println!("   PASSED");
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Step 6: Order expiry — backdated orders across all deposit tiers
+    //
+    // Reuses the harness from Step 5. Alice is already subscribed to
+    // Gary's storefront (3 products from 5a/5c).
+    // ═══════════════════════════════════════════════════════════════════
+    println!("── Step 6: order_expiry_across_deposit_tiers ──");
+    {
+        // Gary adds a product with quantity 10 for the expiry test
+        let product = h
+            .gary
+            .add_product("Expiry Test Milk", ProductCategory::Milk, 500)
+            .await;
+        let product_id = product.product.id.clone();
+
+        // Alice receives the product-add notification (now 4 products total)
+        let sf = h.alice.recv_storefront_update().await;
+        assert_eq!(sf.products.len(), 4, "6: Alice sees 4 products");
+
+        // Place 3 backdated orders (one per deposit tier) — all already expired.
+        // Reserve2Days: created 3 days ago (expired 1 day ago)
+        // Reserve1Week: created 8 days ago (expired 1 day ago)
+        // FullPayment:  created 366 days ago (expired 1 day ago)
+        let now = chrono::Utc::now();
+
+        let order_2day = make_dummy_order(
+            &product_id,
+            &h.alice.id,
+            DepositTier::Reserve2Days,
+            2,
+            500,
+            now - chrono::Duration::days(3),
+        );
+        let order_1week = make_dummy_order(
+            &product_id,
+            &h.alice.id,
+            DepositTier::Reserve1Week,
+            3,
+            500,
+            now - chrono::Duration::days(8),
+        );
+        let order_full = make_dummy_order(
+            &product_id,
+            &h.alice.id,
+            DepositTier::FullPayment,
+            1,
+            500,
+            now - chrono::Duration::days(366),
+        );
+
+        // All three should be Reserved (with past expiry dates)
+        assert!(
+            matches!(order_2day.status, OrderStatus::Reserved { .. }),
+            "2-day order should start as Reserved"
+        );
+        assert!(
+            matches!(order_1week.status, OrderStatus::Reserved { .. }),
+            "1-week order should start as Reserved"
+        );
+        assert!(
+            matches!(order_full.status, OrderStatus::Reserved { .. }),
+            "full-payment order should start as Reserved"
+        );
+
+        // Add orders to Gary's storefront
+        h.gary.add_order(order_2day).await;
+        let sf = h.alice.recv_storefront_update().await;
+        assert_eq!(sf.orders.len(), 1, "6: 1 order after first add");
+
+        h.gary.add_order(order_1week).await;
+        let sf = h.alice.recv_storefront_update().await;
+        assert_eq!(sf.orders.len(), 2, "6: 2 orders after second add");
+
+        h.gary.add_order(order_full).await;
+        let sf = h.alice.recv_storefront_update().await;
+        assert_eq!(sf.orders.len(), 3, "6: 3 orders after third add");
+
+        // Verify available quantity is reduced: 10 total - (2+3+1) reserved = 4
+        assert_eq!(
+            h.gary.storefront.available_quantity(&product_id),
+            4,
+            "6: available quantity should be 4 with 6 units reserved"
+        );
+
+        // Run expiry — all 3 orders should transition to Expired
+        let changed = h.gary.expire_orders().await;
+        assert!(changed, "6: expire_orders should return true");
+
+        // Verify all orders are now Expired locally
+        for order in h.gary.storefront.orders.values() {
+            assert_eq!(
+                order.status,
+                OrderStatus::Expired,
+                "6: order {} should be Expired, got {}",
+                order.id.0,
+                order.status
+            );
+        }
+
+        // Available quantity should be fully restored (expired orders don't reserve)
+        assert_eq!(
+            h.gary.storefront.available_quantity(&product_id),
+            10,
+            "6: available quantity should be restored to 10 after expiry"
+        );
+
+        // Alice should receive the expired state via network notification
+        let sf = h.alice.recv_storefront_update().await;
+        assert_eq!(sf.orders.len(), 3, "6: Alice sees 3 orders");
+        for order in sf.orders.values() {
+            assert_eq!(
+                order.status,
+                OrderStatus::Expired,
+                "6: Alice sees order {} as Expired",
+                order.id.0,
+            );
+        }
+
+        // Alice's view of available quantity should also show full stock
+        assert_eq!(
+            sf.available_quantity(&product_id),
+            10,
+            "6: Alice's available quantity should be 10 after expiry"
+        );
     }
     println!("   PASSED");
 

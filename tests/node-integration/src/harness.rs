@@ -8,6 +8,7 @@ use freenet_stdlib::prelude::*;
 use cream_common::directory::DirectoryState;
 use cream_common::identity::{CustomerId, SupplierId};
 use cream_common::location::GeoLocation;
+use cream_common::order::Order;
 use cream_common::product::{Product, ProductCategory, ProductId};
 use cream_common::storefront::{SignedProduct, StorefrontInfo, StorefrontState};
 
@@ -79,6 +80,48 @@ impl Supplier {
         tokio::time::sleep(Duration::from_millis(10)).await;
 
         self.storefront.products.get(&pid).unwrap()
+    }
+
+    /// Add a pre-built order to this supplier's storefront, send the update, and wait for confirmation.
+    pub async fn add_order(&mut self, order: Order) {
+        let order_id = order.id.clone();
+        self.storefront.orders.insert(order_id, order);
+
+        let sf_bytes = serde_json::to_vec(&self.storefront).unwrap();
+        self.api
+            .send(ClientRequest::ContractOp(ContractRequest::Update {
+                key: self.storefront_key,
+                data: UpdateData::State(State::from(sf_bytes)),
+            }))
+            .await
+            .unwrap();
+
+        recv_matching(&mut self.api, is_update_response, TIMEOUT)
+            .await
+            .expect("Expected UpdateResponse after adding order");
+    }
+
+    /// Run expire_orders on the local storefront, push update if any changed.
+    /// Returns true if any orders were expired.
+    pub async fn expire_orders(&mut self) -> bool {
+        let now = chrono::Utc::now();
+        if self.storefront.expire_orders(now) {
+            let sf_bytes = serde_json::to_vec(&self.storefront).unwrap();
+            self.api
+                .send(ClientRequest::ContractOp(ContractRequest::Update {
+                    key: self.storefront_key,
+                    data: UpdateData::State(State::from(sf_bytes)),
+                }))
+                .await
+                .unwrap();
+
+            recv_matching(&mut self.api, is_update_response, TIMEOUT)
+                .await
+                .expect("Expected UpdateResponse after expiring orders");
+            true
+        } else {
+            false
+        }
     }
 
     /// Return a reference to the local storefront state copy.
