@@ -111,9 +111,13 @@ Guests do not need to install a Freenet node. They connect to a supplier's node 
 
 ### Users
 
-A user is anyone who has created a **user contract** on the Freenet network. This contract is their identity and presence on the network — it makes them permanently contactable. The user contract holds:
+A user is anyone who has created a **user contract** on the Freenet network. Users do not run their own Freenet node — they connect through a supplier's node. This contract is their identity and presence on the network — it makes them permanently contactable. The user contract holds:
 
 - **Public key** — the user's ed25519 identity
+- **Origin supplier** — the supplier who onboarded this user (immutable, set once at contract creation)
+- **Current supplier** — the supplier node the user most recently connected through (updated on sticky login change)
+- **Supplier logins** — a count of logins per supplier, tracking which nodes this user has connected through and how often
+- **Cached suppliers** — up to three geographically proximate supplier endpoints, used as fallbacks if the current supplier is unreachable
 - **Wallet state** — CURD balance and transaction history
 - **Order references** — links to orders placed across various storefronts
 - **Inbox** — a channel where other participants can deliver messages, refund tokens, or notifications
@@ -161,11 +165,48 @@ This is the bootstrap problem: a guest needs to connect to *some* node to see a 
 - **QR code at the farm gate or farmers market** — a supplier shares their node's URL, and scanning it opens the CREAM app pre-configured to connect.
 - **Word of mouth / social media** — a supplier shares a link that launches the app pointed at their node.
 
+### How do users connect to the network?
+
+Users don't run their own Freenet node. They connect to a supplier's node via WebSocket, and all their Freenet traffic routes through that node. The user contract records which supplier they connected through and tracks connection history.
+
+When a guest upgrades to a user (by creating a user contract), the supplier they're connected to becomes their **origin supplier** — permanently recorded in the contract. This creates a tree structure: each user traces back to the supplier who onboarded them, each supplier traces back to whoever onboarded them, all the way to the network's root.
+
+The **current supplier** field updates when the user connects through a different node. This is "sticky" — transient fallback connections don't change it. Only when the user has connected through an alternative supplier for several consecutive sessions does the current supplier update. This prevents brief outages from churning the field while still reflecting genuine migration.
+
+### Supplier fallback and availability
+
+Each user contract caches up to three geographically proximate supplier endpoints, populated from the directory at registration time and periodically refreshed. The user's app also caches these in localStorage.
+
+If the current supplier is unreachable:
+
+1. App tries cached supplier #2
+2. Tries cached supplier #3
+3. Falls back to rendezvous service lookup
+
+This happens silently — the user doesn't need to know or care. The app reconnects through an alternative node and continues working. The user contract still exists on the network regardless of which node the user connects through.
+
+When connected through a fallback supplier, the user can potentially detect manipulation by their primary supplier. If contract state looks different through the fallback, something was wrong with the primary. This provides an implicit consistency check for free.
+
+### Security considerations
+
+The supplier node is the user's only connection to the Freenet network. This means the supplier can:
+
+- **Observe traffic** — see which contracts the user subscribes to, what orders they place, when they're online.
+- **Theoretically serve fake state** — present manipulated contract data for other suppliers' storefronts.
+- **Censor selectively** — drop subscription notifications, delay order updates, hide competing suppliers.
+
+These risks are mitigated by several factors:
+
+- **The Fedimint layer protects money regardless.** Even if a supplier manipulates Freenet contract state, e-cash deposits are locked in the federation's consensus. The supplier can't steal funds by tampering with the coordination layer.
+- **Fallback suppliers enable cross-checking.** If a user occasionally connects through a different node and sees different state, the inconsistency is detectable.
+- **Reputation is at stake.** Supplier reputation (see below) is publicly computable. Misbehaviour leads to user migration, which is visible in the login history across user contracts.
+- **The real-world relationship.** In a local dairy marketplace, you physically visit the farm. The trust relationship already exists — trusting a supplier not to tamper with your network view is comparable to trusting them not to sell you bad milk.
+
 ### Privacy considerations
 
-When a guest connects to a supplier's node, that supplier can see the guest's requests. In the context of a local dairy marketplace, where you're already showing up at someone's farm to collect raw milk, this is an acceptable trade-off.
+When a guest connects to a supplier's node, that supplier can see the guest's requests. Once a guest becomes a user, their traffic still routes through a supplier's node, but their identity is now network-persistent — their user contract exists on the network regardless of which node they happen to be connected through.
 
-Once a guest becomes a user, their user contract is on the network and their interactions flow through it. The user subscribes to their own contract and to any storefronts they're interested in. Traffic still routes through whatever node they're connected to, but their identity is now network-persistent rather than session-ephemeral.
+The origin supplier link in the user contract is publicly readable, which means anyone can trace the tree structure. This reveals who onboarded whom — a social graph of the network's growth. In the context of a local dairy community this is acceptable (these relationships are already visible in the real world), but it's worth noting for privacy-sensitive deployments.
 
 ---
 
@@ -217,6 +258,60 @@ The rendezvous service is a centralised component in an otherwise decentralised 
 ### Future evolution
 
 Eventually, the name-to-address mapping could itself be a Freenet contract — a directory of supplier endpoints stored on the network. But this creates a chicken-and-egg problem: you need a node to read the contract, and you need the directory to find a node. A lightweight centralised rendezvous is the right starting point, with decentralisation as a future evolution.
+
+---
+
+## How does supplier reputation work?
+
+Supplier reputation is derived from observable, publicly verifiable data in Freenet contracts. There is no central reputation authority — anyone can compute any supplier's reputation score from the contracts on the network.
+
+### Reputation signals
+
+| Signal | Source | What it measures |
+|--------|--------|-----------------|
+| **Uptime / availability** | Subscription failures, ping timeouts observed by other nodes | Is the node reliably reachable? |
+| **Order fulfilment rate** | Storefront contract order statuses | Ratio of Fulfilled to Cancelled/Expired orders |
+| **Refund timeliness** | User contract inboxes, Fedimint escrow release timestamps | When orders are cancelled, how quickly do refunds appear? |
+| **Onboarding count** | User contracts with this supplier as origin | How many users has this supplier brought into the network? |
+| **Active users** | User contracts with this supplier as current | How many users currently connect through this node? |
+| **User retention** | Origin vs. current supplier across user contracts | Of those onboarded, how many still connect through this supplier vs. having migrated away? |
+| **User attraction** | User contracts where origin ≠ current and current = this supplier | Users who were onboarded elsewhere but chose to switch to this supplier |
+
+### Why retention and attraction matter
+
+Retention and attraction are the strongest signals. A supplier who onboards 100 users but retains only 20 has a problem — 80 people chose to leave. A supplier who onboards 30 and retains 28 is doing something right. And a supplier who *attracts* users from other suppliers — people who actively chose to switch — is demonstrably better than the alternative they left.
+
+These metrics are self-correcting. A supplier who censors traffic, serves manipulated state, or runs an unreliable node will see users migrate away. The migration is visible in user contracts (current supplier changes), and the resulting drop in retention feeds directly into the reputation score.
+
+### How login tracking works
+
+Each user contract maintains a `supplier_logins` map — a count of logins per supplier. Every time a user's app connects to the network and authenticates, the login is recorded against the supplier node they connected through. This data is public (it's in the user contract on the network), so anyone can aggregate it.
+
+The **current supplier** field in the user contract is "sticky" — it only updates when the user has connected through a different supplier for several consecutive sessions. Transient fallback connections (when the primary is briefly unreachable) don't count. This prevents short outages from unfairly penalising a supplier's retention score.
+
+### Invitation-based onboarding
+
+Suppliers can issue **invitations** to encourage new users to join the network. An invitation is a signed token containing the supplier's name, node address, and an optional expiry. The supplier shares it via QR code at the farm gate, a link on social media, or a text message to a regular customer.
+
+When a guest receives an invitation:
+
+1. The CREAM app connects to the supplier's node (as for any guest).
+2. When the guest upgrades to a user (creates a user contract), the invite token is recorded as provenance — the user contract's origin supplier is set to the inviting supplier.
+3. The supplier's onboarding count increments.
+
+The invitation provides verifiable provenance — the signed token proves which supplier onboarded which user. Without it, anyone could create a user contract claiming affiliation with a popular supplier to inflate their reputation.
+
+### Incentive alignment
+
+The reputation system creates a virtuous cycle:
+
+- **Suppliers want high reputation** because it attracts more users (customers).
+- **High reputation requires** reliable uptime, honest order fulfilment, timely refunds, and active onboarding.
+- **Onboarding more users** directly boosts reputation, so suppliers are motivated to issue invitations and grow the network.
+- **Retaining users** matters more than just onboarding them — a supplier who onboards aggressively but provides poor service will see users migrate away, hurting their retention score.
+- **Gas revenue** — if suppliers earn a fraction of gas fees from operations routed through their node, onboarding and retaining users is directly profitable. Users whose contract operations (placing orders, wallet transactions) route through the supplier generate ongoing gas fees.
+
+This aligns the supplier's economic interest with keeping their node reliable, their service honest, and their users happy.
 
 ---
 
