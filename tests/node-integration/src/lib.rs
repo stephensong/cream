@@ -82,15 +82,19 @@ pub fn make_dummy_customer(name: &str) -> (CustomerId, ed25519_dalek::VerifyingK
 pub fn make_directory_entry(
     supplier_id: &SupplierId,
     name: &str,
+    description: &str,
+    postcode: &str,
+    locality: &str,
+    location: GeoLocation,
     storefront_key: ContractKey,
 ) -> DirectoryEntry {
     DirectoryEntry {
         supplier: supplier_id.clone(),
         name: name.to_string(),
-        description: format!("{name}'s farm"),
-        location: GeoLocation::new(-33.87, 151.21),
-        postcode: Some("2000".to_string()),
-        locality: Some("Sydney".to_string()),
+        description: description.to_string(),
+        location,
+        postcode: Some(postcode.to_string()),
+        locality: Some(locality.to_string()),
         categories: vec![],
         storefront_key,
         updated_at: chrono::Utc::now(),

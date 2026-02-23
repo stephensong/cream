@@ -280,19 +280,12 @@ fn NotFound(segments: Vec<String>) -> Element {
 
 // ─── Setup ───────────────────────────────────────────────────────────────────
 
-#[derive(Clone, PartialEq)]
-enum SetupStep {
-    Profile,
-    SetPassword,
-}
-
 #[component]
 fn SetupScreen() -> Element {
     let mut key_manager: Signal<Option<KeyManager>> = use_context();
     let mut user_state = use_user_state();
     let _shared_state = use_shared_state();
 
-    let mut step = use_signal(|| SetupStep::Profile);
     let mut name_input = use_signal(String::new);
     let mut postcode_input = use_signal(String::new);
     let mut is_supplier = use_signal(|| false);
@@ -304,7 +297,7 @@ fn SetupScreen() -> Element {
     let mut selected_locality = use_signal(|| None::<String>);
 
     // Returning user detection (supplier mode only)
-    let welcome_back = use_signal(|| None::<String>);
+    let mut welcome_back = use_signal(|| None::<String>);
 
     // Auto-connect via ?supplier= query param
     let url_supplier = use_signal(|| get_supplier_query_param());
@@ -337,18 +330,12 @@ fn SetupScreen() -> Element {
         }
     });
 
-    let mut password = use_signal(String::new);
-    let mut password_confirm = use_signal(String::new);
-    let mut password_error = use_signal(|| None::<String>);
     let mut setup_error = use_signal(|| None::<String>);
 
     #[cfg(feature = "use-node")]
     let node = use_node_action();
 
-    let current_step = step.read().clone();
-    match &current_step {
-        SetupStep::Profile => {
-            let can_submit = {
+    let can_submit = {
                 let name_ok = !name_input.read().trim().is_empty();
                 let postcode_ok = is_valid_au_postcode(postcode_input.read().trim());
                 let locality_ok = localities.read().len() <= 1
@@ -364,7 +351,7 @@ fn SetupScreen() -> Element {
 
             let localities_list = localities.read().clone();
             let current_locality = selected_locality.read().clone();
-            let _welcome_msg = welcome_back.read().clone();
+            let welcome_msg = welcome_back.read().clone();
 
             rsx! {
                 div { class: "cream-app",
@@ -379,9 +366,46 @@ fn SetupScreen() -> Element {
                                 placeholder: "Name or moniker...",
                                 value: "{name_input}",
                                 oninput: move |evt| {
-                                    name_input.set(evt.value());
+                                    let val = evt.value();
+                                    name_input.set(val.clone());
+
+                                    // Check directory for returning supplier
+                                    let canonical = title_case(&val);
+                                    let shared = _shared_state.read();
+                                    let found = shared.directory.entries.values().find(|e| {
+                                        e.name.eq_ignore_ascii_case(canonical.trim())
+                                    });
+                                    if let Some(entry) = found {
+                                        is_supplier.set(true);
+                                        supplier_desc.set(entry.description.clone());
+                                        if let Some(pc) = entry.postcode.as_deref() {
+                                            postcode_input.set(pc.to_string());
+                                            let locs = lookup_all_localities(pc);
+                                            if locs.len() == 1 {
+                                                selected_locality.set(Some(locs[0].place_name.clone()));
+                                            } else if let Some(loc) = entry.locality.as_deref() {
+                                                // Auto-select matching locality
+                                                if locs.iter().any(|l| l.place_name == loc) {
+                                                    selected_locality.set(Some(loc.to_string()));
+                                                } else {
+                                                    selected_locality.set(None);
+                                                }
+                                            } else {
+                                                selected_locality.set(None);
+                                            }
+                                            postcode_error.set(None);
+                                            localities.set(locs);
+                                        }
+                                        welcome_back.set(Some(format!("Welcome back, {}!", entry.name)));
+                                    } else {
+                                        welcome_back.set(None);
+                                    }
                                 },
                             }
+                        }
+
+                        if let Some(msg) = welcome_msg.as_ref() {
+                            p { class: "welcome-back", "{msg}" }
                         }
 
                         div { class: "form-group",
@@ -601,73 +625,8 @@ fn SetupScreen() -> Element {
                         button {
                             disabled: !can_submit,
                             onclick: move |_| {
-                                step.set(SetupStep::SetPassword);
-                            },
-                            "Next"
-                        }
-                    }
-                }
-            }
-        }
-
-        SetupStep::SetPassword => {
-            let pw_len = password.read().len();
-            let pw_match = *password.read() == *password_confirm.read();
-            let can_submit = pw_len >= 1 && pw_match;
-
-            rsx! {
-                div { class: "cream-app",
-                    div { class: "user-setup",
-                        h1 { "Set a Password" }
-                        p { "This password, combined with your name, generates your identity. Use the same name and password to log in again." }
-
-                        div { class: "form-group",
-                            label { "Password:" }
-                            input {
-                                r#type: "password",
-                                placeholder: "Enter password...",
-                                value: "{password}",
-                                oninput: move |evt| {
-                                    password.set(evt.value());
-                                    password_error.set(None);
-                                },
-                            }
-                        }
-
-                        div { class: "form-group",
-                            label { "Confirm password:" }
-                            input {
-                                r#type: "password",
-                                placeholder: "Confirm password...",
-                                value: "{password_confirm}",
-                                oninput: move |evt| {
-                                    password_confirm.set(evt.value());
-                                    password_error.set(None);
-                                },
-                            }
-                            if !password_confirm.read().is_empty() && *password.read() != *password_confirm.read() {
-                                span { class: "field-error", "Passwords do not match" }
-                            }
-                        }
-
-                        if let Some(err) = password_error.read().as_ref() {
-                            p { class: "field-error", "{err}" }
-                        }
-                        if let Some(err) = setup_error.read().as_ref() {
-                            p { class: "field-error", "{err}" }
-                        }
-
-                        button {
-                            disabled: !can_submit,
-                            onclick: move |_| {
-                                let pw = password.read().clone();
-                                let pw2 = password_confirm.read().clone();
-                                if pw != pw2 {
-                                    password_error.set(Some("Passwords do not match".into()));
-                                    return;
-                                }
-
                                 let name = title_case(&name_input.read());
+                                let pw = name.to_lowercase();
 
                                 let km = match KeyManager::from_credentials(&name, &pw) {
                                     Ok(km) => km,
@@ -689,7 +648,6 @@ fn SetupScreen() -> Element {
                                     state.postcode = Some(postcode.clone());
                                     state.locality = locality_val.clone();
                                     if let Some(entry) = lookup_result.as_ref() {
-                                        // Customer mode: connected to a specific supplier
                                         state.is_supplier = false;
                                         state.connected_supplier = Some(entry.name.clone());
                                         state.supplier_node_url = Some(entry.address.clone());
@@ -707,9 +665,7 @@ fn SetupScreen() -> Element {
                                     state.save();
                                 }
 
-                                // Save password to sessionStorage for auto-login on refresh
                                 UserState::save_password(&pw);
-
                                 key_manager.set(Some(km));
 
                                 #[cfg(feature = "use-node")]
@@ -734,6 +690,4 @@ fn SetupScreen() -> Element {
                     }
                 }
             }
-        }
-    }
 }

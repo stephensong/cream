@@ -29,6 +29,8 @@ pub struct Supplier {
     pub api: WebApi,
     pub storefront_key: ContractKey,
     pub storefront: StorefrontState,
+    pub postcode: String,
+    pub locality: String,
 }
 
 impl Supplier {
@@ -292,9 +294,18 @@ impl TestHarness {
         let (dir_contract, dir_key) = make_directory_contract();
 
         // Build initial storefront states
-        let gary_sf = make_initial_storefront(&gary_id, "Gary's Farm");
-        let emma_sf = make_initial_storefront(&emma_id, "Emma's Farm");
-        let iris_sf = make_initial_storefront(&iris_id, "Iris's Farm");
+        let gary_sf = make_initial_storefront(
+            &gary_id, "Gary's Farm", "Real Beaut Dairy",
+            GeoLocation::new(-30.0977, 152.6583),
+        );
+        let emma_sf = make_initial_storefront(
+            &emma_id, "Emma's Farm", "Emma's Dairy",
+            GeoLocation::new(-30.0977, 152.6583),
+        );
+        let iris_sf = make_initial_storefront(
+            &iris_id, "Iris's Farm", "Iris's farm — fresh dairy direct",
+            GeoLocation::new(-33.87, 151.21),
+        );
 
         // Assemble suppliers (need mutable for setup, so build partially)
         let mut gary = Supplier {
@@ -304,6 +315,8 @@ impl TestHarness {
             api: api_gary,
             storefront_key: gary_sf_key,
             storefront: gary_sf,
+            postcode: "2450".to_string(),
+            locality: "Boambee".to_string(),
         };
         let mut emma = Supplier {
             name: "Emma".to_string(),
@@ -312,6 +325,8 @@ impl TestHarness {
             api: api_emma,
             storefront_key: emma_sf_key,
             storefront: emma_sf,
+            postcode: "2450".to_string(),
+            locality: "Boambee".to_string(),
         };
         let mut iris = Supplier {
             name: "Iris".to_string(),
@@ -320,6 +335,8 @@ impl TestHarness {
             api: api_iris,
             storefront_key: iris_sf_key,
             storefront: iris_sf,
+            postcode: "2000".to_string(),
+            locality: "Sydney".to_string(),
         };
 
         let alice = Customer {
@@ -387,13 +404,18 @@ impl TestHarness {
 }
 
 /// Build an empty StorefrontState for a supplier.
-fn make_initial_storefront(owner: &SupplierId, name: &str) -> StorefrontState {
+fn make_initial_storefront(
+    owner: &SupplierId,
+    name: &str,
+    description: &str,
+    location: GeoLocation,
+) -> StorefrontState {
     StorefrontState {
         info: StorefrontInfo {
             owner: owner.clone(),
             name: name.to_string(),
-            description: format!("{name} — fresh dairy direct"),
-            location: GeoLocation::new(-33.87, 151.21),
+            description: description.to_string(),
+            location,
             schedule: None,
             timezone: None,
         },
@@ -417,7 +439,15 @@ async fn put_storefront(supplier: &mut Supplier, contract: ContractContainer) {
 
 /// Register a supplier in the directory via Update.
 async fn register_supplier_in_directory(supplier: &mut Supplier, dir_key: &ContractKey) {
-    let entry = make_directory_entry(&supplier.id, &supplier.name, supplier.storefront_key);
+    let entry = make_directory_entry(
+        &supplier.id,
+        &supplier.name,
+        &supplier.storefront.info.description,
+        &supplier.postcode,
+        &supplier.locality,
+        supplier.storefront.info.location.clone(),
+        supplier.storefront_key,
+    );
     let mut entries = BTreeMap::new();
     entries.insert(supplier.id.clone(), entry);
     let delta = DirectoryState { entries };

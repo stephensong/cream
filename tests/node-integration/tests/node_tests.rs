@@ -79,7 +79,11 @@ async fn cumulative_node_tests() {
 
         let (supplier_id, vk) = make_dummy_supplier("Test Farm");
         let (_, sf_key) = make_storefront_contract(&vk);
-        let entry = make_directory_entry(&supplier_id, "Test Farm", sf_key);
+        let entry = make_directory_entry(
+            &supplier_id, "Test Farm", "Test Farm's dairy",
+            "2000", "Sydney", cream_common::location::GeoLocation::new(-33.87, 151.21),
+            sf_key,
+        );
 
         let mut entries = BTreeMap::new();
         entries.insert(supplier_id, entry);

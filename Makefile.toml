@@ -138,9 +138,21 @@ dependencies = ["build-contracts-dev", "reset-network"]
 command = "cargo"
 args = ["test", "-p", "cream-node-integration", "--features", "node-tests", "--", "--nocapture"]
 
+[tasks.kill-stale]
+description = "Kill stale dx serve, freenet, and cargo-make processes from previous fixture runs"
+script = [
+    '''
+    set -euo pipefail
+    pkill -f "dx serve" 2>/dev/null || true
+    pkill -f "cargo-make make fixture" 2>/dev/null || true
+    sleep 2
+    echo "Stale processes cleaned up"
+    '''
+]
+
 [tasks.fixture]
 description = "Full manual-testing fixture: build contracts, start network, run tests, start rendezvous, launch UI dev server"
-dependencies = ["test-node", "restart-rendezvous", "tailwind-install", "tailwind-build"]
+dependencies = ["kill-stale", "test-node", "restart-rendezvous", "tailwind-install", "tailwind-build"]
 cwd = "ui"
 command = "dx"
 args = ["serve", "--features", "use-node"]
