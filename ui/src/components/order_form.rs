@@ -2,7 +2,6 @@ use dioxus::prelude::*;
 
 use cream_common::currency::format_amount;
 
-#[cfg(feature = "use-node")]
 use super::node_api::{use_node_action, NodeAction};
 use super::user_state::use_user_state;
 
@@ -70,7 +69,6 @@ pub fn OrderForm(supplier_name: String, product_id: String, product_name: String
                 onclick: {
                     let supplier = supplier_name.clone();
                     let product = product_name.clone();
-                    #[cfg(feature = "use-node")]
                     let product_id = product_id.clone();
                     move |_| {
                         let qty = *quantity.read();
@@ -89,8 +87,7 @@ pub fn OrderForm(supplier_name: String, product_id: String, product_name: String
                             Some(id) => {
                                 insufficient_funds.set(false);
 
-                                // Send to node if connected
-                                #[cfg(feature = "use-node")]
+                                // Send to node
                                 {
                                     let node = use_node_action();
                                     node.send(NodeAction::PlaceOrder {

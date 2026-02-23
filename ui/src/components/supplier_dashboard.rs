@@ -5,7 +5,6 @@ use cream_common::postcode::format_postcode;
 use cream_common::storefront::WeeklySchedule;
 
 use super::schedule_editor::{ScheduleEditor, ScheduleSummary};
-#[cfg(feature = "use-node")]
 use super::node_api::{use_node_action, NodeAction};
 use super::shared_state::use_shared_state;
 use super::user_state::use_user_state;
@@ -96,14 +95,9 @@ pub fn SupplierDashboard() -> Element {
                                 }
                             }
 
-                            #[cfg(feature = "use-node")]
                             {
                                 let node = use_node_action();
                                 node.send(NodeAction::UpdateSchedule { schedule: sched });
-                            }
-                            #[cfg(not(feature = "use-node"))]
-                            {
-                                let _ = sched;
                             }
                             editing_schedule.set(false);
                         },
@@ -137,7 +131,6 @@ pub fn SupplierDashboard() -> Element {
                             let price_str = format_amount(product.price_curd, &currency);
                             let is_editing = editing_product.read().as_deref() == Some(&pid);
                             let pid_edit = pid.clone();
-                            #[allow(unused_variables)]
                             let pid_save = pid.clone();
                             let current_price = product.price_curd;
                             let current_qty = product.quantity_total;
@@ -171,20 +164,15 @@ pub fn SupplierDashboard() -> Element {
                                             }
                                             button {
                                                 onclick: move |_| {
-                                                    #[allow(unused_variables)]
                                                     let p = edit_price.read().trim().parse::<u64>().unwrap_or(0);
-                                                    #[allow(unused_variables)]
                                                     let q = edit_quantity.read().trim().parse::<u32>().unwrap_or(0);
                                                     if p > 0 {
-                                                        #[cfg(feature = "use-node")]
-                                                        {
-                                                            let node = use_node_action();
-                                                            node.send(NodeAction::UpdateProduct {
-                                                                product_id: pid_save.clone(),
-                                                                price_curd: p,
-                                                                quantity_total: q,
-                                                            });
-                                                        }
+                                                        let node = use_node_action();
+                                                        node.send(NodeAction::UpdateProduct {
+                                                            product_id: pid_save.clone(),
+                                                            price_curd: p,
+                                                            quantity_total: q,
+                                                        });
                                                     }
                                                     editing_product.set(None);
                                                 },
@@ -245,7 +233,6 @@ pub fn SupplierDashboard() -> Element {
                                 cream_common::order::OrderStatus::Reserved { .. }
                                     | cream_common::order::OrderStatus::Paid
                             );
-                            #[allow(unused_variables)]
                             let cancel_oid = oid.clone();
                             rsx! {
                                 div { class: "order-card",
@@ -258,13 +245,10 @@ pub fn SupplierDashboard() -> Element {
                                         button {
                                             class: "cancel-order-btn",
                                             onclick: move |_| {
-                                                #[cfg(feature = "use-node")]
-                                                {
-                                                    let node = use_node_action();
-                                                    node.send(NodeAction::CancelOrder {
-                                                        order_id: cancel_oid.clone(),
-                                                    });
-                                                }
+                                                let node = use_node_action();
+                                                node.send(NodeAction::CancelOrder {
+                                                    order_id: cancel_oid.clone(),
+                                                });
                                             },
                                             "Cancel Order"
                                         }
@@ -372,8 +356,7 @@ fn AddProductForm(on_added: EventHandler<()>) -> Element {
                         q,
                     );
 
-                    // Send to node if connected
-                    #[cfg(feature = "use-node")]
+                    // Send to node
                     {
                         let node = use_node_action();
                         node.send(NodeAction::AddProduct {

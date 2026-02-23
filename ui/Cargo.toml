@@ -7,7 +7,6 @@ edition = "2021"
 default = ["web"]
 web = ["dioxus/web", "dioxus/router"]
 mobile = ["dioxus/mobile", "dioxus/router"]
-use-node = []
 
 [dependencies]
 cream-common = { path = "../common", features = ["dev"] }

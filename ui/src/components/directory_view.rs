@@ -135,17 +135,15 @@ pub fn DirectoryView() -> Element {
         div { class: "directory-view",
             h2 { "Supplier Directory" }
 
-            // Show connection status when use-node is active
-            if cfg!(feature = "use-node") {
-                {
-                    let shared = shared_state.read();
-                    if shared.connected {
-                        rsx! { p { class: "connection-status connected", "Connected to Freenet" } }
-                    } else if let Some(err) = &shared.last_error {
-                        rsx! { p { class: "connection-status error", "Error: {err}" } }
-                    } else {
-                        rsx! { p { class: "connection-status connecting", "Connecting..." } }
-                    }
+            // Show connection status
+            {
+                let shared = shared_state.read();
+                if shared.connected {
+                    rsx! { p { class: "connection-status connected", "Connected to Freenet" } }
+                } else if let Some(err) = &shared.last_error {
+                    rsx! { p { class: "connection-status error", "Error: {err}" } }
+                } else {
+                    rsx! { p { class: "connection-status connecting", "Connecting..." } }
                 }
             }
 

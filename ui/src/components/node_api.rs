@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 
 /// Actions the UI can send to the Freenet node via the coroutine.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // variants constructed in WASM + use-node builds
+#[allow(dead_code)] // variants used in WASM builds only
 pub enum NodeAction {
     /// Register as a supplier in the directory contract.
     RegisterSupplier {
@@ -58,35 +58,21 @@ pub enum NodeAction {
 }
 
 /// Get a handle to send actions to the node communication coroutine.
-#[allow(dead_code)] // used in WASM + use-node builds
+#[allow(dead_code)] // used in WASM builds only
 pub fn use_node_action() -> Coroutine<NodeAction> {
     use_coroutine_handle::<NodeAction>()
 }
 
 /// Start the node communication coroutine.
 ///
-/// When `use-node` feature is enabled, connects via WebSocket to a Freenet node
-/// and handles contract operations. Otherwise, acts as a no-op sink.
+/// Connects via WebSocket to a Freenet node and handles contract operations.
 pub fn use_node_coroutine() {
-    #[cfg(not(feature = "use-node"))]
-    {
-        use_coroutine(|mut rx: UnboundedReceiver<NodeAction>| async move {
-            use futures::StreamExt;
-            while let Some(action) = rx.next().await {
-                tracing::debug!("Node action (offline mode): {:?}", action);
-            }
-        });
-    }
-
-    #[cfg(feature = "use-node")]
-    {
-        use_coroutine(|rx: UnboundedReceiver<NodeAction>| node_comms(rx));
-    }
+    use_coroutine(|rx: UnboundedReceiver<NodeAction>| node_comms(rx));
 }
 
-// ─── WASM + use-node implementation ─────────────────────────────────────────
+// ─── WASM implementation ────────────────────────────────────────────────────
 
-#[cfg(all(target_family = "wasm", feature = "use-node"))]
+#[cfg(target_family = "wasm")]
 mod wasm_impl {
     use std::collections::{BTreeMap, HashSet};
     use std::sync::Arc;
@@ -1362,16 +1348,16 @@ mod wasm_impl {
     }
 }
 
-#[cfg(all(target_family = "wasm", feature = "use-node"))]
+#[cfg(target_family = "wasm")]
 async fn node_comms(rx: UnboundedReceiver<NodeAction>) {
     wasm_impl::node_comms(rx).await;
 }
 
-// Non-WASM stub for `use-node` feature (e.g. running tests natively)
-#[cfg(all(not(target_family = "wasm"), feature = "use-node"))]
+// Non-WASM stub (e.g. running tests natively)
+#[cfg(not(target_family = "wasm"))]
 async fn node_comms(mut rx: UnboundedReceiver<NodeAction>) {
     use futures::StreamExt;
-    tracing::warn!("use-node enabled but not running in WASM; node_comms is a no-op");
+    tracing::warn!("Not running in WASM; node_comms is a no-op");
     while let Some(action) = rx.next().await {
         tracing::debug!("Node action (native stub): {:?}", action);
     }

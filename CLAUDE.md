@@ -51,17 +51,12 @@ cream/
 | contracts | `dev` | Propagates to cream-common, skips signature checks |
 | ui | `web` (default) | Enables Dioxus web renderer |
 | ui | `mobile` | Enables Dioxus mobile renderer (mutually exclusive with `web`) |
-| ui | `use-node` | Enables real Freenet WebSocket connection; without it, runs offline |
 
 ## Build Commands
 
 ```bash
 # Development (full fixture with live nodes)
 cargo make fixture
-
-# Development connected to local Freenet node
-cargo make build-contracts-dev    # contracts with dev feature (no sig checks)
-cargo make dev-connected          # UI dev server with use-node
 
 # Production
 cargo make build                  # builds everything (contracts + delegate + UI)
@@ -101,7 +96,7 @@ cargo make check                  # cargo check --workspace
 - The UI is a **separate Cargo workspace** (excluded from root workspace) — run `dx` commands from `ui/`
 - Contracts need the `contract` feature to compile as WASM — bare `cargo build` won't work for them
 - The `dev` feature flag is critical during development to bypass ed25519 signature verification
-- Freenet node must be running locally on port 3001 for `use-node` mode
+- The UI always connects to a Freenet node (default: `ws://localhost:3001/...`)
 
 ## Mobile Support (Experimental)
 

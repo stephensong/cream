@@ -50,13 +50,6 @@ cwd = "ui"
 command = "dx"
 args = ["serve"]
 
-[tasks.dev-connected]
-description = "Run UI dev server connected to local Freenet node"
-dependencies = ["build-contracts-dev"]
-cwd = "ui"
-command = "dx"
-args = ["serve", "--features", "use-node"]
-
 [tasks.local-network]
 description = "Start local Freenet network (1 gateway + 2 nodes)"
 script = ["cd ${FREENET_CORE}/scripts && unset MAKEFLAGS && export N_GATEWAYS=1 N_NODES=2 FREENET_CORE_PATH=${FREENET_CORE}/crates/core && make -e -f local-network.mk setup start"]
@@ -74,7 +67,7 @@ description = "Run UI dev server for Android with remote Freenet node"
 dependencies = ["build-contracts-dev"]
 cwd = "ui"
 command = "dx"
-args = ["serve", "--platform", "android", "--features", "mobile,use-node", "--no-default-features"]
+args = ["serve", "--platform", "android", "--features", "mobile", "--no-default-features"]
 [tasks.dev-android.env]
 CREAM_NODE_URL = { value = "${CREAM_NODE_URL}", condition = { env_set = ["CREAM_NODE_URL"] } }
 
@@ -83,7 +76,7 @@ description = "Run UI dev server for iOS with remote Freenet node"
 dependencies = ["build-contracts-dev"]
 cwd = "ui"
 command = "dx"
-args = ["serve", "--platform", "ios", "--features", "mobile,use-node", "--no-default-features"]
+args = ["serve", "--platform", "ios", "--features", "mobile", "--no-default-features"]
 [tasks.dev-ios.env]
 CREAM_NODE_URL = { value = "${CREAM_NODE_URL}", condition = { env_set = ["CREAM_NODE_URL"] } }
 
@@ -92,7 +85,7 @@ description = "Build release APK for Android"
 dependencies = ["build-contracts"]
 cwd = "ui"
 command = "dx"
-args = ["build", "--release", "--platform", "android", "--features", "mobile,use-node", "--no-default-features"]
+args = ["build", "--release", "--platform", "android", "--features", "mobile", "--no-default-features"]
 [tasks.build-android.env]
 CREAM_NODE_URL = { value = "${CREAM_NODE_URL}", condition = { env_set = ["CREAM_NODE_URL"] } }
 
@@ -101,7 +94,7 @@ description = "Build release for iOS"
 dependencies = ["build-contracts"]
 cwd = "ui"
 command = "dx"
-args = ["build", "--release", "--platform", "ios", "--features", "mobile,use-node", "--no-default-features"]
+args = ["build", "--release", "--platform", "ios", "--features", "mobile", "--no-default-features"]
 [tasks.build-ios.env]
 CREAM_NODE_URL = { value = "${CREAM_NODE_URL}", condition = { env_set = ["CREAM_NODE_URL"] } }
 
@@ -151,7 +144,7 @@ description = "Full manual-testing fixture: build contracts, start network, run 
 dependencies = ["kill-stale", "test-node", "restart-rendezvous", "tailwind-install", "tailwind-build"]
 cwd = "ui"
 command = "dx"
-args = ["serve", "--features", "use-node"]
+args = ["serve"]
 [tasks.fixture.env]
 CREAM_RENDEZVOUS_URL = "http://localhost:8787"
 
@@ -355,7 +348,7 @@ description = "Build UI for E2E rendezvous test (rendezvous URL → local wrangl
 dependencies = ["tailwind-install", "tailwind-build"]
 cwd = "ui"
 command = "dx"
-args = ["build", "--features", "use-node"]
+args = ["build"]
 [tasks.e2e-build-rendezvous.env]
 CREAM_RENDEZVOUS_URL = "http://localhost:8787"
 
@@ -428,7 +421,7 @@ description = "Build UI with dx for E2E testing"
 dependencies = ["tailwind-install", "tailwind-build"]
 cwd = "ui"
 command = "dx"
-args = ["build", "--features", "use-node"]
+args = ["build"]
 
 [tasks.e2e-serve]
 description = "Serve pre-built UI assets on port 8080 for E2E tests"

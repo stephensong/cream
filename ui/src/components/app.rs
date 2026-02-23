@@ -8,9 +8,7 @@ use cream_common::postcode::{
 use super::directory_view::DirectoryView;
 use super::key_manager::KeyManager;
 use super::my_orders::MyOrders;
-#[cfg(feature = "use-node")]
-use super::node_api::{use_node_action, NodeAction};
-use super::node_api::use_node_coroutine;
+use super::node_api::{use_node_action, use_node_coroutine, NodeAction};
 use super::shared_state::{use_shared_state, SharedState};
 use super::storefront_view::StorefrontView;
 use super::supplier_dashboard::SupplierDashboard;
@@ -163,7 +161,7 @@ fn AppLayout() -> Element {
     let order_count = state.orders.len();
     let is_customer = state.connected_supplier.is_some();
     let is_supplier = state.is_supplier;
-    let balance = state.balance;
+    let balance = state.balance();
     let connected_supplier = state.connected_supplier.clone();
     drop(state);
 
@@ -344,7 +342,6 @@ fn SetupScreen() -> Element {
 
     let mut setup_error = use_signal(|| None::<String>);
 
-    #[cfg(feature = "use-node")]
     let node = use_node_action();
 
     let can_submit = {
@@ -680,7 +677,6 @@ fn SetupScreen() -> Element {
                                 UserState::save_password(&pw);
                                 key_manager.set(Some(km));
 
-                                #[cfg(feature = "use-node")]
                                 if lookup_result.is_none() && is_sup {
                                     node.send(NodeAction::RegisterSupplier {
                                         name,
@@ -690,7 +686,6 @@ fn SetupScreen() -> Element {
                                     });
                                 }
 
-                                #[cfg(feature = "use-node")]
                                 if let Some(sf_key) = lookup_result.as_ref().map(|e| e.storefront_key.clone()) {
                                     node.send(NodeAction::SubscribeCustomerStorefront {
                                         storefront_key: sf_key,

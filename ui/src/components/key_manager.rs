@@ -15,7 +15,7 @@ use cream_common::storefront::order_signable_bytes;
 #[derive(Clone)]
 pub struct KeyManager {
     supplier_signing_key: SigningKey,
-    #[allow(dead_code)] // used by customer_id/sign_order in use-node builds
+    #[allow(dead_code)] // used in WASM builds
     customer_signing_key: SigningKey,
 }
 
@@ -33,7 +33,7 @@ impl fmt::Display for KeyManagerError {
     }
 }
 
-#[allow(dead_code)] // methods used in WASM + use-node builds (node_api::wasm_impl)
+#[allow(dead_code)] // methods used in WASM builds (node_api::wasm_impl)
 impl KeyManager {
     /// Derive supplier + customer keys from name and password.
     ///
