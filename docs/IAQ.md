@@ -77,7 +77,7 @@ During development, the process is manual:
 2. Clone the CREAM repository.
 3. Start a local Freenet node (or multi-node network): `cargo make reset-network`
 4. Build contracts and run tests to populate data: `cargo make test-node`
-5. Start the Dioxus dev server: `cd ui && dx serve --features use-node`
+5. Start the Dioxus dev server: `cd ui && dx serve`
 6. Open `http://localhost:8080` in a browser.
 
 Or simply run `cargo make fixture` which does steps 3-5 in one command.
@@ -321,7 +321,7 @@ The `fixture` task runs the entire stack in order:
 4. `test-node` — run all 7 node integration steps (populates Gary/Emma/Iris with products and orders)
 5. `restart-rendezvous` — start the supplier lookup service on port 8787
 6. `tailwind-build` — compile CSS
-7. `dx serve --features use-node` — start the Dioxus dev server connected to the live network
+7. `dx serve` — start the Dioxus dev server connected to the live network
 
 After the fixture completes, the UI at `http://localhost:8080` shows a fully populated marketplace. Typing "gary" in the setup screen auto-fills from the directory — the same data that the E2E tests exercise.
 
@@ -394,5 +394,83 @@ The 7 node integration steps (`tests/node-integration/tests/node_tests.rs`) run 
 ### The rendezvous exception
 
 Test 12 (`customer-rendezvous`) runs in a separate Playwright project because it requires the Wrangler rendezvous service running. It uses `>= 4` for product counts since it may run on a fresh network or after the cumulative suite — its Playwright project configuration (`testMatch: /12-customer-rendezvous/`) excludes it from the main sequential run.
+
+---
+
+## How do deposits and refunds work?
+
+CREAM uses a **contract-based escrow** model. The storefront contract — the same Freenet contract that already holds products and orders — also serves as the escrow state machine and communication channel for deposit funds.
+
+### The deposit flow
+
+When a customer places an order, they include Fedimint e-cash tokens (curds) as the deposit. The deposit amount is determined by the order's deposit tier (e.g. 10%, 25%, 50%). The tokens are bearer instruments — whoever holds the bytes can redeem them.
+
+1. **Customer places order**: The customer's app mints e-cash tokens via the Fedimint client, includes them in the order as `deposit_tokens: Vec<u8>`, and posts the order to the storefront contract as a state update.
+2. **Contract validates**: The storefront contract's `verify_delta()` checks the state transition is legal (new order, valid signature, correct deposit tier). The contract does not understand the e-cash tokens — it just stores the bytes.
+3. **Supplier receives tokens**: The supplier's node is subscribed to its own storefront contract. When the update notification arrives, the supplier's node extracts and stores the deposit tokens locally. The supplier now holds the deposit.
+
+At this point, the deposit tokens are in the supplier's possession. What happens next depends on how the order resolves.
+
+### Terminal states and fund flows
+
+An order can reach three terminal states, each with a different fund flow:
+
+#### Fulfilled (happy path)
+
+The customer collects their product. The supplier marks the order as `Fulfilled` via a contract update. The customer pays the remaining balance (total price minus deposit) in person or via a second e-cash transfer. The supplier keeps the deposit tokens they already hold and redeems them through the Fedimint federation. Everyone is happy.
+
+#### Cancelled (supplier-initiated)
+
+The supplier cannot or chooses not to fulfil the order. The deposit must be returned to the customer.
+
+1. **Supplier mints fresh e-cash tokens** equal to the deposit amount.
+2. **Supplier encrypts** the tokens to the customer's public key (already on the order).
+3. **Supplier posts a contract update** transitioning the order to `Cancelled` and including the encrypted tokens in a `refund_tokens: Option<Vec<u8>>` field on the order.
+4. **Contract validates** the state transition (Reserved/Paid → Cancelled, signed by supplier) and merges the update.
+5. **Customer's node receives the update notification** — Freenet routes it from the contract's hosting nodes to all subscribers. The customer's app decrypts the refund tokens with their private key and now holds redeemable e-cash.
+
+The contract is just the communication channel here. It doesn't understand or validate the e-cash — it stores the encrypted blob as part of the order state. The customer trusts that the supplier posted valid tokens; if the supplier posts garbage, the customer can't redeem and has been cheated. This is the trust boundary.
+
+#### Expired (customer no-show)
+
+The customer reserved product, the supplier held it aside, and the customer never collected within the reservation window. The supplier is owed the deposit as compensation for the opportunity cost of holding inventory.
+
+This is the simplest case: **nothing needs to happen.** The supplier already holds the deposit tokens from when the order was placed. The contract transitions to `Expired` (the supplier's node runs the expiry check, already implemented in `node_api.rs`), confirming the supplier's right to redeem the tokens. The held product is released back to available inventory. No refund is posted, no tokens change hands.
+
+### How Freenet contract notifications work
+
+When a customer subscribes to a storefront contract, the request routes through Freenet's small-world network to the **hosting nodes** — the handful of nodes whose location on the ring is nearest to the contract's location (derived deterministically from the contract key hash). Those hosting nodes store the full contract state and maintain a subscriber list.
+
+When the supplier posts an update (a cancellation with refund tokens, a fulfilment confirmation, or any other state change):
+
+1. The update routes to the hosting nodes.
+2. They validate it via `verify_delta()` and merge it via `update_state()`.
+3. They push an `UpdateNotification` to every subscriber.
+
+This is **point-to-point routing**, not flooding. Each hop follows the small-world graph toward the target location. Path length is O(log n) hops. Only explicitly subscribed nodes receive notifications.
+
+In our codebase, this is exactly what `node_comms()` in `node_api.rs` already does — subscribe to contracts and reactively update `SharedState` when notifications arrive. The same mechanism that shows order status changes in the UI today would deliver refund tokens tomorrow.
+
+### What the contract enforces vs. what it doesn't
+
+**The contract enforces:**
+- Valid state transitions (Reserved → Paid → Fulfilled/Cancelled/Expired) — the `verify_delta()` function rejects illegal transitions
+- Correct signatures — only the supplier can update their own storefront, only the customer can place an order
+- Monotonic status progression — an order can't go backwards (Fulfilled → Reserved is rejected)
+
+**The contract does NOT enforce:**
+- That refund tokens are valid e-cash — the contract stores opaque bytes
+- That the refund amount is correct — the contract doesn't understand denominations
+- That the supplier actually has funds to refund — this is the real-world trust gap
+
+### Why the trust model works
+
+The trust requirements map naturally to a local dairy marketplace:
+
+- **Fulfilment**: No trust needed. Customer pays, gets product. Supplier gets paid. Both parties are satisfied before the transaction completes.
+- **Expiry**: No trust needed. Supplier already holds the deposit. Contract transition just confirms their right to it.
+- **Cancellation**: Customer trusts supplier to post a valid refund. This is the only case requiring trust, and it's the case where the supplier is already apologising for not delivering — they have every incentive to make it right. A supplier who pockets deposits on cancelled orders won't have customers for long.
+
+The edge case is a supplier who cancels but genuinely doesn't have funds to refund. This is unavoidable in any system without pre-locked escrow (even traditional payment processors face this with chargebacks against empty merchant accounts). The deposit tier system mitigates it — small deposits mean small exposure.
 
 ---
