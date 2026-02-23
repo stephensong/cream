@@ -18,10 +18,10 @@ test.describe('Add Product', () => {
     await expect(page.locator('.supplier-dashboard')).toBeVisible();
 
     // Wait for existing products to load from network
-    // Cumulative state: Gary has 4 products from harness, no prior tests add more.
+    // Harness baseline: 4 products; grows cumulatively across runs.
     await expect(async () => {
       const count = await page.locator('.product-card').count();
-      expect(count).toBe(4);
+      expect(count).toBeGreaterThanOrEqual(4);
     }).toPass({ timeout: 15_000 });
 
     const initialCount = await page.locator('.product-card').count();

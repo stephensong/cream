@@ -55,7 +55,7 @@ test.describe('Wallet Balance', () => {
     // Cumulative state: Gary has 6 products (4 harness + test-04 + test-06)
     await expect(async () => {
       const count = await emmaPage.locator('.product-card').count();
-      expect(count).toBe(6);
+      expect(count).toBeGreaterThanOrEqual(6);
     }).toPass({ timeout: 15_000 });
 
     // Read the first product's price

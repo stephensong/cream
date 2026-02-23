@@ -19,14 +19,15 @@ test.describe('Supplier Dashboard', () => {
     await expect(page.locator('h2:has-text("My Storefront")')).toBeVisible();
 
     // Wait for network storefront data to load and show products
-    // Cumulative state: harness gives Gary 4 products, no prior tests add more.
+    // Harness baseline: 4 products; grows cumulatively as later tests add more.
     await expect(async () => {
       const count = await page.locator('.product-card').count();
-      expect(count).toBe(4);
+      expect(count).toBeGreaterThanOrEqual(4);
     }).toPass({ timeout: 15_000 });
 
     // Verify the "Your Products (N)" header reflects the count
-    await expect(page.locator('h3', { hasText: /Your Products \(4\)/ })).toBeVisible();
+    const productCount = await page.locator('.product-card').count();
+    await expect(page.locator('h3', { hasText: new RegExp(`Your Products \\(${productCount}\\)`) })).toBeVisible();
 
     // Verify storefront info section
     await expect(page.locator('.dashboard-section', { hasText: 'Storefront Info' })).toContainText('Gary');

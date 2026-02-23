@@ -39,17 +39,31 @@ test.describe('Order Decrements Quantity', () => {
     // Cumulative state: Gary has 6 products (4 harness + test-04 + test-06)
     await expect(async () => {
       const count = await emmaPage.locator('.product-card').count();
-      expect(count).toBe(6);
+      expect(count).toBeGreaterThanOrEqual(6);
     }).toPass({ timeout: 15_000 });
 
-    // Read the initial quantity from the first product
-    const firstProduct = emmaPage.locator('.product-card').first();
-    const qtyText = await firstProduct.locator('.quantity').textContent();
-    const initialQty = parseInt(qtyText!.replace('Available: ', ''), 10);
+    // Find a product with enough stock (>=2) to order from
+    const allProducts = emmaPage.locator('.product-card');
+    const productCount = await allProducts.count();
+    let targetProduct = allProducts.first();
+    let initialQty = 0;
+    for (let i = 0; i < productCount; i++) {
+      const card = allProducts.nth(i);
+      const qtyText = await card.locator('.quantity').textContent();
+      const qty = parseInt(qtyText!.replace('Available: ', ''), 10);
+      if (qty >= 2) {
+        targetProduct = card;
+        initialQty = qty;
+        break;
+      }
+    }
     expect(initialQty).toBeGreaterThanOrEqual(2);
 
+    // Remember the product name before placing the order (card disappears after)
+    const productName = await targetProduct.locator('h3').first().textContent();
+
     // Emma orders 2 units
-    await firstProduct.locator('button:has-text("Order")').click();
+    await targetProduct.locator('button:has-text("Order")').click();
     await expect(emmaPage.locator('.order-form')).toBeVisible();
     await emmaPage.fill('.order-form input[type="number"]', '2');
     await emmaPage.click('.order-form button:has-text("Place Order")');
@@ -63,8 +77,20 @@ test.describe('Order Decrements Quantity', () => {
 
     // Verify Emma's storefront view shows decremented quantity
     const expectedQty = initialQty - 2;
-    const updatedFirstProduct = emmaPage.locator('.product-card').first();
-    await expect(updatedFirstProduct.locator('.quantity')).toHaveText(`Available: ${expectedQty}`, { timeout: 10_000 });
+    await expect(async () => {
+      // Find the specific product card that has the expected decremented quantity
+      const cards = emmaPage.locator('.product-card', { hasText: productName! });
+      const count = await cards.count();
+      let found = false;
+      for (let i = 0; i < count; i++) {
+        const qtyEl = await cards.nth(i).locator('.quantity').textContent();
+        if (qtyEl === `Available: ${expectedQty}`) {
+          found = true;
+          break;
+        }
+      }
+      expect(found).toBe(true);
+    }).toPass({ timeout: 10_000 });
 
     // Gary navigates to My Storefront and checks quantity
     await garyPage.click('button:has-text("My Storefront")');
@@ -72,9 +98,17 @@ test.describe('Order Decrements Quantity', () => {
 
     // Wait for Gary's dashboard to show the updated quantity
     await expect(async () => {
-      const card = garyPage.locator('.product-card').first();
-      const text = await card.textContent();
-      expect(text).toContain(`Available: ${expectedQty}`);
+      const cards = garyPage.locator('.product-card', { hasText: productName! });
+      const count = await cards.count();
+      let found = false;
+      for (let i = 0; i < count; i++) {
+        const text = await cards.nth(i).textContent();
+        if (text?.includes(`Available: ${expectedQty}`)) {
+          found = true;
+          break;
+        }
+      }
+      expect(found).toBe(true);
     }).toPass({ timeout: 30_000 });
 
     await garyContext.close();

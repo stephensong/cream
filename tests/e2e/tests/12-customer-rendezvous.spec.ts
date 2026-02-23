@@ -67,23 +67,6 @@ test.describe('Customer Rendezvous Flow', () => {
     await customerContext.close();
   });
 
-  test('customer sees error for unknown supplier name', async ({ page }) => {
-    await waitForAppLoadAt(page, APP_URL);
-
-    // Fill basic profile fields
-    await expect(page.locator('.user-setup')).toBeVisible();
-    await page.fill('input[placeholder="Name or moniker..."]', 'Bob');
-    await page.fill('input[placeholder="e.g. 2000"]', '4000');
-
-    // Look up a non-existent supplier
-    await page.fill('input[placeholder="e.g. garys-farm"]', 'nonexistent-farm');
-    await page.click('button:has-text("Look up")');
-
-    // Should show an error
-    await expect(page.locator('.field-error')).toBeVisible({ timeout: 15_000 });
-    await expect(page.locator('.field-error')).toContainText('not found', { ignoreCase: true });
-
-    // Next button should be disabled (no valid supplier lookup)
-    await expect(page.locator('button:has-text("Next")')).toBeDisabled();
-  });
+  // Note: "unknown supplier name" test removed — the setup screen now uses a
+  // dropdown populated from the directory, so users cannot enter arbitrary names.
 });

@@ -32,10 +32,11 @@ test.describe('Cross-Tab Updates', () => {
     // Wait for Emma to see the initial directory with suppliers
     await waitForSupplierCount(emmaPage, 3);
 
-    // Cumulative state: Gary has 5 products (4 harness + 1 from test-04)
+    // Read Gary's current product count (grows cumulatively across runs)
     const garyCardOnEmma = emmaPage.locator('.supplier-card', { hasText: 'Gary' });
-    await expect(garyCardOnEmma.locator('.product-count')).toHaveText('5 products', { timeout: 15_000 });
-    const initialCount = 5;
+    const countText = await garyCardOnEmma.locator('.product-count').textContent({ timeout: 15_000 });
+    const initialCount = parseInt(countText!);
+    expect(initialCount).toBeGreaterThanOrEqual(5); // 4 harness + 1 from test-04
 
     // Gary navigates to My Storefront and adds a product
     await garyPage.click('button:has-text("My Storefront")');
@@ -56,8 +57,8 @@ test.describe('Cross-Tab Updates', () => {
     // Now verify that Emma's directory view updates with the new product count.
     // This tests the full pipeline: Gary's WASM → WebSocket → Freenet node →
     // subscription notification → Emma's WebSocket → WASM re-render.
-    // After adding "Cross-Tab Test Milk", Gary should have 6 products.
-    await expect(garyCardOnEmma.locator('.product-count')).toHaveText('6 products', { timeout: 30_000 });
+    const expectedCount = `${initialCount + 1} products`;
+    await expect(garyCardOnEmma.locator('.product-count')).toHaveText(expectedCount, { timeout: 30_000 });
 
     // Cleanup
     await garyContext.close();

@@ -12,7 +12,9 @@ async function getWalletBalance(page: import('@playwright/test').Page): Promise<
 test.describe('Cancel Order', () => {
   test('Gary cancels a Reserved order and deposit is no longer counted', async ({ browser }) => {
     const garyContext = await browser.newContext();
+    const emmaContext = await browser.newContext();
     const garyPage = await garyContext.newPage();
+    const emmaPage = await emmaContext.newPage();
 
     // Gary registers as a supplier
     await completeSetup(garyPage, {
@@ -23,15 +25,31 @@ test.describe('Cancel Order', () => {
     });
     await waitForConnected(garyPage);
 
-    // Navigate to My Storefront and wait for orders to load
+    // Emma registers as a customer and places an order to ensure a Reserved order exists
+    await completeSetup(emmaPage, {
+      name: 'Emma',
+      postcode: '2500',
+    });
+    await waitForConnected(emmaPage);
+    await waitForSupplierCount(emmaPage, 3);
+
+    // Emma navigates to Gary's storefront and places an order
+    const garyCard = emmaPage.locator('.supplier-card', { hasText: 'Gary' });
+    await garyCard.locator('a:has-text("View Storefront")').click();
+    await expect(emmaPage.locator('.storefront-view')).toBeVisible();
+
+    // Find a product with stock and order 1 unit
+    const product = emmaPage.locator('.product-card').first();
+    await product.locator('button:has-text("Order")').click();
+    await expect(emmaPage.locator('.order-form')).toBeVisible();
+    await emmaPage.fill('.order-form input[type="number"]', '1');
+    await emmaPage.click('.order-form button:has-text("Place Order")');
+    await expect(emmaPage.locator('.order-confirmation')).toBeVisible();
+
+    // Navigate Gary to My Storefront and wait for the Reserved order
     await garyPage.click('button:has-text("My Storefront")');
     await expect(garyPage.locator('.supplier-dashboard')).toBeVisible();
 
-    // Wait for storefront data (cumulative: orders from previous tests)
-    await waitForSupplierCount(garyPage, 3);
-    await garyPage.waitForTimeout(2000);
-
-    // Wait until at least one Reserved order is visible with a Cancel button
     await expect(async () => {
       const cancelBtns = await garyPage.locator('.cancel-order-btn').count();
       expect(cancelBtns).toBeGreaterThanOrEqual(1);
@@ -63,5 +81,6 @@ test.describe('Cancel Order', () => {
     await expect(cancelledOrder.locator('.cancel-order-btn')).toHaveCount(0);
 
     await garyContext.close();
+    await emmaContext.close();
   });
 });
