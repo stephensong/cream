@@ -8,7 +8,6 @@ use super::user_state::use_user_state;
 pub fn MyOrders() -> Element {
     let user_state = use_user_state();
     let state = user_state.read();
-    let currency = state.currency.clone();
     let orders = &state.orders;
 
     rsx! {
@@ -20,7 +19,7 @@ pub fn MyOrders() -> Element {
                 div { class: "order-list",
                     {orders.iter().map(|order| {
                         let total = order.price_per_unit * order.quantity as u64;
-                        let total_str = format_amount(total, &currency);
+                        let total_str = format_amount(total);
                         rsx! {
                             div { class: "order-card",
                                 key: "{order.id}",

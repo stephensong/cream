@@ -12,10 +12,8 @@ pub fn OrderForm(supplier_name: String, product_id: String, product_name: String
     let mut deposit_tier = use_signal(|| "2-Day Reserve (10%)".to_string());
     let mut submitted_id = use_signal(|| None::<u32>);
     let mut insufficient_funds = use_signal(|| false);
-    let currency = user_state.read().currency.clone();
-
     if let Some(order_id) = *submitted_id.read() {
-        let confirm_total = format_amount(price_per_unit * *quantity.read() as u64, &currency);
+        let confirm_total = format_amount(price_per_unit * *quantity.read() as u64);
         return rsx! {
             div { class: "order-confirmation",
                 h3 { "Order Submitted!" }
@@ -30,8 +28,8 @@ pub fn OrderForm(supplier_name: String, product_id: String, product_name: String
     }
 
     let total = price_per_unit * *quantity.read() as u64;
-    let price_each_str = format_amount(price_per_unit, &currency);
-    let total_str = format_amount(total, &currency);
+    let price_each_str = format_amount(price_per_unit);
+    let total_str = format_amount(total);
 
     rsx! {
         div { class: "order-form",

@@ -32,7 +32,6 @@ pub fn StorefrontView(supplier_name: String) -> Element {
     // Check if this is the current user's storefront
     let state = user_state.read();
     let is_own = state.moniker.as_ref() == Some(&supplier_name);
-    let currency = state.currency.clone();
     drop(state);
 
     // Get schedule + timezone for the open/closed badge
@@ -94,7 +93,7 @@ pub fn StorefrontView(supplier_name: String) -> Element {
                         let pid = product_id.clone();
                         let name_clone = name.clone();
                         let is_own_store = is_own;
-                        let price_str = format_amount(price, &currency);
+                        let price_str = format_amount(price);
                         rsx! {
                             div { class: "product-card",
                                 key: "{product_id}",

@@ -30,7 +30,6 @@ pub fn SupplierDashboard() -> Element {
         .supplier_description
         .clone()
         .unwrap_or("No description set".into());
-    let currency = state.currency.clone();
     drop(state);
 
     // Get products (with computed available quantity) and orders from the network storefront
@@ -136,7 +135,7 @@ pub fn SupplierDashboard() -> Element {
                     div { class: "product-list",
                         {products.iter().map(|(product, available)| {
                             let pid = product.id.0.clone();
-                            let price_str = format_amount(product.price_curd, &currency);
+                            let price_str = format_amount(product.price_curd);
                             let is_editing = editing_product.read().as_deref() == Some(&pid);
                             let pid_edit = pid.clone();
                             let pid_save = pid.clone();
@@ -225,8 +224,8 @@ pub fn SupplierDashboard() -> Element {
                                 .cloned()
                                 .unwrap_or_else(|| order.product_id.0.clone());
                             let status = order.status.to_string();
-                            let deposit_str = format_amount(order.deposit_amount, &currency);
-                            let total_str = format_amount(order.total_price, &currency);
+                            let deposit_str = format_amount(order.deposit_amount);
+                            let total_str = format_amount(order.total_price);
                             let deposit_info = match &order.status {
                                 cream_common::order::OrderStatus::Reserved { expires_at } => {
                                     let pct = (order.deposit_tier.deposit_fraction() * 100.0) as u32;
@@ -274,7 +273,6 @@ pub fn SupplierDashboard() -> Element {
 #[component]
 fn AddProductForm(on_added: EventHandler<()>) -> Element {
     let mut user_state = use_user_state();
-    let currency = user_state.read().currency.clone();
     let mut name = use_signal(String::new);
     let mut category = use_signal(|| "Milk".to_string());
     let mut description = use_signal(String::new);
@@ -321,11 +319,6 @@ fn AddProductForm(on_added: EventHandler<()>) -> Element {
                     placeholder: "500",
                     value: "{price}",
                     oninput: move |evt| price.set(evt.value()),
-                }
-                if currency == cream_common::currency::Currency::Cents {
-                    if let Ok(p) = price.read().trim().parse::<u64>() {
-                        span { class: "price-hint", " ≈ {format_amount(p, &currency)}" }
-                    }
                 }
             }
             div { class: "form-group",

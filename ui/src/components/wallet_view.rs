@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 
-use cream_common::currency::{format_amount, Currency};
+use cream_common::currency::format_amount;
 
 use super::shared_state::use_shared_state;
 use super::user_state::{use_user_state, TransactionKind};
@@ -14,7 +14,6 @@ pub fn WalletView() -> Element {
     let base_balance = state.balance();
     let moniker = state.moniker.clone().unwrap_or_default();
     let is_supplier = state.is_supplier;
-    let currency = state.currency.clone();
     let recent_txs: Vec<_> = state.ledger.iter().rev().take(20).cloned().collect();
     drop(state);
 
@@ -43,8 +42,8 @@ pub fn WalletView() -> Element {
     };
 
     let displayed_balance = base_balance + incoming_deposits;
-    let balance_str = format_amount(displayed_balance, &currency);
-    let deposits_str = format_amount(incoming_deposits, &currency);
+    let balance_str = format_amount(displayed_balance);
+    let deposits_str = format_amount(incoming_deposits);
 
     rsx! {
         div { class: "wallet-view",
@@ -54,38 +53,6 @@ pub fn WalletView() -> Element {
             }
             if is_supplier && incoming_deposits > 0 {
                 p { class: "wallet-deposits", "Includes {deposits_str} from order deposits" }
-            }
-
-            div { class: "form-group",
-                label { "Display currency:" }
-                select {
-                    value: "{currency.label()}",
-                    onchange: move |evt: Event<FormData>| {
-                        let new_currency = match evt.value().as_str() {
-                            "Sats" => Currency::Sats,
-                            "AUD" => Currency::Cents,
-                            _ => Currency::Curds,
-                        };
-                        let mut state = user_state.write();
-                        state.currency = new_currency;
-                        state.save();
-                    },
-                    {Currency::all().iter().map(|c| {
-                        let label = c.label();
-                        let is_selected = *c == currency;
-                        let desc = match c {
-                            Currency::Curds => "Curds (CURD)",
-                            Currency::Sats => "Sats (Bitcoin)",
-                            Currency::Cents => "AUD (illustrative)",
-                        };
-                        rsx! {
-                            option { value: "{label}", selected: is_selected, "{desc}" }
-                        }
-                    })}
-                }
-            }
-            if currency == Currency::Cents {
-                p { class: "wallet-note", "* AUD amounts are illustrative (placeholder rate: 1 BTC ≈ $150k AUD)." }
             }
 
             div { class: "wallet-actions",
