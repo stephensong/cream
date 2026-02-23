@@ -30,8 +30,20 @@ pub struct ListedProduct {
     pub quantity_total: u32,
 }
 
-fn default_balance() -> u64 {
-    10_000
+/// A single wallet transaction (credit or debit).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WalletTransaction {
+    pub id: u32,
+    pub kind: TransactionKind,
+    pub amount: u64,
+    pub description: String,
+    pub timestamp: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum TransactionKind {
+    Credit,
+    Debit,
 }
 
 /// Shared application state accessible from all components.
@@ -47,9 +59,14 @@ pub struct UserState {
     pub orders: Vec<PlacedOrder>,
     pub next_order_id: u32,
     pub next_product_id: u32,
-    /// Mock CURD wallet balance. Starts at 10,000, decremented by order deposits.
-    #[serde(default = "default_balance")]
-    pub balance: u64,
+    /// Transaction ledger — balance is derived from sum of credits minus debits.
+    #[serde(default)]
+    pub ledger: Vec<WalletTransaction>,
+    #[serde(default)]
+    pub next_tx_id: u32,
+    /// Legacy field for migration only. New code uses `balance()` method.
+    #[serde(default)]
+    balance: u64,
     /// Customer mode: connected supplier's memorable name (e.g. "garys-farm").
     #[serde(default)]
     pub connected_supplier: Option<String>,
@@ -64,12 +81,37 @@ pub struct UserState {
     pub currency: Currency,
 }
 
+/// Get current time as ISO 8601 string.
+fn now_iso8601() -> String {
+    #[cfg(target_family = "wasm")]
+    {
+        web_sys::js_sys::Date::new_0().to_iso_string().into()
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        String::from("1970-01-01T00:00:00.000Z")
+    }
+}
+
 impl UserState {
     pub fn new() -> Self {
-        if let Some(state) = Self::load() {
+        if let Some(mut state) = Self::load() {
+            // Migrate: old sessionStorage had balance field but no ledger
+            if state.ledger.is_empty() && state.balance > 0 {
+                state.next_tx_id = 1;
+                state.ledger.push(WalletTransaction {
+                    id: 0,
+                    kind: TransactionKind::Credit,
+                    amount: state.balance,
+                    description: "Migrated balance".into(),
+                    timestamp: now_iso8601(),
+                });
+                state.balance = 0;
+                state.save();
+            }
             return state;
         }
-        Self {
+        let mut state = Self {
             moniker: None,
             postcode: None,
             locality: None,
@@ -79,12 +121,55 @@ impl UserState {
             orders: Vec::new(),
             next_order_id: 1,
             next_product_id: 1,
-            balance: 10_000,
+            ledger: Vec::new(),
+            next_tx_id: 0,
+            balance: 0,
             connected_supplier: None,
             supplier_node_url: None,
             supplier_storefront_key: None,
             currency: Currency::default(),
+        };
+        state.record_credit(10_000, "Initial CURD allocation".into());
+        state
+    }
+
+    /// Derive balance from the transaction ledger.
+    pub fn balance(&self) -> u64 {
+        self.ledger.iter().fold(0u64, |acc, tx| match tx.kind {
+            TransactionKind::Credit => acc.saturating_add(tx.amount),
+            TransactionKind::Debit => acc.saturating_sub(tx.amount),
+        })
+    }
+
+    /// Record a credit (faucet, refund, initial allocation). Returns the transaction ID.
+    pub fn record_credit(&mut self, amount: u64, description: String) -> u32 {
+        let id = self.next_tx_id;
+        self.next_tx_id += 1;
+        self.ledger.push(WalletTransaction {
+            id,
+            kind: TransactionKind::Credit,
+            amount,
+            description,
+            timestamp: now_iso8601(),
+        });
+        id
+    }
+
+    /// Record a debit (order deposit). Returns `None` if insufficient funds.
+    pub fn record_debit(&mut self, amount: u64, description: String) -> Option<u32> {
+        if self.balance() < amount {
+            return None;
         }
+        let id = self.next_tx_id;
+        self.next_tx_id += 1;
+        self.ledger.push(WalletTransaction {
+            id,
+            kind: TransactionKind::Debit,
+            amount,
+            description,
+            timestamp: now_iso8601(),
+        });
+        Some(id)
     }
 
     /// Save current state to sessionStorage (per-tab, survives refresh).
@@ -173,13 +258,13 @@ impl UserState {
             _ => total, // Full Payment
         };
 
-        if self.balance < deposit {
-            return None;
-        }
+        self.record_debit(
+            deposit,
+            format!("Order deposit: {} x{}", product, quantity),
+        )?;
 
         let id = self.next_order_id;
         self.next_order_id += 1;
-        self.balance -= deposit;
 
         self.orders.push(PlacedOrder {
             id,

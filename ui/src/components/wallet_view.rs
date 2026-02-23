@@ -3,7 +3,7 @@ use dioxus::prelude::*;
 use cream_common::currency::{format_amount, Currency};
 
 use super::shared_state::use_shared_state;
-use super::user_state::use_user_state;
+use super::user_state::{use_user_state, TransactionKind};
 
 #[component]
 pub fn WalletView() -> Element {
@@ -11,10 +11,11 @@ pub fn WalletView() -> Element {
     let shared_state = use_shared_state();
 
     let state = user_state.read();
-    let base_balance = state.balance;
+    let base_balance = state.balance();
     let moniker = state.moniker.clone().unwrap_or_default();
     let is_supplier = state.is_supplier;
     let currency = state.currency.clone();
+    let recent_txs: Vec<_> = state.ledger.iter().rev().take(20).cloned().collect();
     drop(state);
 
     // Compute incoming deposit credits from network orders on this supplier's storefront
@@ -91,7 +92,7 @@ pub fn WalletView() -> Element {
                 button {
                     onclick: move |_| {
                         let mut state = user_state.write();
-                        state.balance += 1000;
+                        state.record_credit(1000, "Faucet".into());
                         state.save();
                     },
                     "Faucet (+1000 CURD)"
@@ -100,6 +101,54 @@ pub fn WalletView() -> Element {
             p { class: "wallet-note",
                 "This is a mock wallet for demonstration. Fedimint integration coming later."
             }
+
+            if !recent_txs.is_empty() {
+                h3 { "Recent Transactions" }
+                table { class: "tx-history",
+                    thead {
+                        tr {
+                            th { "Time" }
+                            th { "Description" }
+                            th { "Amount" }
+                        }
+                    }
+                    tbody {
+                        for tx in &recent_txs {
+                            tr {
+                                td { class: "tx-time", "{short_timestamp(&tx.timestamp)}" }
+                                td { "{tx.description}" }
+                                td { class: match tx.kind {
+                                        TransactionKind::Credit => "tx-credit",
+                                        TransactionKind::Debit => "tx-debit",
+                                    },
+                                    {match tx.kind {
+                                        TransactionKind::Credit => format!("+{}", tx.amount),
+                                        TransactionKind::Debit => format!("-{}", tx.amount),
+                                    }}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
+    }
+}
+
+/// Format an ISO 8601 timestamp to a short display form.
+fn short_timestamp(ts: &str) -> String {
+    // "2026-02-23T10:30:00.000Z" → "Feb 23, 10:30"
+    if ts.len() >= 16 {
+        let month = match &ts[5..7] {
+            "01" => "Jan", "02" => "Feb", "03" => "Mar", "04" => "Apr",
+            "05" => "May", "06" => "Jun", "07" => "Jul", "08" => "Aug",
+            "09" => "Sep", "10" => "Oct", "11" => "Nov", "12" => "Dec",
+            _ => "???",
+        };
+        let day = &ts[8..10];
+        let time = &ts[11..16];
+        format!("{} {}, {}", month, day.trim_start_matches('0'), time)
+    } else {
+        ts.to_string()
     }
 }
