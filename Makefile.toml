@@ -449,17 +449,12 @@ script = [
     "if [ -f /tmp/cream-e2e-server.pid ]; then kill $(cat /tmp/cream-e2e-server.pid) 2>/dev/null || true; rm -f /tmp/cream-e2e-server.pid; echo 'Static server stopped'; else echo 'No server PID file found'; fi",
 ]
 
-[tasks.e2e-run]
-description = "Run Playwright E2E tests"
+[tasks.e2e]
+description = "Run E2E tests (assumes fixture is already running)"
+dependencies = ["e2e-install"]
 cwd = "tests/e2e"
 command = "npx"
 args = ["playwright", "test"]
-
-[tasks.e2e-run-headed]
-description = "Run Playwright E2E tests in headed mode (visible browser)"
-cwd = "tests/e2e"
-command = "npx"
-args = ["playwright", "test", "--headed"]
 
 [tasks.test-e2e]
 description = "Full E2E pipeline: build contracts, reset node, start server, run tests, stop server"

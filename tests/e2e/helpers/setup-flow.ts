@@ -7,7 +7,7 @@ export interface SetupOptions {
   isSupplier?: boolean;
   description?: string;
   locality?: string;
-  /** Customer mode: supplier name to look up via rendezvous service. */
+  /** Customer mode: supplier name to connect to (via dropdown or rendezvous). */
   supplierName?: string;
   /** Skip initial navigation (page already loaded via waitForAppLoadAt). */
   skipNav?: boolean;
@@ -30,7 +30,7 @@ export async function completeSetup(page: Page, opts: SetupOptions): Promise<voi
   await page.fill('input[placeholder="e.g. 2000"]', opts.postcode);
 
   // If a locality dropdown appears (multiple localities for this postcode), select one
-  const localitySelect = page.locator('select');
+  const localitySelect = page.locator('.form-group:has(label:text("Locality")) select');
   if (await localitySelect.isVisible({ timeout: 500 }).catch(() => false)) {
     const locality = opts.locality || '';
     if (locality) {
@@ -52,15 +52,18 @@ export async function completeSetup(page: Page, opts: SetupOptions): Promise<voi
     }
   }
 
-  // Customer mode: look up supplier via rendezvous service
-  if (opts.supplierName) {
+  // Customer mode: connect to a supplier
+  if (opts.supplierName && !opts.isSupplier) {
     // Check if auto-connect already resolved (URL-based ?supplier= flow)
     const alreadyConnected = await page.locator('.welcome-back').isVisible({ timeout: 500 }).catch(() => false);
     if (!alreadyConnected) {
-      // Manual lookup flow
-      await page.fill('input[placeholder="e.g. garys-farm"]', opts.supplierName);
-      await page.click('button:has-text("Look up")');
+      // Try the nearby suppliers dropdown first
+      const supplierSelect = page.locator('.form-group:has(label:text("Connect to a supplier")) select');
+      if (await supplierSelect.isVisible({ timeout: 5_000 }).catch(() => false)) {
+        await supplierSelect.selectOption({ label: new RegExp(opts.supplierName) });
+      }
     }
+    // Wait for rendezvous lookup to complete
     await expect(page.locator('.welcome-back')).toBeVisible({ timeout: 15_000 });
   }
 

@@ -198,6 +198,12 @@
     font-size: 0.9rem;
   }
 
+  .lookup-status {
+    color: #94a3b8;
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+  }
+
   .supplier-list,
   .product-list {
     display: grid;

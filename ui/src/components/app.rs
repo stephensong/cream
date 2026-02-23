@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use dioxus_router::Navigator;
 
 use cream_common::postcode::{
-    format_postcode, is_valid_au_postcode, lookup_all_localities, PostcodeInfo,
+    format_postcode, is_valid_au_postcode, lookup_all_localities, lookup_au_postcode, PostcodeInfo,
 };
 
 use super::directory_view::DirectoryView;
@@ -380,8 +380,13 @@ fn SetupScreen() -> Element {
                 let supplier_ok = if auto_connect_mode {
                     // In auto-connect mode, need a successful lookup
                     supplier_lookup_result.read().is_some()
+                } else if *is_supplier.read() {
+                    !supplier_desc.read().trim().is_empty()
                 } else {
-                    !*is_supplier.read() || !supplier_desc.read().trim().is_empty()
+                    // Customer can proceed without selecting (browses directory),
+                    // or with a resolved supplier (direct connect)
+                    supplier_name_input.read().trim().is_empty()
+                        || supplier_lookup_result.read().is_some()
                 };
                 name_ok && postcode_ok && locality_ok && supplier_ok
             };
@@ -600,55 +605,72 @@ fn SetupScreen() -> Element {
                             }
 
                             if !*is_supplier.read() {
-                                div { class: "form-group",
-                                    label { "Or connect to a specific supplier:" }
-                                    div { class: "supplier-lookup-row",
-                                        input {
-                                            r#type: "text",
-                                            placeholder: "e.g. garys-farm",
-                                            value: "{supplier_name_input}",
-                                            oninput: move |evt| {
-                                                supplier_name_input.set(evt.value());
-                                                supplier_lookup_error.set(None);
-                                                supplier_lookup_result.set(None);
-                                            },
-                                        }
-                                        button {
-                                            disabled: supplier_name_input.read().trim().is_empty()
-                                                || *supplier_lookup_loading.read(),
-                                            onclick: move |_| {
-                                                let name = supplier_name_input.read().trim().to_string();
-                                                if name.is_empty() {
-                                                    return;
-                                                }
-                                                supplier_lookup_loading.set(true);
-                                                supplier_lookup_error.set(None);
-                                                supplier_lookup_result.set(None);
-                                                spawn(async move {
-                                                    match super::rendezvous::lookup_supplier(&name).await {
-                                                        Ok(entry) => {
-                                                            supplier_lookup_result.set(Some(entry));
+                                // Nearby suppliers from directory
+                                {
+                                    let nearby: Vec<(String, f64)> = lookup_au_postcode(postcode_input.read().trim())
+                                        .map(|loc| {
+                                            let dir_entries = &_shared_state.read().directory.entries;
+                                            let mut list: Vec<_> = dir_entries.values()
+                                                .map(|e| (e.name.clone(), e.location.distance_km(&loc)))
+                                                .collect();
+                                            list.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                                            list.truncate(5);
+                                            list
+                                        })
+                                        .unwrap_or_default();
+                                    rsx! {
+                                        div { class: "form-group",
+                                            label { "Connect to a supplier:" }
+                                            if !nearby.is_empty() {
+                                                select {
+                                                    value: "{supplier_name_input}",
+                                                    onchange: move |evt: Event<FormData>| {
+                                                        let name = evt.value();
+                                                        if name.is_empty() {
+                                                            supplier_name_input.set(String::new());
+                                                            supplier_lookup_error.set(None);
+                                                            supplier_lookup_result.set(None);
+                                                            return;
                                                         }
-                                                        Err(e) => {
-                                                            supplier_lookup_error.set(Some(e));
+                                                        supplier_name_input.set(name.clone());
+                                                        supplier_lookup_loading.set(true);
+                                                        supplier_lookup_error.set(None);
+                                                        supplier_lookup_result.set(None);
+                                                        spawn(async move {
+                                                            match super::rendezvous::lookup_supplier(&name).await {
+                                                                Ok(entry) => {
+                                                                    supplier_lookup_result.set(Some(entry));
+                                                                }
+                                                                Err(e) => {
+                                                                    supplier_lookup_error.set(Some(e));
+                                                                }
+                                                            }
+                                                            supplier_lookup_loading.set(false);
+                                                        });
+                                                    },
+                                                    option { value: "", "Select a supplier..." }
+                                                    for (name, dist) in nearby {
+                                                        option {
+                                                            value: "{name}",
+                                                            selected: *supplier_name_input.read() == name,
+                                                            "{name} — {dist:.0}km"
                                                         }
                                                     }
-                                                    supplier_lookup_loading.set(false);
-                                                });
-                                            },
-                                            if *supplier_lookup_loading.read() {
-                                                "Looking up..."
-                                            } else {
-                                                "Look up"
+                                                }
+                                            } else if is_valid_au_postcode(postcode_input.read().trim()) {
+                                                p { class: "lookup-status", "No suppliers found nearby" }
                                             }
-                                        }
-                                    }
-                                    if let Some(err) = supplier_lookup_error.read().as_ref() {
-                                        span { class: "field-error", "{err}" }
-                                    }
-                                    if let Some(entry) = supplier_lookup_result.read().as_ref() {
-                                        p { class: "welcome-back",
-                                            "Found supplier: {entry.name}"
+                                            if *supplier_lookup_loading.read() {
+                                                p { class: "lookup-status", "Connecting to supplier..." }
+                                            }
+                                            if let Some(err) = supplier_lookup_error.read().as_ref() {
+                                                span { class: "field-error", "{err}" }
+                                            }
+                                            if let Some(entry) = supplier_lookup_result.read().as_ref() {
+                                                p { class: "welcome-back",
+                                                    "Connected to: {entry.name}"
+                                                }
+                                            }
                                         }
                                     }
                                 }
