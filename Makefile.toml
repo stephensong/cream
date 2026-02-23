@@ -7,7 +7,7 @@ dependencies = ["build-contracts", "build-delegate", "build-ui"]
 
 [tasks.build-contracts]
 description = "Build WASM contracts"
-dependencies = ["build-directory-contract", "build-storefront-contract"]
+dependencies = ["build-directory-contract", "build-storefront-contract", "build-user-contract"]
 
 [tasks.build-directory-contract]
 description = "Build directory contract WASM"
@@ -19,9 +19,14 @@ description = "Build storefront contract WASM"
 command = "cargo"
 args = ["build", "-p", "cream-storefront-contract", "--target", "wasm32-unknown-unknown", "--release", "--features", "contract"]
 
+[tasks.build-user-contract]
+description = "Build user contract WASM"
+command = "cargo"
+args = ["build", "-p", "cream-user-contract", "--target", "wasm32-unknown-unknown", "--release", "--features", "contract"]
+
 [tasks.build-contracts-dev]
 description = "Build WASM contracts with dev feature (no signature checks)"
-dependencies = ["build-directory-contract-dev", "build-storefront-contract-dev"]
+dependencies = ["build-directory-contract-dev", "build-storefront-contract-dev", "build-user-contract-dev"]
 
 [tasks.build-directory-contract-dev]
 description = "Build directory contract WASM with dev feature"
@@ -32,6 +37,11 @@ args = ["build", "-p", "cream-directory-contract", "--target", "wasm32-unknown-u
 description = "Build storefront contract WASM with dev feature"
 command = "cargo"
 args = ["build", "-p", "cream-storefront-contract", "--target", "wasm32-unknown-unknown", "--release", "--features", "contract,dev"]
+
+[tasks.build-user-contract-dev]
+description = "Build user contract WASM with dev feature"
+command = "cargo"
+args = ["build", "-p", "cream-user-contract", "--target", "wasm32-unknown-unknown", "--release", "--features", "contract,dev"]
 
 [tasks.build-delegate]
 description = "Build CREAM delegate"

@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 
 use cream_common::directory::{DirectoryEntry, DirectoryState};
 use cream_common::storefront::StorefrontState;
+use cream_common::user_contract::UserContractState;
 
 /// Network-sourced state shared across all components.
 ///
@@ -25,6 +26,12 @@ pub struct SharedState {
     pub directory_contract_key: Option<String>,
     /// Last error message from node communication.
     pub last_error: Option<String>,
+    /// The current user's own contract state from the network.
+    #[allow(dead_code)] // populated in WASM builds
+    pub user_contract: Option<UserContractState>,
+    /// The contract key for the user's contract (Base58).
+    #[allow(dead_code)] // used in WASM builds only
+    pub user_contract_key: Option<String>,
 }
 
 impl SharedState {

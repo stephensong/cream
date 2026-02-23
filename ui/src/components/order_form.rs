@@ -86,16 +86,21 @@ pub fn OrderForm(supplier_name: String, product_id: String, product_name: String
                                 insufficient_funds.set(false);
 
                                 // Send to node
-                                {
-                                    let node = use_node_action();
-                                    node.send(NodeAction::PlaceOrder {
-                                        storefront_name: supplier.clone(),
-                                        product_id: product_id.clone(),
-                                        quantity: qty,
-                                        deposit_tier: tier,
-                                        price_per_unit,
-                                    });
-                                }
+                                let node = use_node_action();
+                                node.send(NodeAction::PlaceOrder {
+                                    storefront_name: supplier.clone(),
+                                    product_id: product_id.clone(),
+                                    quantity: qty,
+                                    deposit_tier: tier,
+                                    price_per_unit,
+                                });
+
+                                // Sync updated balance to user contract
+                                let new_balance = user_state.read().balance();
+                                node.send(NodeAction::UpdateUserContract {
+                                    current_supplier: None,
+                                    balance_curds: Some(new_balance),
+                                });
 
                                 submitted_id.set(Some(id));
                             }

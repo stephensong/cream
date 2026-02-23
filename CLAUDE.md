@@ -14,7 +14,8 @@ cream/
 ├── common/                          # Shared domain models (cream-common)
 ├── contracts/
 │   ├── directory-contract/          # Global supplier directory (WASM contract)
-│   └── storefront-contract/         # Per-supplier inventory + orders (WASM contract)
+│   ├── storefront-contract/         # Per-supplier inventory + orders (WASM contract)
+│   └── user-contract/               # Per-user identity + wallet checkpoint (WASM contract)
 ├── delegates/
 │   └── cream-delegate/              # Key management + signing service
 ├── ui/                              # Dioxus 0.7 web frontend (separate Cargo workspace)
@@ -37,6 +38,7 @@ cream/
 - `Signed<T>` — generic signature envelope with verification
 - `DirectoryState` — BTreeMap of supplier listings (LWW merge)
 - `StorefrontState` — products + orders for one supplier
+- `UserContractState` — per-user contract: identity, supplier affiliation, wallet balance (LWW merge)
 - `Product` — dairy product with category, price (CURD), quantity, expiry
 - `Order` — customer purchase with deposit tier and monotonic status progression
 - `GeoLocation` — lat/lon with Haversine distance; Australian postcode lookup

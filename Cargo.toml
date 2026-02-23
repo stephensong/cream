@@ -4,6 +4,7 @@ members = [
     "common",
     "contracts/directory-contract",
     "contracts/storefront-contract",
+    "contracts/user-contract",
     "delegates/cream-delegate",
     "tests/node-integration",
 ]

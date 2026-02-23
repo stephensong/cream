@@ -707,16 +707,30 @@ fn SetupScreen() -> Element {
 
                                 if lookup_result.is_none() && is_sup {
                                     node.send(NodeAction::RegisterSupplier {
-                                        name,
+                                        name: name.clone(),
                                         postcode,
                                         locality: locality_val,
                                         description: desc,
                                     });
+                                    // Deploy user contract for the supplier (every supplier is also a user)
+                                    node.send(NodeAction::RegisterUser {
+                                        name: name.clone(),
+                                        origin_supplier: name.clone(),
+                                        current_supplier: name.clone(),
+                                        initial_balance: 10_000,
+                                    });
                                 }
 
-                                if let Some(sf_key) = lookup_result.as_ref().map(|e| e.storefront_key.clone()) {
+                                if let Some(entry) = lookup_result.as_ref() {
                                     node.send(NodeAction::SubscribeCustomerStorefront {
-                                        storefront_key: sf_key,
+                                        storefront_key: entry.storefront_key.clone(),
+                                    });
+                                    // Deploy user contract for the customer
+                                    node.send(NodeAction::RegisterUser {
+                                        name: name.clone(),
+                                        origin_supplier: entry.name.clone(),
+                                        current_supplier: entry.name.clone(),
+                                        initial_balance: 10_000,
                                     });
                                 }
                             },

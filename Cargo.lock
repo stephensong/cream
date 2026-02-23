@@ -240,6 +240,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cream-user-contract"
+version = "0.1.0"
+dependencies = [
+ "cream-common",
+ "ed25519-dalek",
+ "freenet-stdlib",
+ "serde_json",
+]
+
+[[package]]
 name = "crypto-common"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -2,6 +2,7 @@ use dioxus::prelude::*;
 
 use cream_common::currency::format_amount;
 
+use super::node_api::{use_node_action, NodeAction};
 use super::shared_state::use_shared_state;
 use super::user_state::{use_user_state, TransactionKind};
 
@@ -58,9 +59,18 @@ pub fn WalletView() -> Element {
             div { class: "wallet-actions",
                 button {
                     onclick: move |_| {
-                        let mut state = user_state.write();
-                        state.record_credit(1000, "Faucet".into());
-                        state.save();
+                        let new_balance = {
+                            let mut state = user_state.write();
+                            state.record_credit(1000, "Faucet".into());
+                            state.save();
+                            state.balance()
+                        };
+                        // Sync to user contract on the network
+                        let node = use_node_action();
+                        node.send(NodeAction::UpdateUserContract {
+                            current_supplier: None,
+                            balance_curds: Some(new_balance),
+                        });
                     },
                     "Faucet (+1000 CURD)"
                 }

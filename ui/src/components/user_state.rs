@@ -75,6 +75,9 @@ pub struct UserState {
     /// Customer mode: Base58-encoded ContractInstanceId for the supplier's storefront.
     #[serde(default)]
     pub supplier_storefront_key: Option<String>,
+    /// Base58-encoded ContractKey for this user's own user contract.
+    #[serde(default)]
+    pub user_contract_key: Option<String>,
 }
 
 /// Get current time as ISO 8601 string.
@@ -123,6 +126,7 @@ impl UserState {
             connected_supplier: None,
             supplier_node_url: None,
             supplier_storefront_key: None,
+            user_contract_key: None,
         };
         state.record_credit(10_000, "Initial CURD allocation".into());
         state

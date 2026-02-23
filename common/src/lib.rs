@@ -7,3 +7,4 @@ pub mod order;
 pub mod postcode;
 pub mod product;
 pub mod storefront;
+pub mod user_contract;

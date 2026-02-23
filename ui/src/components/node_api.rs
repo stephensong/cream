@@ -55,6 +55,18 @@ pub enum NodeAction {
         price_curd: u64,
         quantity_total: u32,
     },
+    /// Deploy a user contract for the current user.
+    RegisterUser {
+        name: String,
+        origin_supplier: String,
+        current_supplier: String,
+        initial_balance: u64,
+    },
+    /// Update the user's contract state (supplier change, balance sync).
+    UpdateUserContract {
+        current_supplier: Option<String>,
+        balance_curds: Option<u64>,
+    },
 }
 
 /// Get a handle to send actions to the node communication coroutine.
@@ -89,6 +101,7 @@ mod wasm_impl {
     use cream_common::storefront::{
         SignedProduct, StorefrontInfo, StorefrontParameters, StorefrontState,
     };
+    use cream_common::user_contract::{UserContractParameters, UserContractState};
     use freenet_stdlib::client_api::{
         ClientError, ClientRequest, ContractRequest, ContractResponse, HostResponse,
     };
@@ -129,6 +142,11 @@ mod wasm_impl {
     /// Embedded storefront contract WASM (built with `cargo make build-contracts-dev`).
     const STOREFRONT_CONTRACT_WASM: &[u8] = include_bytes!(
         "../../../target/wasm32-unknown-unknown/release/cream_storefront_contract.wasm"
+    );
+
+    /// Embedded user contract WASM (built with `cargo make build-contracts-dev`).
+    const USER_CONTRACT_WASM: &[u8] = include_bytes!(
+        "../../../target/wasm32-unknown-unknown/release/cream_user_contract.wasm"
     );
 
     /// Build a ContractContainer from raw WASM bytes and parameters.
@@ -289,6 +307,38 @@ mod wasm_impl {
         // rather than the storefront's own info.name (e.g. "Gary's Farm").
         let mut instance_to_name: std::collections::HashMap<ContractInstanceId, String> = std::collections::HashMap::new();
 
+        // Track the user's own user contract instance ID for response routing.
+        let mut user_contract_instance_id: Option<ContractInstanceId> = None;
+        // Track the user contract key for updates.
+        let mut user_contract_key: Option<ContractKey> = None;
+
+        // On startup, if we have a saved user contract key, GET + subscribe to it.
+        {
+            let saved_key = user_state.read().user_contract_key.clone();
+            if let Some(key_str) = saved_key {
+                if let Ok(instance_id) = ContractInstanceId::from_bytes(&key_str) {
+                    clog(&format!("[CREAM] Restoring user contract subscription: {}", key_str));
+                    user_contract_instance_id = Some(instance_id);
+                    let get_req = ClientRequest::ContractOp(ContractRequest::Get {
+                        key: instance_id,
+                        return_contract_code: false,
+                        subscribe: false,
+                        blocking_subscribe: false,
+                    });
+                    if let Err(e) = api.send(get_req).await {
+                        clog(&format!("[CREAM] ERROR: Failed to GET user contract: {:?}", e));
+                    }
+                    let sub_req = ClientRequest::ContractOp(ContractRequest::Subscribe {
+                        key: instance_id,
+                        summary: None,
+                    });
+                    if let Err(e) = api.send(sub_req).await {
+                        clog(&format!("[CREAM] ERROR: Failed to subscribe to user contract: {:?}", e));
+                    }
+                }
+            }
+        }
+
         // ── Main event loop ─────────────────────────────────────────────
         loop {
             futures::select! {
@@ -310,6 +360,8 @@ mod wasm_impl {
                         is_customer,
                         &user_state,
                         &send_half,
+                        &mut user_contract_instance_id,
+                        &mut user_contract_key,
                     ).await;
                 }
 
@@ -324,6 +376,7 @@ mod wasm_impl {
                                 &mut instance_to_name,
                                 &mut sf_contract_keys,
                                 csn.as_deref(),
+                                user_contract_instance_id,
                             );
                             for follow_up in follow_ups {
                                 if let Err(e) = api.send(follow_up).await {
@@ -403,6 +456,8 @@ mod wasm_impl {
         is_customer: bool,
         user_state: &Signal<crate::components::user_state::UserState>,
         send_half: &mpsc::UnboundedSender<ClientRequest<'static>>,
+        user_contract_instance_id: &mut Option<ContractInstanceId>,
+        user_contract_key_ref: &mut Option<ContractKey>,
     ) {
         match action {
             NodeAction::RegisterSupplier {
@@ -1108,6 +1163,106 @@ mod wasm_impl {
                 }
             }
 
+            NodeAction::RegisterUser {
+                name,
+                origin_supplier,
+                current_supplier,
+                initial_balance,
+            } => {
+                clog(&format!("[CREAM] RegisterUser: {} (origin={}, current={})",
+                    name, origin_supplier, current_supplier));
+
+                let owner_key = key_manager.customer_verifying_key();
+                let uc_params = UserContractParameters { owner: owner_key };
+                let params_bytes = serde_json::to_vec(&uc_params).unwrap();
+                let uc_contract = make_contract(
+                    USER_CONTRACT_WASM,
+                    Parameters::from(params_bytes),
+                );
+                let uc_key = uc_contract.key();
+
+                let now = chrono::Utc::now();
+                let uc_state = UserContractState {
+                    owner: key_manager.customer_id(),
+                    name: name.clone(),
+                    origin_supplier,
+                    current_supplier,
+                    balance_curds: initial_balance,
+                    updated_at: now,
+                    signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+                };
+                let uc_state_bytes = serde_json::to_vec(&uc_state).unwrap();
+
+                let put_uc = ClientRequest::ContractOp(ContractRequest::Put {
+                    contract: uc_contract,
+                    state: WrappedState::new(uc_state_bytes),
+                    related_contracts: RelatedContracts::default(),
+                    subscribe: true,
+                    blocking_subscribe: false,
+                });
+
+                clog(&format!("[CREAM] Deploying user contract for {}: {:?}", name, uc_key));
+                if let Err(e) = api.send(put_uc).await {
+                    clog(&format!("[CREAM] ERROR: Failed to deploy user contract: {:?}", e));
+                    return;
+                }
+
+                // Store the user contract key
+                let uc_key_str = format!("{}", uc_key);
+                *user_contract_instance_id = Some(*uc_key.id());
+                *user_contract_key_ref = Some(uc_key);
+                {
+                    let mut state = shared.write();
+                    state.user_contract = Some(uc_state);
+                    state.user_contract_key = Some(uc_key_str.clone());
+                }
+                // Persist to UserState for reload
+                {
+                    let mut us_signal = *user_state;
+                    let mut us = us_signal.write();
+                    us.user_contract_key = Some(uc_key_str);
+                    us.save();
+                }
+            }
+
+            NodeAction::UpdateUserContract {
+                current_supplier,
+                balance_curds,
+            } => {
+                let Some(uc_key) = *user_contract_key_ref else {
+                    clog("[CREAM] UpdateUserContract: no user contract key, skipping");
+                    return;
+                };
+
+                let existing = shared.read().user_contract.clone();
+                if let Some(mut uc_state) = existing {
+                    if let Some(supplier) = current_supplier {
+                        uc_state.current_supplier = supplier;
+                    }
+                    if let Some(balance) = balance_curds {
+                        uc_state.balance_curds = balance;
+                    }
+                    uc_state.updated_at = chrono::Utc::now();
+                    // Re-sign (dev mode: signature is ignored)
+                    uc_state.signature = ed25519_dalek::Signature::from_bytes(&[0u8; 64]);
+
+                    let uc_bytes = serde_json::to_vec(&uc_state).unwrap();
+                    let update = ClientRequest::ContractOp(ContractRequest::Update {
+                        key: uc_key,
+                        data: UpdateData::State(State::from(uc_bytes)),
+                    });
+                    shared.write().user_contract = Some(uc_state);
+
+                    if let Err(e) = api.send(update).await {
+                        clog(&format!("[CREAM] ERROR: Failed to update user contract: {:?}", e));
+                    } else {
+                        clog("[CREAM] UpdateUserContract: sent successfully");
+                    }
+                } else {
+                    clog("[CREAM] UpdateUserContract: no existing user contract state");
+                }
+            }
+
             NodeAction::SubscribeCustomerStorefront { storefront_key } => {
                 clog(&format!("[CREAM] Customer mode: subscribing to storefront key '{}'", storefront_key));
                 match ContractInstanceId::from_bytes(&storefront_key) {
@@ -1150,6 +1305,7 @@ mod wasm_impl {
         instance_to_name: &mut std::collections::HashMap<ContractInstanceId, String>,
         sf_contract_keys: &mut BTreeMap<String, ContractKey>,
         customer_supplier_name: Option<&str>,
+        user_contract_instance_id: Option<ContractInstanceId>,
     ) -> Vec<ClientRequest<'static>> {
         match response {
             ContractResponse::GetResponse { key, state, .. } => {
@@ -1158,8 +1314,23 @@ mod wasm_impl {
                     return vec![];
                 }
                 let is_directory = *key.id() == directory_instance_id;
-                clog(&format!("[CREAM] GetResponse: is_directory={}, bytes_len={}", is_directory, bytes.len()));
-                if is_directory {
+                let is_user_contract = user_contract_instance_id
+                    .map(|id| *key.id() == id)
+                    .unwrap_or(false);
+                clog(&format!("[CREAM] GetResponse: is_directory={}, is_user_contract={}, bytes_len={}",
+                    is_directory, is_user_contract, bytes.len()));
+                if is_user_contract {
+                    match serde_json::from_slice::<UserContractState>(bytes) {
+                        Ok(uc_state) => {
+                            clog(&format!("[CREAM] User contract GET: name='{}', balance={}",
+                                uc_state.name, uc_state.balance_curds));
+                            shared.write().user_contract = Some(uc_state);
+                        }
+                        Err(e) => {
+                            clog(&format!("[CREAM] ERROR: Failed to parse user contract GetResponse: {e}"));
+                        }
+                    }
+                } else if is_directory {
                     match serde_json::from_slice::<DirectoryState>(bytes) {
                         Ok(directory) => {
                             clog(&format!("[CREAM] Directory GET: {} entries: {:?}",
@@ -1217,8 +1388,28 @@ mod wasm_impl {
                     return vec![];
                 }
                 let is_directory = *key.id() == directory_instance_id;
-                clog(&format!("[CREAM] UpdateNotification: is_directory={}, bytes_len={}", is_directory, bytes.len()));
-                if is_directory {
+                let is_user_contract = user_contract_instance_id
+                    .map(|id| *key.id() == id)
+                    .unwrap_or(false);
+                clog(&format!("[CREAM] UpdateNotification: is_directory={}, is_user_contract={}, bytes_len={}",
+                    is_directory, is_user_contract, bytes.len()));
+                if is_user_contract {
+                    match serde_json::from_slice::<UserContractState>(bytes) {
+                        Ok(uc_update) => {
+                            clog(&format!("[CREAM] User contract notification: name='{}', balance={}",
+                                uc_update.name, uc_update.balance_curds));
+                            let mut state = shared.write();
+                            if let Some(existing) = state.user_contract.as_mut() {
+                                existing.merge(uc_update);
+                            } else {
+                                state.user_contract = Some(uc_update);
+                            }
+                        }
+                        Err(e) => {
+                            clog(&format!("[CREAM] ERROR: Failed to parse user contract notification: {e}"));
+                        }
+                    }
+                } else if is_directory {
                     match serde_json::from_slice::<DirectoryState>(bytes) {
                         Ok(dir_update) => {
                             clog(&format!("[CREAM] Directory notification: {} entries", dir_update.entries.len()));
