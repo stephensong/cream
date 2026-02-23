@@ -14,13 +14,14 @@ fn time_options() -> Vec<(u8, String)> {
 pub fn ScheduleEditor(
     schedule: WeeklySchedule,
     on_save: EventHandler<WeeklySchedule>,
+    on_cancel: EventHandler<()>,
 ) -> Element {
-    // Internal state: Vec of 7 days, each a Vec of (start_slot, end_slot) ranges
-    let mut ranges: Signal<Vec<Vec<(u8, u8)>>> = use_signal(|| {
-        (0..7)
-            .map(|day| schedule.get_ranges(day))
-            .collect()
-    });
+    // Read the schedule prop eagerly (it's a ReadOnlySignal in Dioxus 0.7)
+    // so that `use_signal` captures the concrete value, not the signal.
+    let schedule_snapshot: Vec<Vec<(u8, u8)>> = (0..7)
+        .map(|day| schedule.get_ranges(day))
+        .collect();
+    let mut ranges: Signal<Vec<Vec<(u8, u8)>>> = use_signal(move || schedule_snapshot.clone());
 
     let options = time_options();
 
@@ -65,7 +66,7 @@ pub fn ScheduleEditor(
                                                         },
                                                         {options.iter().map(|(slot, label)| {
                                                             let s = *slot;
-                                                            rsx! { option { value: "{s}", "{label}" } }
+                                                            rsx! { option { value: "{s}", selected: s == start_val, "{label}" } }
                                                         })}
                                                     }
                                                     span { " to " }
@@ -80,9 +81,9 @@ pub fn ScheduleEditor(
                                                         },
                                                         {options.iter().map(|(slot, label)| {
                                                             let s = *slot;
-                                                            rsx! { option { value: "{s}", "{label}" } }
+                                                            rsx! { option { value: "{s}", selected: s == end_val, "{label}" } }
                                                         })}
-                                                        option { value: "48", "24:00" }
+                                                        option { value: "48", selected: end_val == 48, "24:00" }
                                                     }
                                                     button {
                                                         class: "schedule-remove-btn",
@@ -138,6 +139,12 @@ pub fn ScheduleEditor(
                         on_save.call(build_schedule());
                     },
                     "Save Schedule"
+                }
+                button {
+                    onclick: move |_| {
+                        on_cancel.call(());
+                    },
+                    "Cancel"
                 }
             }
         }

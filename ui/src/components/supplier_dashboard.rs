@@ -15,6 +15,7 @@ pub fn SupplierDashboard() -> Element {
     let mut shared_state = use_shared_state();
     let mut show_add_product = use_signal(|| false);
     let mut editing_schedule = use_signal(|| false);
+    let mut schedule_edit_gen = use_signal(|| 0u32);
     let mut editing_product = use_signal(|| None::<String>);
     let mut edit_price = use_signal(String::new);
     let mut edit_quantity = use_signal(String::new);
@@ -80,6 +81,7 @@ pub fn SupplierDashboard() -> Element {
                 h3 { "Opening Hours" }
                 if *editing_schedule.read() {
                     ScheduleEditor {
+                        key: "{schedule_edit_gen}",
                         schedule: current_schedule.clone(),
                         on_save: move |sched: WeeklySchedule| {
                             // Update local state immediately so re-renders see
@@ -101,11 +103,17 @@ pub fn SupplierDashboard() -> Element {
                             }
                             editing_schedule.set(false);
                         },
+                        on_cancel: move |_| {
+                            editing_schedule.set(false);
+                        },
                     }
                 } else {
                     ScheduleSummary { schedule: current_schedule.clone() }
                     button {
-                        onclick: move |_| editing_schedule.set(true),
+                        onclick: move |_| {
+                            schedule_edit_gen += 1;
+                            editing_schedule.set(true);
+                        },
                         "Edit Hours"
                     }
                 }
