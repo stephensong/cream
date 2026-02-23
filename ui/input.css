@@ -208,4 +208,129 @@
     padding: 1.25rem;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
   }
+
+  .storefront-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .storefront-heading h2 {
+    margin-bottom: 0;
+  }
+
+  .badge {
+    display: inline-block;
+    padding: 0.15rem 0.75rem;
+    border-radius: 9999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  .badge-open {
+    background: #064e3b;
+    color: #34d399;
+    border: 1px solid #065f46;
+  }
+
+  .badge-closed {
+    background: #450a0a;
+    color: #f87171;
+    border: 1px solid #7f1d1d;
+  }
+
+  .schedule-editor {
+    margin: 0.75rem 0;
+  }
+
+  .schedule-day-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    margin-bottom: 0.5rem;
+    min-height: 2.25rem;
+  }
+
+  .schedule-day-label {
+    min-width: 6rem;
+    font-weight: 500;
+    color: #94a3b8;
+    padding-top: 0.35rem;
+  }
+
+  .schedule-ranges {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .schedule-time-range {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .schedule-time-range select {
+    width: auto;
+    min-width: 5rem;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.85rem;
+  }
+
+  .schedule-time-range span {
+    color: #64748b;
+    font-size: 0.85rem;
+  }
+
+  .schedule-closed-label {
+    color: #64748b;
+    font-style: italic;
+    font-size: 0.9rem;
+    padding-top: 0.35rem;
+  }
+
+  .schedule-add-btn,
+  .schedule-clear-btn,
+  .schedule-remove-btn {
+    font-size: 0.8rem;
+    padding: 0.2rem 0.6rem;
+    background: #334155;
+    color: #94a3b8;
+  }
+
+  .schedule-add-btn:hover,
+  .schedule-clear-btn:hover,
+  .schedule-remove-btn:hover {
+    background: #475569;
+    color: #e2e8f0;
+  }
+
+  .schedule-remove-btn {
+    background: #450a0a;
+    color: #f87171;
+    padding: 0.15rem 0.4rem;
+  }
+
+  .schedule-remove-btn:hover {
+    background: #7f1d1d;
+  }
+
+  .schedule-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+  }
+
+  .schedule-summary {
+    margin: 0.5rem 0;
+    font-size: 0.9rem;
+    color: #94a3b8;
+  }
+
+  .schedule-summary p {
+    margin-bottom: 0.25rem;
+  }
 }

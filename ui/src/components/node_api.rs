@@ -43,6 +43,10 @@ pub enum NodeAction {
     SubscribeStorefront { supplier_name: String },
     /// Customer mode: subscribe to the supplier's storefront after setup completes.
     SubscribeCustomerStorefront { storefront_key: String },
+    /// Update the supplier's opening hours schedule.
+    UpdateSchedule {
+        schedule: cream_common::storefront::WeeklySchedule,
+    },
 }
 
 /// Get a handle to send actions to the node communication coroutine.
@@ -310,6 +314,8 @@ mod wasm_impl {
                         &km,
                         &node_url,
                         is_customer,
+                        &user_state,
+                        &send_half,
                     ).await;
                 }
 
@@ -401,6 +407,8 @@ mod wasm_impl {
         key_manager: &KeyManager,
         #[allow(unused_variables)] node_url: &str,
         is_customer: bool,
+        user_state: &Signal<crate::components::user_state::UserState>,
+        send_half: &mpsc::UnboundedSender<ClientRequest<'static>>,
     ) {
         match action {
             NodeAction::RegisterSupplier {
@@ -478,6 +486,8 @@ mod wasm_impl {
                         name: name.clone(),
                         description: description.clone(),
                         location: location.clone(),
+                        schedule: None,
+                        timezone: None,
                     },
                     products: BTreeMap::new(),
                     orders: BTreeMap::new(),
@@ -876,6 +886,70 @@ mod wasm_impl {
                         "No directory entry found for {}, can't subscribe",
                         supplier_name
                     );
+                }
+            }
+
+            NodeAction::UpdateSchedule { schedule } => {
+                clog("[CREAM] UpdateSchedule: updating opening hours");
+                let my_supplier_id = key_manager.supplier_id();
+                let (supplier_name, sf_key) = {
+                    let state = shared.read();
+                    let from_local = sf_contract_keys
+                        .iter()
+                        .next()
+                        .map(|(name, key)| (name.clone(), *key));
+                    from_local
+                        .or_else(|| {
+                            state
+                                .directory
+                                .entries
+                                .get(&my_supplier_id)
+                                .map(|entry| (entry.name.clone(), entry.storefront_key))
+                        })
+                        .unzip()
+                };
+
+                let (Some(supplier_name), Some(sf_key)) = (supplier_name, sf_key) else {
+                    clog("[CREAM] ERROR: No storefront found, can't update schedule");
+                    return;
+                };
+
+                let existing_sf = shared.read().storefronts.get(&supplier_name).cloned();
+                if let Some(mut sf) = existing_sf {
+                    // Derive timezone from postcode
+                    let tz = {
+                        let us = user_state.read();
+                        us.postcode
+                            .as_deref()
+                            .and_then(cream_common::postcode::timezone_for_postcode)
+                            .map(|s: &str| s.to_string())
+                    };
+                    sf.info.schedule = Some(schedule);
+                    sf.info.timezone = tz;
+
+                    let sf_bytes = serde_json::to_vec(&sf).unwrap();
+                    let update = ClientRequest::ContractOp(ContractRequest::Update {
+                        key: sf_key,
+                        data: UpdateData::State(State::from(sf_bytes)),
+                    });
+                    shared
+                        .write()
+                        .storefronts
+                        .insert(supplier_name.clone(), sf);
+
+                    if let Err(e) = api.send(update).await {
+                        clog(&format!(
+                            "[CREAM] ERROR: Failed to update schedule: {:?}",
+                            e
+                        ));
+                    } else {
+                        clog("[CREAM] UpdateSchedule: sent successfully");
+                    }
+                } else {
+                    clog(&format!(
+                        "[CREAM] ERROR: Storefront state not found for {}",
+                        supplier_name
+                    ));
                 }
             }
 

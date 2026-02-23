@@ -112,6 +112,26 @@ pub fn distance_between_postcodes(a: &str, b: &str) -> Option<f64> {
     Some(loc_a.distance_km(&loc_b))
 }
 
+/// Return the IANA timezone for an Australian state abbreviation.
+pub fn timezone_for_state(state: &str) -> Option<&'static str> {
+    match state {
+        "NSW" | "ACT" => Some("Australia/Sydney"),
+        "VIC" => Some("Australia/Melbourne"),
+        "QLD" => Some("Australia/Brisbane"),
+        "TAS" => Some("Australia/Hobart"),
+        "SA" => Some("Australia/Adelaide"),
+        "NT" => Some("Australia/Darwin"),
+        "WA" => Some("Australia/Perth"),
+        _ => None,
+    }
+}
+
+/// Derive IANA timezone from an Australian postcode using the state of the first locality match.
+pub fn timezone_for_postcode(postcode: &str) -> Option<&'static str> {
+    let info = lookup_au_postcode_info(postcode)?;
+    timezone_for_state(&info.state)
+}
+
 /// Format a postcode for display, showing the locality name.
 /// If locality is provided, shows "Locality (Postcode)".
 /// Otherwise shows the first locality match, or just the postcode if not found.
@@ -196,6 +216,24 @@ mod tests {
         let result = format_postcode("2000", None);
         assert!(result.contains("2000"), "should contain postcode");
         assert_eq!(format_postcode("0000", None), "0000");
+    }
+
+    #[test]
+    fn test_timezone_for_state() {
+        assert_eq!(timezone_for_state("NSW"), Some("Australia/Sydney"));
+        assert_eq!(timezone_for_state("ACT"), Some("Australia/Sydney"));
+        assert_eq!(timezone_for_state("VIC"), Some("Australia/Melbourne"));
+        assert_eq!(timezone_for_state("QLD"), Some("Australia/Brisbane"));
+        assert_eq!(timezone_for_state("WA"), Some("Australia/Perth"));
+        assert_eq!(timezone_for_state("XX"), None);
+    }
+
+    #[test]
+    fn test_timezone_for_postcode() {
+        assert_eq!(timezone_for_postcode("2000"), Some("Australia/Sydney"));
+        assert_eq!(timezone_for_postcode("3000"), Some("Australia/Melbourne"));
+        assert_eq!(timezone_for_postcode("4000"), Some("Australia/Brisbane"));
+        assert_eq!(timezone_for_postcode("0000"), None);
     }
 
     #[test]

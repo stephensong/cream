@@ -375,6 +375,8 @@ fn make_initial_storefront(owner: &SupplierId, name: &str) -> StorefrontState {
             name: name.to_string(),
             description: format!("{name} — fresh dairy direct"),
             location: GeoLocation::new(-33.87, 151.21),
+            schedule: None,
+            timezone: None,
         },
         products: BTreeMap::new(),
         orders: BTreeMap::new(),

@@ -1,6 +1,9 @@
 use dioxus::prelude::*;
 
+use cream_common::storefront::WeeklySchedule;
+
 use super::order_form::OrderForm;
+use super::schedule_editor::ScheduleSummary;
 use super::shared_state::use_shared_state;
 use super::user_state::use_user_state;
 
@@ -27,6 +30,16 @@ pub fn StorefrontView(supplier_name: String) -> Element {
 
     // Check if this is the current user's storefront
     let is_own = user_state.read().moniker.as_ref() == Some(&supplier_name);
+
+    // Get schedule + timezone for the open/closed badge
+    let (storefront_schedule, storefront_timezone): (Option<WeeklySchedule>, Option<String>) = {
+        let shared = shared_state.read();
+        shared
+            .storefronts
+            .get(&supplier_name)
+            .map(|sf| (sf.info.schedule.clone(), sf.info.timezone.clone()))
+            .unwrap_or((None, None))
+    };
 
     // Always get products from SharedState (network-sourced storefronts)
     // Tuple: (product_id, name, category, price, available_quantity)
@@ -57,7 +70,15 @@ pub fn StorefrontView(supplier_name: String) -> Element {
 
     rsx! {
         div { class: "storefront-view",
-            h2 { "{supplier_name}" }
+            div { class: "storefront-heading",
+                h2 { "{supplier_name}" }
+                if let Some(ref schedule) = storefront_schedule {
+                    OpenClosedBadge { schedule: schedule.clone(), timezone: storefront_timezone.clone() }
+                }
+            }
+            if let Some(ref schedule) = storefront_schedule {
+                ScheduleSummary { schedule: schedule.clone() }
+            }
             if is_own {
                 p { class: "own-storefront-note",
                     "(This is your storefront — use the \"My Storefront\" tab to add products)"
@@ -90,6 +111,60 @@ pub fn StorefrontView(supplier_name: String) -> Element {
                 }
             }
         }
+    }
+}
+
+/// Badge showing "Open" (green) or "Closed" (red) based on the current time.
+#[component]
+fn OpenClosedBadge(schedule: WeeklySchedule, timezone: Option<String>) -> Element {
+    let is_open = use_memo(move || {
+        let offset = timezone
+            .as_deref()
+            .and_then(get_utc_offset_minutes)
+            .unwrap_or(0);
+        schedule.is_currently_open(offset)
+    });
+
+    let (class, label) = if is_open() {
+        ("badge badge-open", "Open")
+    } else {
+        ("badge badge-closed", "Closed")
+    };
+
+    rsx! {
+        span { class: "{class}", "{label}" }
+    }
+}
+
+/// Get the current UTC offset in minutes for an IANA timezone name.
+/// Uses JavaScript's Intl API in WASM builds; returns None on failure.
+fn get_utc_offset_minutes(tz: &str) -> Option<i32> {
+    #[cfg(target_family = "wasm")]
+    {
+        // Use JS to get offset: new Date().toLocaleString("en-US", {timeZone}) then compare
+        // Simpler: use Intl.DateTimeFormat resolvedOptions + getTimezoneOffset trick
+        let js_code = format!(
+            r#"(function() {{
+                try {{
+                    var now = new Date();
+                    var utcStr = now.toLocaleString("en-US", {{timeZone: "UTC"}});
+                    var tzStr = now.toLocaleString("en-US", {{timeZone: "{}"}});
+                    var utcDate = new Date(utcStr);
+                    var tzDate = new Date(tzStr);
+                    return Math.round((tzDate - utcDate) / 60000);
+                }} catch(e) {{
+                    return null;
+                }}
+            }})()"#,
+            tz
+        );
+        let result = web_sys::js_sys::eval(&js_code).ok()?;
+        result.as_f64().map(|f| f as i32)
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let _ = tz;
+        None
     }
 }
 

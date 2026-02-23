@@ -1,7 +1,9 @@
 use dioxus::prelude::*;
 
 use cream_common::postcode::format_postcode;
+use cream_common::storefront::WeeklySchedule;
 
+use super::schedule_editor::{ScheduleEditor, ScheduleSummary};
 #[cfg(feature = "use-node")]
 use super::node_api::{use_node_action, NodeAction};
 use super::shared_state::use_shared_state;
@@ -12,6 +14,7 @@ pub fn SupplierDashboard() -> Element {
     let user_state = use_user_state();
     let shared_state = use_shared_state();
     let mut show_add_product = use_signal(|| false);
+    let mut editing_schedule = use_signal(|| false);
 
     let state = user_state.read();
     let moniker = state.moniker.clone().unwrap_or_default();
@@ -40,6 +43,9 @@ pub fn SupplierDashboard() -> Element {
                 .collect()
         })
         .unwrap_or_default();
+    let current_schedule: WeeklySchedule = storefront
+        .and_then(|sf| sf.info.schedule.clone())
+        .unwrap_or_default();
     let network_orders: Vec<_> = storefront
         .map(|sf| sf.orders.values().cloned().collect())
         .unwrap_or_default();
@@ -64,6 +70,33 @@ pub fn SupplierDashboard() -> Element {
                 p { "Location: {postcode}" }
                 p { "Description: {description}" }
                 ShareableUrl { moniker: moniker.clone() }
+            }
+
+            div { class: "dashboard-section",
+                h3 { "Opening Hours" }
+                if *editing_schedule.read() {
+                    ScheduleEditor {
+                        schedule: current_schedule.clone(),
+                        on_save: move |sched: WeeklySchedule| {
+                            #[cfg(feature = "use-node")]
+                            {
+                                let node = use_node_action();
+                                node.send(NodeAction::UpdateSchedule { schedule: sched });
+                            }
+                            #[cfg(not(feature = "use-node"))]
+                            {
+                                let _ = sched;
+                            }
+                            editing_schedule.set(false);
+                        },
+                    }
+                } else {
+                    ScheduleSummary { schedule: current_schedule.clone() }
+                    button {
+                        onclick: move |_| editing_schedule.set(true),
+                        "Edit Hours"
+                    }
+                }
             }
 
             div { class: "dashboard-section",

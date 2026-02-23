@@ -151,3 +151,41 @@ Issue #1 (StreamId collision) is about **different transactions** from **differe
    - Transport-level retransmission treating the metadata as unacknowledged
 
 3. **Guard the pipe state**: Make the piping handler check whether forwarding is already in progress for this transaction before starting a second pipe.
+
+---
+
+## Subscribe Does Not Register Local Interest — UpdateNotification Timeout on Cross-Node Subscriptions
+
+**Status**: Fix submitted as PR (branch `fix/subscribe-local-interest` on `stephensong/freenet-core`)
+**Severity**: High — intermittent 60-second timeouts on cross-node subscription notifications
+**Affected code**: `crates/core/src/operations/subscribe.rs`
+
+### Summary
+
+When a client subscribes to a contract, the subscribe operation registers the requesting peer's interest on the node that fulfills the subscribe (via `register_peer_interest`). However, the **originating node** (where the WebSocket client lives) does not call `register_local_interest()` for the subscribed contract. This breaks the `ChangeInterests` interest discovery protocol, preventing other nodes from learning about the subscriber.
+
+### Root Cause
+
+The `ChangeInterests` handler (`node/mod.rs:1322`) only processes incoming interest announcements if the receiving node has `has_local_interest()` for the contract. This check is correct — it prevents registering random peer interest for contracts the node doesn't care about. But subscribe operations never call `register_local_interest()`, so:
+
+1. Node A subscribes to a contract hosted on Node B
+2. The subscribe routes to Node C (which has a cached copy), and Node C registers Node A's interest
+3. Node B, which also hosts the contract, broadcasts `ChangeInterests` to its peers including Node A
+4. Node A receives `ChangeInterests` from Node B, but `has_local_interest()` returns **false**
+5. Node A does NOT register Node B's peer interest
+6. Later, Node B updates the contract and emits `BroadcastStateChange`
+7. Node B's `get_broadcast_targets_update()` doesn't find Node A (interest was registered on Node C, not Node B)
+8. If the proximity cache hasn't been populated between Node B and Node C, the update has no targets and is dropped after 3 retries
+
+### Why It's Intermittent
+
+The failure depends on timing: if proximity cache announcements between nodes complete before the update fires, the update propagates through the cache path (Node B → Node C → Node A). If the update fires before the cache exchange completes, it's lost.
+
+### Fix
+
+In `subscribe.rs`, register local interest when a subscription completes:
+
+1. **`complete_local_subscription()`**: Add `register_local_interest()` + `broadcast_change_interests()` before notifying the client
+2. **`SubscribeMsg::Response` handler (originator path)**: Add `register_local_interest()` + `broadcast_change_interests()` when the subscribe response is received
+
+This enables bidirectional interest discovery: when peers announce they seed a contract (via ChangeInterests), the subscribing node's `has_local_interest()` check passes, and it registers the seeder as a peer interest. This allows direct `BroadcastTo` from the updating node to the subscriber, without depending on the proximity cache timing.
