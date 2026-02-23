@@ -4,7 +4,6 @@ import { waitForAppLoad } from './wait-for-app';
 export interface SetupOptions {
   name: string;
   postcode: string;
-  password: string;
   isSupplier?: boolean;
   description?: string;
   locality?: string;
@@ -15,14 +14,16 @@ export interface SetupOptions {
 }
 
 /**
- * Complete the full setup wizard (profile + password) and land on the main app.
+ * Complete the setup wizard and land on the main app.
+ *
+ * In dev mode the password is derived automatically from the name
+ * (name.to_lowercase()), so there is no password screen.
  */
 export async function completeSetup(page: Page, opts: SetupOptions): Promise<void> {
   if (!opts.skipNav) {
     await waitForAppLoad(page);
   }
 
-  // Step 1: Profile
   await expect(page.locator('.user-setup')).toBeVisible();
 
   await page.fill('input[placeholder="Name or moniker..."]', opts.name);
@@ -41,7 +42,11 @@ export async function completeSetup(page: Page, opts: SetupOptions): Promise<voi
   }
 
   if (opts.isSupplier) {
-    await page.check('input[type="checkbox"]');
+    // Only check the box if it's not already checked (auto-fill may have set it)
+    const checkbox = page.locator('input[type="checkbox"]');
+    if (!(await checkbox.isChecked())) {
+      await checkbox.check();
+    }
     if (opts.description) {
       await page.fill('textarea[placeholder="Describe your farm or dairy..."]', opts.description);
     }
@@ -59,12 +64,7 @@ export async function completeSetup(page: Page, opts: SetupOptions): Promise<voi
     await expect(page.locator('.welcome-back')).toBeVisible({ timeout: 15_000 });
   }
 
-  await page.click('button:has-text("Next")');
-
-  // Step 2: Password
-  await expect(page.locator('h1:has-text("Set a Password")')).toBeVisible();
-  await page.fill('input[placeholder="Enter password..."]', opts.password);
-  await page.fill('input[placeholder="Confirm password..."]', opts.password);
+  // Single-step: "Get Started" derives password and completes setup
   await page.click('button:has-text("Get Started")');
 
   // Wait for main app to render

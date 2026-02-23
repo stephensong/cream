@@ -8,31 +8,30 @@ test.describe('Directory View', () => {
     await completeSetup(page, {
       name: 'DirectoryViewer',
       postcode: '2000',
-      password: 'viewerpass',
     });
 
     await waitForConnected(page);
 
     // Wait for the test-harness suppliers to appear
-    // Harness data: Gary (3 products), Emma (1 product), Iris (0 products)
+    // Harness baseline: Gary (4 products), Emma (1 product), Iris (0 products)
+    // No prior tests mutate products, so counts are exact.
     await waitForSupplierCount(page, 3);
 
     // Check each supplier card
     const garyCard = page.locator('.supplier-card', { hasText: 'Gary' });
-    await expect(garyCard.locator('.product-count')).toHaveText('3 products');
+    await expect(garyCard.locator('.product-count')).toHaveText('4 products', { timeout: 15_000 });
 
     const emmaCard = page.locator('.supplier-card', { hasText: 'Emma' });
-    await expect(emmaCard.locator('.product-count')).toHaveText('1 products');
+    await expect(emmaCard.locator('.product-count')).toHaveText('1 products', { timeout: 15_000 });
 
     const irisCard = page.locator('.supplier-card', { hasText: 'Iris' });
-    await expect(irisCard.locator('.product-count')).toHaveText('0 products');
+    await expect(irisCard.locator('.product-count')).toHaveText('0 products', { timeout: 15_000 });
   });
 
   test('search filters suppliers by name', async ({ page }) => {
     await completeSetup(page, {
       name: 'Searcher',
       postcode: '2000',
-      password: 'searchpass',
     });
 
     await waitForConnected(page);

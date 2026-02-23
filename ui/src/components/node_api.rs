@@ -433,6 +433,24 @@ mod wasm_impl {
                     shared.write().storefront_keys
                         .insert(name.clone(), format!("{}", sf_key));
 
+                    // GET + subscribe to our own storefront so SharedState is populated
+                    let get_sf = ClientRequest::ContractOp(ContractRequest::Get {
+                        key: *sf_key.id(),
+                        return_contract_code: false,
+                        subscribe: false,
+                        blocking_subscribe: false,
+                    });
+                    if let Err(e) = api.send(get_sf).await {
+                        clog(&format!("[CREAM] ERROR: Failed to GET own storefront: {:?}", e));
+                    }
+                    let sub_sf = ClientRequest::ContractOp(ContractRequest::Subscribe {
+                        key: *sf_key.id(),
+                        summary: None,
+                    });
+                    if let Err(e) = api.send(sub_sf).await {
+                        clog(&format!("[CREAM] ERROR: Failed to subscribe to own storefront: {:?}", e));
+                    }
+
                     // Still register with rendezvous service so customers can discover us
                     if !is_customer {
                         let rendezvous_name = name.to_lowercase().replace(' ', "-");

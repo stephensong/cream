@@ -7,7 +7,6 @@ test.describe('View Storefront', () => {
     await completeSetup(page, {
       name: 'Shopper',
       postcode: '2000',
-      password: 'shopperpass',
     });
 
     await waitForConnected(page);
@@ -21,10 +20,10 @@ test.describe('View Storefront', () => {
     await expect(page.locator('.storefront-view')).toBeVisible();
     await expect(page.locator('.storefront-view h2')).toHaveText('Gary');
 
-    // Should show products (Gary has 3 from harness)
+    // Cumulative state: Gary has 4 harness products + 1 from test-04 = 5
     await expect(async () => {
       const count = await page.locator('.product-card').count();
-      expect(count).toBeGreaterThanOrEqual(3);
+      expect(count).toBe(5);
     }).toPass({ timeout: 15_000 });
 
     // Each product card should have an Order button (since this is not our storefront)
@@ -41,7 +40,6 @@ test.describe('View Storefront', () => {
     await completeSetup(page, {
       name: 'Gary',
       postcode: '2000',
-      password: 'gary',
       isSupplier: true,
       description: 'Fresh dairy products',
     });
@@ -55,10 +53,10 @@ test.describe('View Storefront', () => {
     await expect(page.locator('.storefront-view')).toBeVisible();
     await expect(page.locator('.own-storefront-note')).toBeVisible();
 
-    // Wait for products to load
+    // Cumulative state: Gary has 5 products (4 harness + 1 from test-04)
     await expect(async () => {
       const count = await page.locator('.product-card').count();
-      expect(count).toBeGreaterThanOrEqual(1);
+      expect(count).toBe(5);
     }).toPass({ timeout: 15_000 });
 
     // Order buttons should NOT be visible on own storefront

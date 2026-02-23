@@ -183,3 +183,145 @@ The rendezvous service is a centralised component in an otherwise decentralised 
 Eventually, the name-to-address mapping could itself be a Freenet contract — a directory of supplier endpoints stored on the network. But this creates a chicken-and-egg problem: you need a node to read the contract, and you need the directory to find a node. A lightweight centralised rendezvous is the right starting point, with decentralisation as a future evolution.
 
 ---
+
+## What automated testing suites are deployed with the CREAM dApp to ensure highest quality control?
+
+CREAM uses a three-tier testing strategy: node integration tests (Rust), browser E2E tests (Playwright), and a development fixture that ties everything together. There are no Rust unit tests at present — all testing is integration or end-to-end.
+
+### Node integration tests
+
+**Location**: `tests/node-integration/`
+**Run**: `cargo make test-node`
+
+These are Rust tests that exercise real Freenet contracts on a live multi-node network. A single cumulative test (`cumulative_node_tests`) runs 7 sequential steps, each building on the state left by previous steps:
+
+1. Directory subscribe → update → notification (cross-node)
+2. Storefront subscribe → add product → notification
+3. GET with subscribe flag vs explicit Subscribe
+4. Product count increments for subscriber (0 → 1 → 2)
+5. Full harness: 3 suppliers with products, multi-customer subscriptions
+6. Order expiry across deposit tiers (backdated orders)
+7. Opening hours schedule update → subscriber notification
+
+The test harness (`harness.rs`) manages 5 participants distributed across nodes:
+- **Gateway (port 3001)**: Gary (supplier), Iris (supplier), Alice (customer)
+- **Node 2 (port 3003)**: Emma (supplier), Bob (customer)
+
+This exercises cross-node contract propagation — the hardest thing to get right in a decentralised system. Identity derivation is deterministic (name + lowercase password), producing the same ed25519 keys as the UI, so harness data is directly usable by E2E tests and manual testing.
+
+The `reset-network` task handles all node lifecycle: kill existing processes, wipe state, generate transport keypairs, start a 3-node network with proper gateway configuration.
+
+### Playwright E2E tests
+
+**Location**: `tests/e2e/`
+**Run**: `cargo make test-e2e` (full pipeline) or `cd tests/e2e && npx playwright test` (tests only)
+
+Browser-based tests using Playwright (Chromium) that exercise the full CREAM UI against a live Freenet network. Tests run sequentially (`workers: 1`) because they share network state from the node integration fixture. There are currently 13 test suites:
+
+| # | Test | What it verifies |
+|---|------|-----------------|
+| 01 | Setup flow | Supplier and customer registration, header/nav rendering |
+| 02 | Directory view | Shows 3 harness suppliers, search/filter by name |
+| 03 | Supplier dashboard | Harness products visible, Add Product form toggle |
+| 04 | Add product | Create product via form, verify it appears in list |
+| 05 | View storefront | Customer sees Order buttons; supplier sees own-storefront note |
+| 06 | Cross-tab updates | Gary adds product → Emma sees updated count in directory |
+| 07 | Login persistence | Page reload preserves session; logout clears it |
+| 08 | Place order | Emma orders from Gary; Gary sees incoming order in dashboard |
+| 09 | Wallet balance | Deposit deducted from customer, credited to supplier |
+| 10 | Returning user | Log out → re-enter name → fields auto-fill from directory |
+| 11 | Order decrements quantity | Order reduces available quantity on both sides |
+| 12 | Customer rendezvous | Supplier → rendezvous registration → customer lookup → auto-connect |
+| 13 | Schedule editor | Returning supplier opens Edit Hours, modifies schedule, saves |
+
+**Helpers** (`tests/e2e/helpers/`):
+- `setup-flow.ts` — `completeSetup()` handles the full registration wizard (name, postcode, locality, supplier checkbox, description). In dev mode the password is derived automatically.
+- `wait-for-app.ts` — `waitForAppLoad()`, `waitForConnected()`, `waitForSupplierCount()` — wait for WASM compilation, Freenet connection, and directory sync.
+
+### The fixture pipeline
+
+**Run**: `cargo make fixture` (development) or `cargo make test-e2e` (CI-style)
+
+The `fixture` task runs the entire stack in order:
+
+1. `kill-stale` — kill leftover `dx serve` and `cargo-make` processes from previous runs
+2. `build-contracts-dev` — compile directory and storefront contracts to WASM with `dev` feature (no signature checks)
+3. `reset-network` — stop Freenet, wipe state, start 3-node network
+4. `test-node` — run all 7 node integration steps (populates Gary/Emma/Iris with products and orders)
+5. `restart-rendezvous` — start the supplier lookup service on port 8787
+6. `tailwind-build` — compile CSS
+7. `dx serve --features use-node` — start the Dioxus dev server connected to the live network
+
+After the fixture completes, the UI at `http://localhost:8080` shows a fully populated marketplace. Typing "gary" in the setup screen auto-fills from the directory — the same data that the E2E tests exercise.
+
+For CI-style runs, `test-e2e` builds the UI statically with `dx build`, serves it on port 8080, runs Playwright, and cleans up. The rendezvous E2E tests have a separate pipeline (`test-e2e-rendezvous`) that also starts the Wrangler-based rendezvous service.
+
+### Test data flow
+
+The key design principle is that **all test layers share the same identity derivation and fixture data**:
+
+- Node integration tests create suppliers Gary, Emma, Iris with deterministic keys (name + lowercase password).
+- E2E tests log in as those same identities and see the products/orders/schedules created by the node tests.
+- The `fixture` task makes the same data available for manual testing in the browser.
+
+This means a bug caught by an E2E test can always be reproduced at the node integration level, and vice versa.
+
+---
+
+## How does the test suite in CREAM actually work?
+
+CREAM's test suite is **cumulative and sequential**. Every test assumes all previous tests have passed, and the datastore reflects the mutations they introduced. This is a deliberate design choice — not a limitation.
+
+### The principle
+
+The network is started once. The node integration tests populate it with fixture data (suppliers, products, orders, schedules). The E2E tests then run against that same network, in order, each building on the state left by its predecessors. There is no teardown, no reset, no isolation between tests. State accumulates.
+
+This mirrors how the real CREAM network works: data persists, contracts accumulate state, and every participant sees the history of everything that came before. Testing in this mode catches real bugs that per-test isolation would hide.
+
+### Fail-fast and predictable state
+
+The Playwright config enforces strict sequential execution:
+
+```typescript
+maxFailures: 1,    // Stop at the first failure
+workers: 1,        // No parallelism
+fullyParallel: false,
+retries: 0,        // No retries — a failure is a failure
+```
+
+Files are named with numeric prefixes (`01-setup-flow`, `02-directory-view`, ...) so Playwright runs them in alphabetical order, which is execution order. When a test fails, the suite stops immediately. The datastore at that point contains exactly the cumulative state of all prior tests — no more, no less. This makes debugging deterministic: you know what happened before the failure.
+
+### Cumulative state map
+
+Each test documents the state it expects via inline comments. Here's the state progression:
+
+| After test | Gary's products | Gary's orders | Notes |
+|-----------|----------------|--------------|-------|
+| Harness | 4 | 3 expired | Node integration steps 1–7 |
+| 04 – Add Product | 5 | 3 expired | + "Organic Goat Cheese" |
+| 06 – Cross-Tab | 6 | 3 expired | + "Cross-Tab Test Milk" |
+| 08 – Place Order | 6 | 4 (3 exp + 1 res) | Emma orders 2 units |
+| 09 – Wallet | 6 | 5 (3 exp + 2 res) | Emma orders 2 more |
+| 11 – Qty Decrement | 6 | 6 (3 exp + 3 res) | Emma orders 2 more |
+| 13 – Schedule | 6 | 6 | Sunday hours added |
+
+Tests 01, 02, 03, 05, 07, 10, 12 use fresh identities or read-only assertions and do not mutate Gary's storefront.
+
+### Writing cumulative tests
+
+When adding a new E2E test:
+
+1. **Know the state.** Read the table above and the preceding tests. What products exist? What orders? What's the wallet balance?
+2. **Assert exact counts.** Use `toBe(N)` not `toBeGreaterThanOrEqual(N)`. Exact assertions catch unexpected mutations from earlier tests.
+3. **Document your mutations.** Add an inline comment like `// Cumulative state: Gary has 6 products (4 harness + test-04 + test-06)` and update the table above.
+4. **Use `.first()` or text filters** when selecting elements whose count may grow. Don't assume an element is unique if prior tests could have created siblings.
+
+### Node integration tests follow the same model
+
+The 7 node integration steps (`tests/node-integration/tests/node_tests.rs`) run in a single Rust test function. Each step builds on the previous: step 1 subscribes to the directory, step 2 adds products, step 5 runs the full harness, step 6 backdates orders to test expiry, step 7 updates the schedule. State flows forward, never backward.
+
+### The rendezvous exception
+
+Test 12 (`customer-rendezvous`) runs in a separate Playwright project because it requires the Wrangler rendezvous service running. It uses `>= 4` for product counts since it may run on a fresh network or after the cumulative suite — its Playwright project configuration (`testMatch: /12-customer-rendezvous/`) excludes it from the main sequential run.
+
+---

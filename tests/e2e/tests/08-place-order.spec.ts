@@ -15,7 +15,6 @@ test.describe('Place Order', () => {
     await completeSetup(garyPage, {
       name: 'Gary',
       postcode: '2000',
-      password: 'gary',
       isSupplier: true,
       description: 'Fresh dairy products',
     });
@@ -25,7 +24,6 @@ test.describe('Place Order', () => {
     await completeSetup(emmaPage, {
       name: 'Emma',
       postcode: '2500',
-      password: 'emma',
     });
     await waitForConnected(emmaPage);
 
@@ -68,20 +66,16 @@ test.describe('Place Order', () => {
     await garyPage.click('button:has-text("My Storefront")');
     await expect(garyPage.locator('.supplier-dashboard')).toBeVisible();
 
-    // Wait for Gary to see the incoming order via network subscription
-    await expect(async () => {
-      const heading = await garyPage.locator('.dashboard-section h3', { hasText: 'Incoming Orders' }).textContent();
-      // Should show "Incoming Orders (1)" or more
-      const match = heading?.match(/Incoming Orders \((\d+)\)/);
-      expect(match).not.toBeNull();
-      expect(parseInt(match![1], 10)).toBeGreaterThanOrEqual(1);
-    }).toPass({ timeout: 30_000 });
+    // Wait for Gary to see the incoming order via network subscription.
+    // Cumulative state: 3 expired orders from harness + 1 new Reserved = 4 total.
+    await expect(
+      garyPage.locator('.dashboard-section h3', { hasText: 'Incoming Orders (4)' })
+    ).toBeVisible({ timeout: 30_000 });
 
-    // Verify the order card is visible with correct details
-    const orderCard = garyPage.locator('.order-card').first();
+    // Verify a Reserved order card is visible (harness leaves expired orders too)
+    const orderCard = garyPage.locator('.order-card', { hasText: 'Reserved' }).first();
     await expect(orderCard).toBeVisible();
     await expect(orderCard.locator('.order-id')).toContainText('Order #');
-    await expect(orderCard.locator('.order-status')).toContainText('Reserved');
 
     // Cleanup
     await garyContext.close();

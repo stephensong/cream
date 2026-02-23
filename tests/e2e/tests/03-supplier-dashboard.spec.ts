@@ -6,10 +6,9 @@ test.describe('Supplier Dashboard', () => {
   test('My Storefront shows harness products for Gary', async ({ page }) => {
     await completeSetup(page, {
       name: 'Gary',
-      postcode: '2000',
-      password: 'gary',
+      postcode: '2450',
       isSupplier: true,
-      description: 'Fresh dairy products',
+      description: 'Real Beaut Dairy',
     });
 
     await waitForConnected(page);
@@ -20,13 +19,14 @@ test.describe('Supplier Dashboard', () => {
     await expect(page.locator('h2:has-text("My Storefront")')).toBeVisible();
 
     // Wait for network storefront data to load and show products
+    // Cumulative state: harness gives Gary 4 products, no prior tests add more.
     await expect(async () => {
       const count = await page.locator('.product-card').count();
-      expect(count).toBeGreaterThanOrEqual(3);
+      expect(count).toBe(4);
     }).toPass({ timeout: 15_000 });
 
     // Verify the "Your Products (N)" header reflects the count
-    await expect(page.locator('h3', { hasText: /Your Products \(3\)/ })).toBeVisible();
+    await expect(page.locator('h3', { hasText: /Your Products \(4\)/ })).toBeVisible();
 
     // Verify storefront info section
     await expect(page.locator('.dashboard-section', { hasText: 'Storefront Info' })).toContainText('Gary');
@@ -36,7 +36,6 @@ test.describe('Supplier Dashboard', () => {
     await completeSetup(page, {
       name: 'FormToggler',
       postcode: '3000',
-      password: 'togglepass',
       isSupplier: true,
       description: 'Testing form toggle',
     });

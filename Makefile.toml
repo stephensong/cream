@@ -144,7 +144,13 @@ script = [
     '''
     set -euo pipefail
     pkill -f "dx serve" 2>/dev/null || true
-    pkill -f "cargo-make make fixture" 2>/dev/null || true
+    # Kill stale cargo-make fixture processes but not the current one ($$=shell, PPID chain)
+    CURRENT_CARGO_MAKE=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
+    for pid in $(pgrep -f "cargo-make make fixture" 2>/dev/null); do
+        if [ "$pid" != "$CURRENT_CARGO_MAKE" ] && [ "$pid" != "$$" ]; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
     sleep 2
     echo "Stale processes cleaned up"
     '''

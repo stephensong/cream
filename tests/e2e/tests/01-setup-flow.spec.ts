@@ -6,7 +6,6 @@ test.describe('Setup Flow', () => {
     await completeSetup(page, {
       name: 'TestSupplier',
       postcode: '2000',
-      password: 'testpass123',
       isSupplier: true,
       description: 'Fresh dairy from happy cows',
     });
@@ -26,7 +25,6 @@ test.describe('Setup Flow', () => {
     await completeSetup(page, {
       name: 'TestCustomer',
       postcode: '3000',
-      password: 'custpass456',
     });
 
     await expect(page.locator('.user-moniker')).toHaveText('Testcustomer');

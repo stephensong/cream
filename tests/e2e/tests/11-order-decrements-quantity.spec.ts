@@ -14,7 +14,6 @@ test.describe('Order Decrements Quantity', () => {
     await completeSetup(garyPage, {
       name: 'Gary',
       postcode: '2000',
-      password: 'gary',
       isSupplier: true,
       description: 'Fresh dairy products',
     });
@@ -24,7 +23,6 @@ test.describe('Order Decrements Quantity', () => {
     await completeSetup(emmaPage, {
       name: 'Emma',
       postcode: '2500',
-      password: 'emma',
     });
     await waitForConnected(emmaPage);
 
@@ -38,10 +36,10 @@ test.describe('Order Decrements Quantity', () => {
     await expect(emmaPage.locator('.storefront-view')).toBeVisible();
     await expect(emmaPage.locator('.storefront-view h2')).toHaveText('Gary');
 
-    // Wait for products to load
+    // Cumulative state: Gary has 6 products (4 harness + test-04 + test-06)
     await expect(async () => {
       const count = await emmaPage.locator('.product-card').count();
-      expect(count).toBeGreaterThanOrEqual(1);
+      expect(count).toBe(6);
     }).toPass({ timeout: 15_000 });
 
     // Read the initial quantity from the first product

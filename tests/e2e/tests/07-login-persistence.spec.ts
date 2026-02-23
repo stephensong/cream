@@ -7,7 +7,6 @@ test.describe('Login Persistence', () => {
     await completeSetup(page, {
       name: 'Persistent',
       postcode: '4000',
-      password: 'persistpass',
       isSupplier: true,
       description: 'Testing persistence',
     });
@@ -34,13 +33,12 @@ test.describe('Login Persistence', () => {
     await completeSetup(page, {
       name: 'Logouter',
       postcode: '5000',
-      password: 'logoutpass',
     });
 
     await expect(page.locator('.app-header')).toBeVisible();
 
     // Click logout
-    await page.click('.logout-link');
+    await page.click('.logout-btn');
 
     // Should return to setup screen
     await expect(page.locator('.user-setup')).toBeVisible({ timeout: 5_000 });

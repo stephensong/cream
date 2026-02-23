@@ -7,7 +7,6 @@ test.describe('Add Product', () => {
     await completeSetup(page, {
       name: 'Gary',
       postcode: '2000',
-      password: 'gary',
       isSupplier: true,
       description: 'Fresh dairy products',
     });
@@ -19,9 +18,10 @@ test.describe('Add Product', () => {
     await expect(page.locator('.supplier-dashboard')).toBeVisible();
 
     // Wait for existing products to load from network
+    // Cumulative state: Gary has 4 products from harness, no prior tests add more.
     await expect(async () => {
       const count = await page.locator('.product-card').count();
-      expect(count).toBeGreaterThanOrEqual(3);
+      expect(count).toBe(4);
     }).toPass({ timeout: 15_000 });
 
     const initialCount = await page.locator('.product-card').count();
@@ -49,9 +49,9 @@ test.describe('Add Product', () => {
       expect(count).toBeGreaterThan(initialCount);
     }).toPass({ timeout: 20_000 });
 
-    // Verify the new product card exists
+    // Verify at least one product card with this name exists
     await expect(
-      page.locator('.product-card', { hasText: 'Organic Goat Cheese' })
+      page.locator('.product-card', { hasText: 'Organic Goat Cheese' }).first()
     ).toBeVisible();
   });
 });

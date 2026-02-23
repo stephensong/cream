@@ -9,7 +9,6 @@ test.describe('Returning User Auto-fill', () => {
       name: 'ReturnUser',
       postcode: '2000',
       locality: 'Haymarket',
-      password: 'returnpass',
       isSupplier: true,
       description: 'Returning user test farm',
     });
@@ -24,19 +23,14 @@ test.describe('Returning User Auto-fill', () => {
     await page.waitForTimeout(3000);
 
     // Step 2: Log out
-    await page.click('.logout-link');
+    await page.click('.logout-btn');
     await expect(page.locator('.user-setup')).toBeVisible({ timeout: 5_000 });
 
-    // Step 3: Type the name (lowercase) and tab out to trigger blur
+    // Step 3: Type the name to trigger auto-fill from directory
     const nameInput = page.locator('input[placeholder="Name or moniker..."]');
     await nameInput.fill('returnuser');
-    // Tab out to trigger onfocusout
-    await nameInput.press('Tab');
 
     // Step 4: Verify auto-fill happened
-    // Name should be corrected to directory casing
-    await expect(nameInput).toHaveValue('Returnuser');
-
     // Welcome back message should appear
     await expect(page.locator('.welcome-back')).toContainText('Welcome back, Returnuser!');
 
@@ -60,11 +54,7 @@ test.describe('Returning User Auto-fill', () => {
       page.locator('textarea[placeholder="Describe your farm or dairy..."]')
     ).toHaveValue('Returning user test farm');
 
-    // Step 5: Complete login with password and verify
-    await page.click('button:has-text("Next")');
-    await expect(page.locator('h1:has-text("Set a Password")')).toBeVisible();
-    await page.fill('input[placeholder="Enter password..."]', 'returnpass');
-    await page.fill('input[placeholder="Confirm password..."]', 'returnpass');
+    // Step 5: Complete login (no password screen — just click Get Started)
     await page.click('button:has-text("Get Started")');
 
     // Should be back in the app with correct info

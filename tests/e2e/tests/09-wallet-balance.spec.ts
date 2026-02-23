@@ -21,7 +21,6 @@ test.describe('Wallet Balance', () => {
     await completeSetup(garyPage, {
       name: 'Gary',
       postcode: '2000',
-      password: 'gary',
       isSupplier: true,
       description: 'Fresh dairy products',
     });
@@ -31,13 +30,14 @@ test.describe('Wallet Balance', () => {
     await completeSetup(emmaPage, {
       name: 'Emma',
       postcode: '2500',
-      password: 'emma',
     });
     await waitForConnected(emmaPage);
 
-    // Record initial balances (Gary may already have credits from earlier tests)
+    // Record initial balances.
+    // Wallet balance is local UI state (not network state), so each fresh
+    // browser context starts at the default 10,000 CURD.
     const emmaInitial = await getWalletBalance(emmaPage);
-    expect(emmaInitial).toBe(10_000); // Emma is fresh, no orders placed
+    expect(emmaInitial).toBe(10_000);
 
     // Wait for Gary's balance to stabilize (subscriptions may still be arriving)
     await waitForSupplierCount(garyPage, 3);
@@ -52,10 +52,10 @@ test.describe('Wallet Balance', () => {
 
     await expect(emmaPage.locator('.storefront-view')).toBeVisible();
 
-    // Wait for products to load
+    // Cumulative state: Gary has 6 products (4 harness + test-04 + test-06)
     await expect(async () => {
       const count = await emmaPage.locator('.product-card').count();
-      expect(count).toBeGreaterThanOrEqual(1);
+      expect(count).toBe(6);
     }).toPass({ timeout: 15_000 });
 
     // Read the first product's price

@@ -18,7 +18,6 @@ test.describe('Customer Rendezvous Flow', () => {
     await completeSetup(supplierPage, {
       name: 'Gary',
       postcode: '2000',
-      password: 'gary',
       isSupplier: true,
       description: 'Fresh dairy products',
       skipNav: true,
@@ -36,7 +35,6 @@ test.describe('Customer Rendezvous Flow', () => {
     await completeSetup(customerPage, {
       name: 'Alice',
       postcode: '3000',
-      password: 'alice123',
       supplierName: 'gary',
       skipNav: true,
     });
@@ -52,10 +50,12 @@ test.describe('Customer Rendezvous Flow', () => {
     await customerPage.click('button:has-text("Storefront")');
     await expect(customerPage.locator('.storefront-view')).toBeVisible({ timeout: 15_000 });
 
-    // Should see Gary's products from the integration test harness
+    // Cumulative state: Gary has 6 products (4 harness + test-04 + test-06).
+    // Rendezvous tests run in a separate project so they may run on a fresh
+    // or cumulative network — use >= to stay resilient.
     await expect(async () => {
       const count = await customerPage.locator('.product-card').count();
-      expect(count).toBeGreaterThanOrEqual(3);
+      expect(count).toBeGreaterThanOrEqual(4);
     }).toPass({ timeout: 20_000 });
 
     // Products should have Order buttons
