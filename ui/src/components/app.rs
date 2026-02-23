@@ -6,6 +6,7 @@ use cream_common::postcode::{
 };
 
 use super::directory_view::DirectoryView;
+use super::iaq_view::IaqView;
 use super::key_manager::KeyManager;
 use super::my_orders::MyOrders;
 use super::node_api::{use_node_action, use_node_coroutine, NodeAction};
@@ -53,6 +54,8 @@ pub enum Route {
     Dashboard {},
     #[route("/wallet")]
     Wallet {},
+    #[route("/iaq")]
+    Iaq {},
     #[redirect("/", || Route::Directory {})]
     #[route("/:..segments")]
     NotFound { segments: Vec<String> },
@@ -153,6 +156,8 @@ fn AppLayout() -> Element {
     let mut key_manager: Signal<Option<KeyManager>> = use_context();
     let nav = use_navigator();
 
+    let shared = use_shared_state();
+
     let state = user_state.read();
     let moniker = state.moniker.clone().unwrap_or_default();
     let postcode_raw = state.postcode.clone().unwrap_or_default();
@@ -165,10 +170,23 @@ fn AppLayout() -> Element {
     let connected_supplier = state.connected_supplier.clone();
     drop(state);
 
+    // Determine user role: Supplier (has products), User, or Guest
+    let shared_read = shared.read();
+    let has_products = shared_read
+        .storefronts
+        .get(&moniker)
+        .map(|sf| !sf.products.is_empty())
+        .unwrap_or(false);
+    let role_label = if has_products {
+        "Supplier"
+    } else if is_customer {
+        "Guest"
+    } else {
+        "User"
+    };
+
     // Compute displayed balance: base + incoming deposit credits for suppliers
     let incoming_deposits: u64 = if !is_customer && is_supplier {
-        let shared = use_shared_state();
-        let shared_read = shared.read();
         shared_read
             .storefronts
             .get(&moniker)
@@ -189,6 +207,7 @@ fn AppLayout() -> Element {
     } else {
         0
     };
+    drop(shared_read);
     let displayed_balance = balance + incoming_deposits;
 
     rsx! {
@@ -199,8 +218,11 @@ fn AppLayout() -> Element {
                     div { class: "user-info",
                         span { class: "user-moniker", "{moniker}" }
                         span { class: "user-postcode", " - {postcode_display}" }
-                        if !is_customer && is_supplier {
-                            span { class: "supplier-badge", " [Supplier]" }
+                        span { class: "role-badge", " [{role_label}]" }
+                        button {
+                            class: "iaq-btn",
+                            onclick: move |_| { nav.push(Route::Iaq {}); },
+                            "IAQ"
                         }
                         button {
                             class: "logout-btn",
@@ -273,6 +295,12 @@ fn Dashboard() -> Element {
 #[component]
 fn Wallet() -> Element {
     rsx! { WalletView {} }
+}
+
+/// Route component: renders the IAQ documentation.
+#[component]
+fn Iaq() -> Element {
+    rsx! { IaqView {} }
 }
 
 /// Catch-all for unknown routes — redirects to directory (or storefront in customer mode).

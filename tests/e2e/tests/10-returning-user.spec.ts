@@ -17,7 +17,7 @@ test.describe('Returning User Auto-fill', () => {
     await expect(page.locator('.app-header')).toBeVisible();
     await expect(page.locator('.user-moniker')).toHaveText('Returnuser');
     await expect(page.locator('.user-postcode')).toContainText('Haymarket (2000)');
-    await expect(page.locator('.supplier-badge')).toBeVisible();
+    await expect(page.locator('.role-badge')).toBeVisible();
 
     // Wait for directory to sync (so our entry is in SharedState)
     await page.waitForTimeout(3000);
@@ -61,6 +61,6 @@ test.describe('Returning User Auto-fill', () => {
     await expect(page.locator('.app-header')).toBeVisible({ timeout: 15_000 });
     await expect(page.locator('.user-moniker')).toHaveText('Returnuser');
     await expect(page.locator('.user-postcode')).toContainText('Haymarket (2000)');
-    await expect(page.locator('.supplier-badge')).toBeVisible();
+    await expect(page.locator('.role-badge')).toBeVisible();
   });
 });

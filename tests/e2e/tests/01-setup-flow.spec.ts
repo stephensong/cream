@@ -13,7 +13,7 @@ test.describe('Setup Flow', () => {
     // Verify header shows correct user info
     await expect(page.locator('.user-moniker')).toHaveText('Testsupplier');
     await expect(page.locator('.user-postcode')).toContainText('2000');
-    await expect(page.locator('.supplier-badge')).toBeVisible();
+    await expect(page.locator('.role-badge')).toBeVisible();
 
     // Verify nav has supplier-specific button
     await expect(page.locator('button:has-text("My Storefront")')).toBeVisible();
@@ -28,7 +28,7 @@ test.describe('Setup Flow', () => {
     });
 
     await expect(page.locator('.user-moniker')).toHaveText('Testcustomer');
-    await expect(page.locator('.supplier-badge')).not.toBeVisible();
+    await expect(page.locator('.role-badge')).toContainText('[User]');
     await expect(page.locator('button:has-text("My Storefront")')).not.toBeVisible();
   });
 });

@@ -13,7 +13,7 @@ test.describe('Login Persistence', () => {
 
     // Verify we're logged in
     await expect(page.locator('.user-moniker')).toHaveText('Persistent');
-    await expect(page.locator('.supplier-badge')).toBeVisible();
+    await expect(page.locator('.role-badge')).toBeVisible();
 
     // Reload the page
     await page.reload();
@@ -26,7 +26,7 @@ test.describe('Login Persistence', () => {
     // Should auto-login from sessionStorage — header should appear, not setup screen
     await expect(page.locator('.app-header')).toBeVisible({ timeout: 15_000 });
     await expect(page.locator('.user-moniker')).toHaveText('Persistent');
-    await expect(page.locator('.supplier-badge')).toBeVisible();
+    await expect(page.locator('.role-badge')).toBeVisible();
   });
 
   test('logout clears session and shows setup screen', async ({ page }) => {
