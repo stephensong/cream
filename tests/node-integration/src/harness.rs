@@ -10,7 +10,7 @@ use cream_common::identity::{CustomerId, SupplierId};
 use cream_common::location::GeoLocation;
 use cream_common::order::Order;
 use cream_common::product::{Product, ProductCategory, ProductId};
-use cream_common::storefront::{SignedProduct, StorefrontInfo, StorefrontState};
+use cream_common::storefront::{SignedProduct, StorefrontInfo, StorefrontState, WeeklySchedule};
 
 use crate::{
     connect_to_node_at, extract_get_response_state, extract_notification_bytes, is_get_response,
@@ -122,6 +122,25 @@ impl Supplier {
         } else {
             false
         }
+    }
+
+    /// Update the supplier's opening hours schedule and push to the network.
+    pub async fn update_schedule(&mut self, schedule: WeeklySchedule, timezone: &str) {
+        self.storefront.info.schedule = Some(schedule);
+        self.storefront.info.timezone = Some(timezone.to_string());
+
+        let sf_bytes = serde_json::to_vec(&self.storefront).unwrap();
+        self.api
+            .send(ClientRequest::ContractOp(ContractRequest::Update {
+                key: self.storefront_key,
+                data: UpdateData::State(State::from(sf_bytes)),
+            }))
+            .await
+            .unwrap();
+
+        recv_matching(&mut self.api, is_update_response, TIMEOUT)
+            .await
+            .unwrap_or_else(|| panic!("UpdateResponse for {}'s schedule", self.name));
     }
 
     /// Return a reference to the local storefront state copy.

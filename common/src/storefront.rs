@@ -290,6 +290,10 @@ impl StorefrontState {
     /// - Products: LWW by `updated_at`
     /// - Orders: set-union, monotonic status (higher ordinal wins)
     pub fn merge(&mut self, other: StorefrontState) {
+        // Merge info: single-owner, always take update's info so schedule/timezone
+        // and other metadata changes propagate.
+        self.info = other.info;
+
         // Merge products (LWW by updated_at)
         for (id, signed) in other.products {
             match self.products.get(&id) {

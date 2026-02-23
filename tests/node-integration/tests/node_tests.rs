@@ -614,5 +614,76 @@ async fn cumulative_node_tests() {
     }
     println!("   PASSED");
 
+    // ═══════════════════════════════════════════════════════════════════
+    // Step 7: Update opening hours schedule → subscriber notification
+    //
+    // Reuses the harness from Step 5. Alice is already subscribed to
+    // Gary's storefront.
+    // ═══════════════════════════════════════════════════════════════════
+    println!("── Step 7: update_schedule_notifies_subscriber ──");
+    {
+        use cream_common::storefront::WeeklySchedule;
+
+        // Build a schedule: Mon–Fri 8:00–17:00, Sat 9:00–12:00
+        let mut schedule = WeeklySchedule::new();
+        for day in 0..5u8 {
+            // 8:00 = slot 16, 17:00 = slot 34
+            schedule.set_range(day, 16, 34, true);
+        }
+        // Saturday: 9:00 = slot 18, 12:00 = slot 24
+        schedule.set_range(5, 18, 24, true);
+
+        h.gary
+            .update_schedule(schedule.clone(), "Australia/Sydney")
+            .await;
+
+        // Alice should receive the updated storefront with schedule
+        let sf = h.alice.recv_storefront_update().await;
+
+        let recv_schedule = sf
+            .info
+            .schedule
+            .as_ref()
+            .expect("7: storefront should have a schedule");
+        assert_eq!(
+            sf.info.timezone.as_deref(),
+            Some("Australia/Sydney"),
+            "7: timezone should be Australia/Sydney"
+        );
+
+        // Verify Mon–Fri ranges: each should have one range (16, 34)
+        for day in 0..5u8 {
+            let ranges = recv_schedule.get_ranges(day);
+            assert_eq!(
+                ranges,
+                vec![(16, 34)],
+                "7: day {} should have 8:00–17:00",
+                day
+            );
+        }
+
+        // Verify Saturday range: (18, 24)
+        assert_eq!(
+            recv_schedule.get_ranges(5),
+            vec![(18, 24)],
+            "7: Saturday should have 9:00–12:00"
+        );
+
+        // Verify Sunday is closed
+        assert!(
+            recv_schedule.get_ranges(6).is_empty(),
+            "7: Sunday should be closed"
+        );
+
+        // Spot-check open/closed states
+        assert!(recv_schedule.is_open(0, 16), "7: Mon 8:00 should be open");
+        assert!(recv_schedule.is_open(0, 33), "7: Mon 16:30 should be open");
+        assert!(!recv_schedule.is_open(0, 34), "7: Mon 17:00 should be closed");
+        assert!(!recv_schedule.is_open(0, 15), "7: Mon 7:30 should be closed");
+        assert!(recv_schedule.is_open(5, 18), "7: Sat 9:00 should be open");
+        assert!(!recv_schedule.is_open(6, 18), "7: Sun 9:00 should be closed");
+    }
+    println!("   PASSED");
+
     println!("\n══ All node-integration steps passed ══");
 }

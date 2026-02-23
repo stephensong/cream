@@ -668,14 +668,14 @@ mod wasm_impl {
                     let state = shared.read();
                     clog(&format!("[CREAM] AddProduct: sf_contract_keys has {} entries, directory has {} entries",
                         sf_contract_keys.len(), state.directory.entries.len()));
-                    // First check sf_contract_keys (set during RegisterSupplier in this session)
-                    let from_local = sf_contract_keys.iter().next()
-                        .map(|(name, key)| (name.clone(), *key));
-                    // Fall back to directory entries (populated from GET response)
-                    let result = from_local.or_else(|| {
-                        state.directory.entries.get(&my_supplier_id)
-                            .map(|entry| (entry.name.clone(), entry.storefront_key))
-                    });
+                    // Look up by our supplier ID in the directory (most reliable —
+                    // sf_contract_keys contains ALL storefronts, not just ours)
+                    let result = state.directory.entries.get(&my_supplier_id)
+                        .map(|entry| (entry.name.clone(), entry.storefront_key))
+                        .or_else(|| {
+                            sf_contract_keys.iter().next()
+                                .map(|(name, key)| (name.clone(), *key))
+                        });
                     clog(&format!("[CREAM] AddProduct: found storefront = {}", result.is_some()));
                     result.unzip()
                 };
@@ -894,17 +894,18 @@ mod wasm_impl {
                 let my_supplier_id = key_manager.supplier_id();
                 let (supplier_name, sf_key) = {
                     let state = shared.read();
-                    let from_local = sf_contract_keys
-                        .iter()
-                        .next()
-                        .map(|(name, key)| (name.clone(), *key));
-                    from_local
+                    // Look up by our supplier ID in the directory (most reliable —
+                    // sf_contract_keys contains ALL storefronts, not just ours)
+                    state
+                        .directory
+                        .entries
+                        .get(&my_supplier_id)
+                        .map(|entry| (entry.name.clone(), entry.storefront_key))
                         .or_else(|| {
-                            state
-                                .directory
-                                .entries
-                                .get(&my_supplier_id)
-                                .map(|entry| (entry.name.clone(), entry.storefront_key))
+                            sf_contract_keys
+                                .iter()
+                                .next()
+                                .map(|(name, key)| (name.clone(), *key))
                         })
                         .unzip()
                 };

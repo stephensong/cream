@@ -12,7 +12,7 @@ use super::user_state::use_user_state;
 #[component]
 pub fn SupplierDashboard() -> Element {
     let user_state = use_user_state();
-    let shared_state = use_shared_state();
+    let mut shared_state = use_shared_state();
     let mut show_add_product = use_signal(|| false);
     let mut editing_schedule = use_signal(|| false);
 
@@ -78,6 +78,19 @@ pub fn SupplierDashboard() -> Element {
                     ScheduleEditor {
                         schedule: current_schedule.clone(),
                         on_save: move |sched: WeeklySchedule| {
+                            // Update local state immediately so re-renders see
+                            // the saved schedule without waiting for the coroutine.
+                            {
+                                let tz = user_state.read().postcode.as_deref()
+                                    .and_then(cream_common::postcode::timezone_for_postcode)
+                                    .map(|s: &str| s.to_string());
+                                let mut shared = shared_state.write();
+                                if let Some(sf) = shared.storefronts.get_mut(&moniker) {
+                                    sf.info.schedule = Some(sched.clone());
+                                    sf.info.timezone = tz;
+                                }
+                            }
+
                             #[cfg(feature = "use-node")]
                             {
                                 let node = use_node_action();
