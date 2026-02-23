@@ -315,74 +315,46 @@ This aligns the supplier's economic interest with keeping their node reliable, t
 
 ---
 
-## How does CREAM handle currencies?
+## What currency does CREAM use?
 
-CREAM allows each user to configure their wallet to work in one of three currencies: **cents**, **sats**, or **curds**.
+CREAM uses a single currency: **curds**. Every price, deposit, payment, refund, and gas fee in the CREAM network is denominated in curds. There are no currency selectors, no exchange rate feeds, no conversion layers.
 
-| Currency | What it is | Representation |
-|----------|-----------|----------------|
-| **cents** | Australian fiat currency (AUD) | Integer number of cents (e.g. 450 = $4.50) |
-| **sats** | Bitcoin satoshis | Integer (1 BTC = 100,000,000 sats) |
-| **curds** | Fedimint e-cash tokens | Integer (1 curd = 1 sat at present) |
+### What is a curd?
 
-The default currency is **curds**. A user who only browses CREAM — viewing suppliers, checking prices — is never required to purchase curds. The currency choice only matters when money changes hands.
+A curd is a unit of [Fedimint](https://fedimint.org) e-cash. Each curd is backed 1:1 by a Bitcoin satoshi held in the federation's multisig wallet. By holding curds, you are holding Bitcoin — just in a more private and convenient form.
 
-### How curds work
+Curds are issued via Chaumian blind signatures: the federation that mints a curd cannot link it back to who received it or trace how it's spent. This is the privacy guarantee that makes CREAM work — participants transact freely without the federation (or anyone else) being able to trace the flow of funds.
 
-Curds are units of e-cash created by a [Fedimint](https://fedimint.org) federation. Each curd is currently worth exactly one satoshi, though this peg may change in the future. Curds provide the privacy guarantees of Chaumian blind signatures: the federation that issues a curd cannot link it back to who received it or trace how it's spent. All internal CREAM transactions — order deposits, payments, refunds — are conducted in curds.
+### How do you get curds?
 
-### Supplier currency choice
+Through the Fedimint federation's built-in Lightning gateway:
 
-A supplier can run their wallet in any of the three currencies. This affects how they see prices and balances:
+- **Buy curds (peg-in)**: Send Bitcoin satoshis via Lightning → receive an equal number of curds in your CREAM wallet.
+- **Sell curds (peg-out)**: Redeem curds → receive Bitcoin satoshis via Lightning.
 
-- **curds** (default): Prices and balances displayed in curds. No conversion needed — this is the native internal currency.
-- **sats**: Prices and balances displayed in satoshis. Since 1 curd = 1 sat at present, this is currently a no-op conversion, but exists as a distinct option for when/if the peg changes.
-- **cents**: Prices and balances displayed in AUD cents. Incoming payments (order deposits, etc.) are converted from curds to cents at the current BTC/AUD exchange rate, sourced from a reputable provider (e.g. CoinGecko, Coinbase). The supplier sees stable dollar amounts rather than volatile crypto values.
+This uses Fedimint's standard Lightning module — no custom integration needed. Any Bitcoin Lightning wallet (Phoenix, Muun, Wallet of Satoshi, etc.) can send sats to the CREAM federation and receive curds in return.
 
-### User currency choice
+### Why curds rather than raw Bitcoin?
 
-Users make the same choice. If a user selects **cents**, amounts shown in the UI are converted from the underlying curd values to AUD cents at the current exchange rate. The user thinks in dollars; the network transacts in curds.
+Curds provide three things that raw Bitcoin (on-chain or Lightning) doesn't:
 
-### How conversions work
-
-All transactions on the CREAM network are internally conducted in curds. Currency selection is a **display and conversion layer** at each end of a transaction:
-
-1. User sees a product priced at 450 cents ($4.50 AUD).
-2. At order time, CREAM converts 450 cents → equivalent curds at the current BTC/AUD rate.
-3. The order deposit is transmitted as curds through the Freenet network.
-4. The supplier receives curds. If they've selected "cents", their wallet converts the received curds back to cents for display.
-
-The exchange rate is fetched from an external price feed at transaction time. Both parties see amounts in their chosen currency; the network only ever moves curds.
-
-### Curd ↔ sat conversion
-
-Conversions between curds and sats are handled via the Fedimint federation's built-in **Lightning gateway**. A user can:
-
-- **Buy curds**: Send sats via Lightning → receive curds (peg-in).
-- **Sell curds**: Redeem curds → receive sats via Lightning (peg-out).
-
-This uses Fedimint's standard Lightning module — no custom integration needed.
-
-### Curd/sat ↔ cents conversion
-
-Converting between crypto and fiat is the hardest problem. At present, CREAM does not include a built-in fiat on/off-ramp. The "cents" currency option is purely a **display convenience** — it shows fiat-equivalent values based on the current exchange rate, but the user still holds curds underneath.
-
-How a user actually acquires or redeems AUD is left as a future problem. Possible approaches include integration with a Bitcoin/AUD exchange, peer-to-peer trading, or simply accepting that suppliers who choose "cents" are using it as a mental accounting tool while actually transacting in crypto.
+1. **Privacy**: Chaumian blind signatures mean the federation cannot trace spending. Bitcoin on-chain transactions are fully traceable; even Lightning has routing metadata. Curds are genuinely private — the federation knows the total amount issued but not who holds what or who paid whom.
+2. **Speed and cost**: Curd transfers within CREAM are instant and free — they're just e-cash token exchanges between participants. No on-chain fees, no Lightning routing fees, no channel capacity constraints.
+3. **Offline capability**: E-cash tokens are bearer instruments. A payment can be made by handing over the token bytes — no network round-trip to the federation is needed at the moment of payment. The recipient can verify and reissue the tokens later when they're online.
 
 ### Curds as network gas
 
-Curds also serve as the **fee currency for the CREAM network** — a sort of gas that pays for usage. Every network operation (listing a product, placing an order, updating a storefront) costs a small amount of curds. This prevents spam and abuse while funding the infrastructure (Fedimint federation guardians, Freenet node operators, etc.).
+Curds also serve as the **fee currency for the CREAM network**. Every network operation (creating a user contract, listing a product, placing an order, updating a storefront) costs a small amount of curds. This prevents spam and abuse while funding the infrastructure — Fedimint federation guardians and Freenet node operators.
 
 The exact fee schedule and distribution mechanism are yet to be determined, but the fees will be very low — fractions of a cent per operation. The marketplace should feel free to use; fees exist to prevent abuse, not to extract revenue.
 
-### Why curds rather than raw sats?
+### The trust trade-off
 
-Curds provide two things that raw Bitcoin satoshis don't:
+The cost of curds' privacy and speed is trust in the Fedimint federation. A threshold of guardian nodes (f < n/3) must remain honest for the system to work. If enough guardians collude, they could theoretically mint unbacked curds or refuse to honour redemptions.
 
-1. **Privacy**: Chaumian blind signatures mean the federation cannot trace spending. Bitcoin on-chain transactions are fully traceable; even Lightning has routing metadata. Curds are genuinely private.
-2. **Speed and cost**: Curd transfers within CREAM are instant and free — they're just e-cash token exchanges. No on-chain fees, no Lightning routing fees, no channel capacity constraints.
+For a local dairy marketplace, this is an acceptable model — especially since the federation could be run by the supplier community itself. The guardians are the farmers. Their reputation, their livelihoods, and their community relationships are at stake. And the amounts involved (dairy product deposits and payments) are small enough that the risk-reward for guardian misbehaviour doesn't make sense.
 
-The trade-off is trust in the Fedimint federation (a threshold of guardians must remain honest), but for a local dairy marketplace this is an acceptable model — especially since the federation could be run by the supplier community itself.
+Since every curd is backed 1:1 by a satoshi, holding curds is economically equivalent to holding Bitcoin. The federation is a privacy layer and convenience layer, not a speculative instrument.
 
 ---
 
