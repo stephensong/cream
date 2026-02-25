@@ -55,6 +55,12 @@ pub enum NodeAction {
         price_curd: u64,
         quantity_total: u32,
     },
+    /// Update supplier contact details (phone, email, address).
+    UpdateContactDetails {
+        phone: Option<String>,
+        email: Option<String>,
+        address: Option<String>,
+    },
     /// Deploy a user contract for the current user.
     RegisterUser {
         name: String,
@@ -555,6 +561,9 @@ mod wasm_impl {
                         location: location.clone(),
                         schedule: None,
                         timezone: None,
+                        phone: None,
+                        email: None,
+                        address: None,
                     },
                     products: BTreeMap::new(),
                     orders: BTreeMap::new(),
@@ -1154,6 +1163,66 @@ mod wasm_impl {
                             "[CREAM] ERROR: Product {} not found in storefront",
                             product_id
                         ));
+                    }
+                } else {
+                    clog(&format!(
+                        "[CREAM] ERROR: Storefront state not found for {}",
+                        supplier_name
+                    ));
+                }
+            }
+
+            NodeAction::UpdateContactDetails {
+                phone,
+                email,
+                address,
+            } => {
+                clog("[CREAM] UpdateContactDetails: updating contact info");
+                let my_supplier_id = key_manager.supplier_id();
+                let (supplier_name, sf_key) = {
+                    let state = shared.read();
+                    state
+                        .directory
+                        .entries
+                        .get(&my_supplier_id)
+                        .map(|entry| (entry.name.clone(), entry.storefront_key))
+                        .or_else(|| {
+                            sf_contract_keys
+                                .iter()
+                                .next()
+                                .map(|(name, key)| (name.clone(), *key))
+                        })
+                        .unzip()
+                };
+
+                let (Some(supplier_name), Some(sf_key)) = (supplier_name, sf_key) else {
+                    clog("[CREAM] ERROR: No storefront found, can't update contact details");
+                    return;
+                };
+
+                let existing_sf = shared.read().storefronts.get(&supplier_name).cloned();
+                if let Some(mut sf) = existing_sf {
+                    sf.info.phone = phone;
+                    sf.info.email = email;
+                    sf.info.address = address;
+
+                    let sf_bytes = serde_json::to_vec(&sf).unwrap();
+                    let update = ClientRequest::ContractOp(ContractRequest::Update {
+                        key: sf_key,
+                        data: UpdateData::State(State::from(sf_bytes)),
+                    });
+                    shared
+                        .write()
+                        .storefronts
+                        .insert(supplier_name.clone(), sf);
+
+                    if let Err(e) = api.send(update).await {
+                        clog(&format!(
+                            "[CREAM] ERROR: Failed to update contact details: {:?}",
+                            e
+                        ));
+                    } else {
+                        clog("[CREAM] UpdateContactDetails: sent successfully");
                     }
                 } else {
                     clog(&format!(

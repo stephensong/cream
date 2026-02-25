@@ -230,6 +230,12 @@ pub struct StorefrontInfo {
     pub schedule: Option<WeeklySchedule>,
     #[serde(default)]
     pub timezone: Option<String>,
+    #[serde(default)]
+    pub phone: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub address: Option<String>,
 }
 
 /// Parameters that make each storefront contract unique.
@@ -456,6 +462,9 @@ mod tests {
                 location: GeoLocation::new(0.0, 0.0),
                 schedule: None,
                 timezone: None,
+                phone: None,
+                email: None,
+                address: None,
             },
             products: BTreeMap::new(),
             orders: BTreeMap::new(),
@@ -626,10 +635,14 @@ mod tests {
             location: GeoLocation::new(0.0, 0.0),
             schedule: None,
             timezone: None,
+            phone: None,
+            email: None,
+            address: None,
         };
         let json = serde_json::to_string(&info_old).unwrap();
-        // Remove schedule and timezone fields to simulate old format
-        let old_json = json.replace(",\"schedule\":null,\"timezone\":null", "");
+        // Remove optional fields to simulate old format
+        let old_json = json
+            .replace(",\"schedule\":null,\"timezone\":null,\"phone\":null,\"email\":null,\"address\":null", "");
         let info: StorefrontInfo = serde_json::from_str(&old_json).unwrap();
         assert!(info.schedule.is_none());
         assert!(info.timezone.is_none());

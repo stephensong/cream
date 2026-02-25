@@ -29,20 +29,30 @@ pub fn StorefrontView(supplier_name: String) -> Element {
         };
     }
 
-    // Check if this is the current user's storefront
+    // Check if this is the current user's storefront and if user is registered
     let state = user_state.read();
     let is_own = state.moniker.as_ref() == Some(&supplier_name);
+    let is_registered = state.user_contract_key.is_some();
     drop(state);
 
-    // Get schedule + timezone for the open/closed badge
-    let (storefront_schedule, storefront_timezone): (Option<WeeklySchedule>, Option<String>) = {
+    // Get schedule + timezone + contact details for the storefront header
+    let (storefront_schedule, storefront_timezone, contact_phone, contact_email, contact_address): (
+        Option<WeeklySchedule>, Option<String>, Option<String>, Option<String>, Option<String>,
+    ) = {
         let shared = shared_state.read();
         shared
             .storefronts
             .get(&supplier_name)
-            .map(|sf| (sf.info.schedule.clone(), sf.info.timezone.clone()))
-            .unwrap_or((None, None))
+            .map(|sf| (
+                sf.info.schedule.clone(),
+                sf.info.timezone.clone(),
+                sf.info.phone.clone(),
+                sf.info.email.clone(),
+                sf.info.address.clone(),
+            ))
+            .unwrap_or((None, None, None, None, None))
     };
+    let has_contact = contact_phone.is_some() || contact_email.is_some() || contact_address.is_some();
 
     // Always get products from SharedState (network-sourced storefronts)
     // Tuple: (product_id, name, category, price, available_quantity)
@@ -80,6 +90,29 @@ pub fn StorefrontView(supplier_name: String) -> Element {
             if let Some(ref schedule) = storefront_schedule {
                 ScheduleSummary { schedule: schedule.clone() }
             }
+            if has_contact {
+                div { class: "contact-details",
+                    h3 { "Contact Details" }
+                    if let Some(ref phone) = contact_phone {
+                        p {
+                            span { class: "contact-label", "Phone: " }
+                            a { href: "tel:{phone}", "{phone}" }
+                        }
+                    }
+                    if let Some(ref email) = contact_email {
+                        p {
+                            span { class: "contact-label", "Email: " }
+                            span { "{email}" }
+                        }
+                    }
+                    if let Some(ref address) = contact_address {
+                        p {
+                            span { class: "contact-label", "Address: " }
+                            span { "{address}" }
+                        }
+                    }
+                }
+            }
             if is_own {
                 p { class: "own-storefront-note",
                     "(This is your storefront — use the \"My Storefront\" tab to add products)"
@@ -101,11 +134,14 @@ pub fn StorefrontView(supplier_name: String) -> Element {
                                 span { class: "category", "{category}" }
                                 p { class: "price", "{price_str}" }
                                 p { class: "quantity", "Available: {qty}" }
-                                if !is_own_store {
+                                if !is_own_store && is_registered {
                                     button {
                                         onclick: move |_| selected_product.set(Some((pid.clone(), name_clone.clone(), price))),
                                         "Order"
                                     }
+                                }
+                                if !is_own_store && !is_registered {
+                                    p { class: "guest-hint", "Register to place orders" }
                                 }
                             }
                         }

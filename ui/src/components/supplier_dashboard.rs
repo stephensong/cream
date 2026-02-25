@@ -19,6 +19,10 @@ pub fn SupplierDashboard() -> Element {
     let mut editing_product = use_signal(|| None::<String>);
     let mut edit_price = use_signal(String::new);
     let mut edit_quantity = use_signal(String::new);
+    let mut editing_contact = use_signal(|| false);
+    let mut contact_phone = use_signal(String::new);
+    let mut contact_email = use_signal(String::new);
+    let mut contact_address = use_signal(String::new);
 
     let state = user_state.read();
     let moniker = state.moniker.clone().unwrap_or_default();
@@ -50,6 +54,9 @@ pub fn SupplierDashboard() -> Element {
     let current_schedule: WeeklySchedule = storefront
         .and_then(|sf| sf.info.schedule.clone())
         .unwrap_or_default();
+    let current_phone: Option<String> = storefront.and_then(|sf| sf.info.phone.clone());
+    let current_email: Option<String> = storefront.and_then(|sf| sf.info.email.clone());
+    let current_address: Option<String> = storefront.and_then(|sf| sf.info.address.clone());
     let network_orders: Vec<_> = storefront
         .map(|sf| sf.orders.values().cloned().collect())
         .unwrap_or_default();
@@ -63,6 +70,8 @@ pub fn SupplierDashboard() -> Element {
         })
         .unwrap_or_default();
     drop(shared);
+
+    let moniker_for_contact = moniker.clone();
 
     rsx! {
         div { class: "supplier-dashboard",
@@ -114,6 +123,113 @@ pub fn SupplierDashboard() -> Element {
                             editing_schedule.set(true);
                         },
                         "Edit Hours"
+                    }
+                }
+            }
+
+            div { class: "dashboard-section",
+                h3 { "Contact Details" }
+                if *editing_contact.read() {
+                    div { class: "privacy-warning",
+                        "Contact details are publicly visible to all customers. Only share what you're comfortable with."
+                    }
+                    div { class: "form-group",
+                        label { "Phone:" }
+                        input {
+                            r#type: "tel",
+                            placeholder: "e.g., 0412 345 678",
+                            value: "{contact_phone}",
+                            oninput: move |evt| contact_phone.set(evt.value()),
+                        }
+                    }
+                    div { class: "form-group",
+                        label { "Email:" }
+                        input {
+                            r#type: "email",
+                            placeholder: "e.g., farm@example.com",
+                            value: "{contact_email}",
+                            oninput: move |evt| contact_email.set(evt.value()),
+                        }
+                    }
+                    div { class: "form-group",
+                        label { "Address:" }
+                        input {
+                            r#type: "text",
+                            placeholder: "e.g., 42 Dairy Lane, Cowville NSW 2000",
+                            value: "{contact_address}",
+                            oninput: move |evt| contact_address.set(evt.value()),
+                        }
+                    }
+                    div { class: "schedule-actions",
+                        button {
+                            onclick: {
+                                let moniker = moniker_for_contact.clone();
+                                move |_| {
+                                let phone = {
+                                    let v = contact_phone.read().trim().to_string();
+                                    if v.is_empty() { None } else { Some(v) }
+                                };
+                                let email = {
+                                    let v = contact_email.read().trim().to_string();
+                                    if v.is_empty() { None } else { Some(v) }
+                                };
+                                let address = {
+                                    let v = contact_address.read().trim().to_string();
+                                    if v.is_empty() { None } else { Some(v) }
+                                };
+
+                                // Optimistic update
+                                {
+                                    let mut shared = shared_state.write();
+                                    if let Some(sf) = shared.storefronts.get_mut(&moniker) {
+                                        sf.info.phone = phone.clone();
+                                        sf.info.email = email.clone();
+                                        sf.info.address = address.clone();
+                                    }
+                                }
+
+                                {
+                                    let node = use_node_action();
+                                    node.send(NodeAction::UpdateContactDetails { phone, email, address });
+                                }
+                                editing_contact.set(false);
+                            }},
+                            "Save Contact Details"
+                        }
+                        button {
+                            onclick: move |_| editing_contact.set(false),
+                            "Cancel"
+                        }
+                    }
+                } else {
+                    if current_phone.is_some() || current_email.is_some() || current_address.is_some() {
+                        div { class: "contact-details",
+                            if let Some(ref phone) = current_phone {
+                                p { "Phone: {phone}" }
+                            }
+                            if let Some(ref email) = current_email {
+                                p { "Email: {email}" }
+                            }
+                            if let Some(ref address) = current_address {
+                                p { "Address: {address}" }
+                            }
+                        }
+                    } else {
+                        p { class: "empty-state", "No contact details set." }
+                    }
+                    button {
+                        onclick: {
+                            let cp = current_phone.clone();
+                            let ce = current_email.clone();
+                            let ca = current_address.clone();
+                            move |_| {
+                                contact_phone.set(cp.clone().unwrap_or_default());
+                                contact_email.set(ce.clone().unwrap_or_default());
+                                contact_address.set(ca.clone().unwrap_or_default());
+                                editing_contact.set(true);
+                            }
+                        },
+                        "Edit Contact Details"
                     }
                 }
             }
