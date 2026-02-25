@@ -1,8 +1,10 @@
 use dioxus::prelude::*;
 
 use cream_common::currency::format_amount;
+use cream_common::message::Message;
 use cream_common::storefront::WeeklySchedule;
 
+use super::node_api::{use_node_action, NodeAction};
 use super::order_form::OrderForm;
 use super::schedule_editor::ScheduleSummary;
 use super::shared_state::use_shared_state;
@@ -118,6 +120,9 @@ pub fn StorefrontView(supplier_name: String) -> Element {
                     "(This is your storefront — use the \"My Storefront\" tab to add products)"
                 }
             }
+            if is_registered && !is_own {
+                MessageSection { supplier_name: supplier_name.clone() }
+            }
             div { class: "product-list",
                 if products.is_empty() {
                     p { class: "empty-state", "No products available." }
@@ -146,6 +151,100 @@ pub fn StorefrontView(supplier_name: String) -> Element {
                             }
                         }
                     })}
+                }
+            }
+        }
+    }
+}
+
+/// Messaging section: compose + thread view for a supplier's storefront.
+#[component]
+fn MessageSection(supplier_name: String) -> Element {
+    let shared_state = use_shared_state();
+    let user_state = use_user_state();
+    let mut msg_body = use_signal(String::new);
+    let mut send_error = use_signal(|| None::<String>);
+
+    let balance = user_state.read().balance();
+    let my_name = user_state.read().moniker.clone().unwrap_or_default();
+
+    // Get messages for this storefront
+    let messages: Vec<Message> = {
+        let shared = shared_state.read();
+        shared
+            .storefronts
+            .get(&supplier_name)
+            .map(|sf| {
+                let mut msgs: Vec<_> = sf.messages.values().cloned().collect();
+                msgs.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+                msgs
+            })
+            .unwrap_or_default()
+    };
+
+    rsx! {
+        div { class: "message-section",
+            h3 { "Messages" }
+            if !messages.is_empty() {
+                div { class: "message-thread",
+                    {messages.iter().map(|msg| {
+                        let is_mine = msg.sender_name == my_name;
+                        let bubble_class = if is_mine { "message-bubble message-sent" } else { "message-bubble message-received" };
+                        let time_str = msg.created_at.format("%d %b %H:%M").to_string();
+                        let indent = msg.reply_to.is_some();
+                        rsx! {
+                            div {
+                                class: if indent { format!("{bubble_class} message-reply") } else { bubble_class.to_string() },
+                                key: "{msg.id}",
+                                div { class: "message-header",
+                                    span { class: "message-sender", "{msg.sender_name}" }
+                                    span { class: "message-time", "{time_str}" }
+                                }
+                                p { class: "message-body", "{msg.body}" }
+                            }
+                        }
+                    })}
+                }
+            }
+            div { class: "message-input",
+                textarea {
+                    placeholder: "Write a message...",
+                    maxlength: "1000",
+                    value: "{msg_body}",
+                    oninput: move |evt| {
+                        msg_body.set(evt.value());
+                        send_error.set(None);
+                    },
+                }
+                div { class: "message-input-footer",
+                    span { class: "toll-badge", "Cost: 10 CURD" }
+                    if let Some(err) = send_error.read().as_ref() {
+                        span { class: "field-error", "{err}" }
+                    }
+                    button {
+                        disabled: msg_body.read().trim().is_empty() || balance < 10,
+                        onclick: {
+                            let supplier_name = supplier_name.clone();
+                            move |_| {
+                                let body = msg_body.read().trim().to_string();
+                                if body.is_empty() {
+                                    return;
+                                }
+                                if balance < 10 {
+                                    send_error.set(Some("Insufficient balance (need 10 CURD)".into()));
+                                    return;
+                                }
+                                let node = use_node_action();
+                                node.send(NodeAction::SendMessage {
+                                    supplier_name: supplier_name.clone(),
+                                    body,
+                                    reply_to: None,
+                                });
+                                msg_body.set(String::new());
+                            }
+                        },
+                        "Send (10 CURD)"
+                    }
                 }
             }
         }

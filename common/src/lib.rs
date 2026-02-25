@@ -3,6 +3,7 @@ pub mod currency;
 pub mod directory;
 pub mod identity;
 pub mod location;
+pub mod message;
 pub mod order;
 pub mod postcode;
 pub mod product;

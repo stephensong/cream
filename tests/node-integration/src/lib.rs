@@ -1,7 +1,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use freenet_stdlib::client_api::{ClientRequest, ContractRequest, ContractResponse, HostResponse, WebApi};
+use freenet_stdlib::client_api::{
+    ClientRequest, ContractRequest, ContractResponse, HostResponse, WebApi,
+};
 use freenet_stdlib::prelude::*;
 use tokio::time::Instant;
 
@@ -334,7 +336,9 @@ pub async fn wait_for_put(
                     break;
                 }
                 Err(_) => {
-                    tracing::debug!("wait_for_put: drain timeout on attempt {attempt}, will re-send");
+                    tracing::debug!(
+                        "wait_for_put: drain timeout on attempt {attempt}, will re-send"
+                    );
                     break;
                 }
             }

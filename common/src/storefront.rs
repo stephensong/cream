@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::identity::SupplierId;
 use crate::location::GeoLocation;
+use crate::message::{Message, MessageId};
 use crate::order::{Order, OrderId};
 use crate::product::{Product, ProductId};
 
@@ -250,6 +251,8 @@ pub struct StorefrontState {
     pub info: StorefrontInfo,
     pub products: BTreeMap<ProductId, SignedProduct>,
     pub orders: BTreeMap<OrderId, Order>,
+    #[serde(default)]
+    pub messages: BTreeMap<MessageId, Message>,
 }
 
 impl StorefrontState {
@@ -291,6 +294,15 @@ impl StorefrontState {
         changed
     }
 
+    /// Remove messages older than 30 days.
+    /// Returns `true` if any messages were removed.
+    pub fn prune_old_messages(&mut self, now: DateTime<Utc>) -> bool {
+        let cutoff = now - chrono::Duration::days(30);
+        let before = self.messages.len();
+        self.messages.retain(|_, msg| msg.created_at >= cutoff);
+        self.messages.len() != before
+    }
+
     /// Merge another storefront state into this one.
     ///
     /// - Products: LWW by `updated_at`
@@ -322,6 +334,11 @@ impl StorefrontState {
                     self.orders.insert(id, order);
                 }
             }
+        }
+
+        // Merge messages (union — messages are append-only)
+        for (id, message) in other.messages {
+            self.messages.entry(id).or_insert(message);
         }
     }
 
@@ -391,6 +408,8 @@ struct SignableOrder<'a> {
 pub struct StorefrontSummary {
     pub product_timestamps: BTreeMap<ProductId, DateTime<Utc>>,
     pub order_timestamps: BTreeMap<OrderId, (DateTime<Utc>, u8)>, // (created_at, status_ordinal)
+    #[serde(default)]
+    pub message_ids: std::collections::BTreeSet<MessageId>,
 }
 
 impl StorefrontState {
@@ -406,6 +425,7 @@ impl StorefrontState {
                 .iter()
                 .map(|(id, o)| (id.clone(), (o.created_at, o.status.ordinal())))
                 .collect(),
+            message_ids: self.messages.keys().cloned().collect(),
         }
     }
 
@@ -435,10 +455,18 @@ impl StorefrontState {
             .map(|(id, o)| (id.clone(), o.clone()))
             .collect();
 
+        let messages = self
+            .messages
+            .iter()
+            .filter(|(id, _)| !summary.message_ids.contains(id))
+            .map(|(id, m)| (*id, m.clone()))
+            .collect();
+
         StorefrontState {
             info: self.info.clone(),
             products,
             orders,
+            messages,
         }
     }
 }
@@ -450,7 +478,7 @@ mod tests {
     use crate::order::{DepositTier, Order, OrderId};
     use crate::product::ProductId;
     use chrono::{Duration, Utc};
-    use ed25519_dalek::{SigningKey, Signature};
+    use ed25519_dalek::{Signature, SigningKey};
 
     fn dummy_storefront() -> StorefrontState {
         let key = SigningKey::from_bytes(&[1u8; 32]);
@@ -468,6 +496,7 @@ mod tests {
             },
             products: BTreeMap::new(),
             orders: BTreeMap::new(),
+            messages: BTreeMap::new(),
         }
     }
 
@@ -495,11 +524,21 @@ mod tests {
 
         sf.orders.insert(
             OrderId("expired".into()),
-            dummy_order("expired", OrderStatus::Reserved { expires_at: yesterday }),
+            dummy_order(
+                "expired",
+                OrderStatus::Reserved {
+                    expires_at: yesterday,
+                },
+            ),
         );
         sf.orders.insert(
             OrderId("active".into()),
-            dummy_order("active", OrderStatus::Reserved { expires_at: tomorrow }),
+            dummy_order(
+                "active",
+                OrderStatus::Reserved {
+                    expires_at: tomorrow,
+                },
+            ),
         );
         sf.orders.insert(
             OrderId("paid".into()),
@@ -508,8 +547,14 @@ mod tests {
 
         let changed = sf.expire_orders(Utc::now());
         assert!(changed);
-        assert_eq!(sf.orders[&OrderId("expired".into())].status, OrderStatus::Expired);
-        assert!(matches!(sf.orders[&OrderId("active".into())].status, OrderStatus::Reserved { .. }));
+        assert_eq!(
+            sf.orders[&OrderId("expired".into())].status,
+            OrderStatus::Expired
+        );
+        assert!(matches!(
+            sf.orders[&OrderId("active".into())].status,
+            OrderStatus::Reserved { .. }
+        ));
         assert_eq!(sf.orders[&OrderId("paid".into())].status, OrderStatus::Paid);
     }
 
@@ -518,7 +563,10 @@ mod tests {
         let sched = WeeklySchedule::new();
         for day in 0..7 {
             for slot in 0..48 {
-                assert!(!sched.is_open(day, slot), "day {day} slot {slot} should be closed");
+                assert!(
+                    !sched.is_open(day, slot),
+                    "day {day} slot {slot} should be closed"
+                );
             }
         }
     }
@@ -566,7 +614,8 @@ mod tests {
 
         // 2024-01-01 is a Monday. Test at 10:00 UTC with offset 0 => open
         let monday_10am = chrono::DateTime::parse_from_rfc3339("2024-01-01T10:00:00Z")
-            .unwrap().with_timezone(&Utc);
+            .unwrap()
+            .with_timezone(&Utc);
         assert!(sched.is_open_at(monday_10am, 0));
 
         // Same UTC time but offset +11:00 (= 21:00 local) => closed
@@ -574,7 +623,8 @@ mod tests {
 
         // Tuesday same time => closed (no Tuesday hours)
         let tuesday_10am = chrono::DateTime::parse_from_rfc3339("2024-01-02T10:00:00Z")
-            .unwrap().with_timezone(&Utc);
+            .unwrap()
+            .with_timezone(&Utc);
         assert!(!sched.is_open_at(tuesday_10am, 0));
     }
 
@@ -641,8 +691,10 @@ mod tests {
         };
         let json = serde_json::to_string(&info_old).unwrap();
         // Remove optional fields to simulate old format
-        let old_json = json
-            .replace(",\"schedule\":null,\"timezone\":null,\"phone\":null,\"email\":null,\"address\":null", "");
+        let old_json = json.replace(
+            ",\"schedule\":null,\"timezone\":null,\"phone\":null,\"email\":null,\"address\":null",
+            "",
+        );
         let info: StorefrontInfo = serde_json::from_str(&old_json).unwrap();
         assert!(info.schedule.is_none());
         assert!(info.timezone.is_none());
@@ -654,7 +706,12 @@ mod tests {
         let tomorrow = Utc::now() + Duration::days(1);
         sf.orders.insert(
             OrderId("active".into()),
-            dummy_order("active", OrderStatus::Reserved { expires_at: tomorrow }),
+            dummy_order(
+                "active",
+                OrderStatus::Reserved {
+                    expires_at: tomorrow,
+                },
+            ),
         );
 
         assert!(!sf.expire_orders(Utc::now()));

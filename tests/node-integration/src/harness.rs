@@ -316,15 +316,21 @@ impl TestHarness {
 
         // Build initial storefront states
         let gary_sf = make_initial_storefront(
-            &gary_id, "Gary's Farm", "Real Beaut Dairy",
+            &gary_id,
+            "Gary's Farm",
+            "Real Beaut Dairy",
             GeoLocation::new(-30.0977, 152.6583),
         );
         let emma_sf = make_initial_storefront(
-            &emma_id, "Emma's Farm", "Emma's Dairy",
+            &emma_id,
+            "Emma's Farm",
+            "Emma's Dairy",
             GeoLocation::new(-30.0977, 152.6583),
         );
         let iris_sf = make_initial_storefront(
-            &iris_id, "Iris's Farm", "Iris's farm — fresh dairy direct",
+            &iris_id,
+            "Iris's Farm",
+            "Iris's farm — fresh dairy direct",
             GeoLocation::new(-33.87, 151.21),
         );
 
@@ -447,6 +453,7 @@ fn make_initial_storefront(
         },
         products: BTreeMap::new(),
         orders: BTreeMap::new(),
+        messages: BTreeMap::new(),
     }
 }
 

@@ -55,8 +55,7 @@ async fn cumulative_node_tests() {
             .unwrap();
 
         // Short timeout — directory may already exist from a previous run
-        let _put_resp =
-            recv_matching(&mut client_a, is_put_response, Duration::from_secs(2)).await;
+        let _put_resp = recv_matching(&mut client_a, is_put_response, Duration::from_secs(2)).await;
 
         // Wait for directory to propagate to node-2 before subscribing
         wait_for_get(&mut client_b, *dir_key.id(), TIMEOUT)
@@ -80,8 +79,12 @@ async fn cumulative_node_tests() {
         let (supplier_id, vk) = make_dummy_supplier("Test Farm");
         let (_, sf_key) = make_storefront_contract(&vk);
         let entry = make_directory_entry(
-            &supplier_id, "Test Farm", "Test Farm's dairy",
-            "2000", "Sydney", cream_common::location::GeoLocation::new(-33.87, 151.21),
+            &supplier_id,
+            "Test Farm",
+            "Test Farm's dairy",
+            "2000",
+            "Sydney",
+            cream_common::location::GeoLocation::new(-33.87, 151.21),
             sf_key,
         );
 
@@ -138,6 +141,7 @@ async fn cumulative_node_tests() {
             },
             products: BTreeMap::new(),
             orders: BTreeMap::new(),
+            messages: BTreeMap::new(),
         };
         let state_bytes = serde_json::to_vec(&initial_sf).unwrap();
 
@@ -230,6 +234,7 @@ async fn cumulative_node_tests() {
             },
             products: BTreeMap::new(),
             orders: BTreeMap::new(),
+            messages: BTreeMap::new(),
         };
         let state_bytes = serde_json::to_vec(&initial_sf).unwrap();
 
@@ -346,6 +351,7 @@ async fn cumulative_node_tests() {
             },
             products: BTreeMap::new(),
             orders: BTreeMap::new(),
+            messages: BTreeMap::new(),
         };
         let state_bytes = serde_json::to_vec(&initial_sf).unwrap();
 
@@ -691,10 +697,19 @@ async fn cumulative_node_tests() {
         // Spot-check open/closed states
         assert!(recv_schedule.is_open(0, 16), "7: Mon 8:00 should be open");
         assert!(recv_schedule.is_open(0, 33), "7: Mon 16:30 should be open");
-        assert!(!recv_schedule.is_open(0, 34), "7: Mon 17:00 should be closed");
-        assert!(!recv_schedule.is_open(0, 15), "7: Mon 7:30 should be closed");
+        assert!(
+            !recv_schedule.is_open(0, 34),
+            "7: Mon 17:00 should be closed"
+        );
+        assert!(
+            !recv_schedule.is_open(0, 15),
+            "7: Mon 7:30 should be closed"
+        );
         assert!(recv_schedule.is_open(5, 18), "7: Sat 9:00 should be open");
-        assert!(!recv_schedule.is_open(6, 18), "7: Sun 9:00 should be closed");
+        assert!(
+            !recv_schedule.is_open(6, 18),
+            "7: Sun 9:00 should be closed"
+        );
     }
     println!("   PASSED");
 

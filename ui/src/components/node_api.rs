@@ -73,6 +73,12 @@ pub enum NodeAction {
         current_supplier: Option<String>,
         balance_curds: Option<u64>,
     },
+    /// Send a message to a supplier's storefront (costs 10 CURD toll).
+    SendMessage {
+        supplier_name: String,
+        body: String,
+        reply_to: Option<u64>,
+    },
 }
 
 /// Get a handle to send actions to the node communication coroutine.
@@ -138,6 +144,11 @@ mod wasm_impl {
     /// Log a message to the browser console.
     fn clog(msg: &str) {
         web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(msg));
+    }
+
+    /// Generate a random u32 using JS Math.random().
+    fn rand_u32() -> u32 {
+        (web_sys::js_sys::Math::random() * u32::MAX as f64) as u32
     }
 
     /// Embedded directory contract WASM (built with `cargo make build-contracts-dev`).
@@ -567,6 +578,7 @@ mod wasm_impl {
                     },
                     products: BTreeMap::new(),
                     orders: BTreeMap::new(),
+                    messages: BTreeMap::new(),
                 };
                 let sf_state_bytes = serde_json::to_vec(&sf_state).unwrap();
 
@@ -697,8 +709,15 @@ mod wasm_impl {
                                 .get(&expiry_supplier).cloned();
                             if let Some(mut sf) = sf_opt {
                                 let now = chrono::Utc::now();
-                                if sf.expire_orders(now) {
-                                    clog(&format!("[CREAM] Expired orders for '{}'", expiry_supplier));
+                                let orders_changed = sf.expire_orders(now);
+                                let messages_changed = sf.prune_old_messages(now);
+                                if orders_changed || messages_changed {
+                                    if orders_changed {
+                                        clog(&format!("[CREAM] Expired orders for '{}'", expiry_supplier));
+                                    }
+                                    if messages_changed {
+                                        clog(&format!("[CREAM] Pruned old messages for '{}'", expiry_supplier));
+                                    }
                                     expiry_shared.write().storefronts
                                         .insert(expiry_supplier.clone(), sf.clone());
                                     // Push to network via the internal request channel
@@ -1329,6 +1348,79 @@ mod wasm_impl {
                     }
                 } else {
                     clog("[CREAM] UpdateUserContract: no existing user contract state");
+                }
+            }
+
+            NodeAction::SendMessage {
+                supplier_name,
+                body,
+                reply_to,
+            } => {
+                clog(&format!("[CREAM] SendMessage to {}: {} chars", supplier_name, body.len()));
+
+                // Debit 10 CURD toll from the sender's wallet
+                {
+                    let mut us_signal = *user_state;
+                    let mut us = us_signal.write();
+                    if us.record_debit(10, "Message toll".into()).is_none() {
+                        clog("[CREAM] ERROR: Insufficient balance for message toll (10 CURD)");
+                        return;
+                    }
+                    us.save();
+                }
+
+                // Find the storefront's contract key
+                let sf_key = sf_contract_keys.get(&supplier_name).copied()
+                    .or_else(|| {
+                        let state = shared.read();
+                        state.directory.entries.values()
+                            .find(|e| e.name == supplier_name)
+                            .map(|e| e.storefront_key)
+                    });
+
+                let Some(sf_key) = sf_key else {
+                    clog(&format!("[CREAM] ERROR: No storefront key found for {}", supplier_name));
+                    return;
+                };
+
+                let existing_sf = shared.read().storefronts.get(&supplier_name).cloned();
+                let Some(mut sf) = existing_sf else {
+                    clog(&format!("[CREAM] ERROR: Storefront state not found for {}", supplier_name));
+                    return;
+                };
+
+                let now = chrono::Utc::now();
+                let msg_id: u64 = (now.timestamp_millis() as u64)
+                    .wrapping_mul(1000)
+                    .wrapping_add(rand_u32() as u64);
+
+                let sender_name = user_state.read().moniker.clone().unwrap_or_default();
+                let sender_key = user_state.read().user_contract_key.clone();
+
+                let message = cream_common::message::Message {
+                    id: msg_id,
+                    sender_name,
+                    sender_key,
+                    body,
+                    toll_paid: 10,
+                    created_at: now,
+                    reply_to,
+                };
+
+                sf.messages.insert(msg_id, message);
+
+                let sf_bytes = serde_json::to_vec(&sf).unwrap();
+                let update = ClientRequest::ContractOp(ContractRequest::Update {
+                    key: sf_key,
+                    data: UpdateData::State(State::from(sf_bytes)),
+                });
+
+                shared.write().storefronts.insert(supplier_name.clone(), sf);
+
+                if let Err(e) = api.send(update).await {
+                    clog(&format!("[CREAM] ERROR: Failed to send message: {:?}", e));
+                } else {
+                    clog("[CREAM] SendMessage: sent successfully");
                 }
             }
 

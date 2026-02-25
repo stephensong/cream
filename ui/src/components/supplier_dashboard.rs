@@ -1,6 +1,7 @@
 use dioxus::prelude::*;
 
 use cream_common::currency::format_amount;
+use cream_common::message::Message;
 use cream_common::postcode::format_postcode;
 use cream_common::storefront::WeeklySchedule;
 
@@ -60,6 +61,13 @@ pub fn SupplierDashboard() -> Element {
     let network_orders: Vec<_> = storefront
         .map(|sf| sf.orders.values().cloned().collect())
         .unwrap_or_default();
+    let network_messages: Vec<Message> = storefront
+        .map(|sf| {
+            let mut msgs: Vec<_> = sf.messages.values().cloned().collect();
+            msgs.sort_by(|a, b| b.created_at.cmp(&a.created_at)); // newest first
+            msgs
+        })
+        .unwrap_or_default();
     // Map product IDs to names for readable order display
     let product_names: std::collections::HashMap<String, String> = storefront
         .map(|sf| {
@@ -72,6 +80,7 @@ pub fn SupplierDashboard() -> Element {
     drop(shared);
 
     let moniker_for_contact = moniker.clone();
+    let moniker_for_messages = moniker.clone();
 
     rsx! {
         div { class: "supplier-dashboard",
@@ -380,6 +389,95 @@ pub fn SupplierDashboard() -> Element {
                             }
                         })}
                     }
+                }
+            }
+
+            SupplierMessages { messages: network_messages, supplier_name: moniker_for_messages }
+        }
+    }
+}
+
+/// Messages section in the supplier dashboard with reply capability.
+#[component]
+fn SupplierMessages(messages: Vec<Message>, supplier_name: String) -> Element {
+    let mut reply_to = use_signal(|| None::<u64>);
+    let mut reply_body = use_signal(String::new);
+    let user_state = use_user_state();
+    let balance = user_state.read().balance();
+
+    rsx! {
+        div { class: "dashboard-section",
+            h3 { "Messages ({messages.len()})" }
+            if messages.is_empty() {
+                p { class: "empty-state", "No messages yet." }
+            } else {
+                div { class: "message-thread",
+                    {messages.iter().map(|msg| {
+                        let msg_id = msg.id;
+                        let is_own = msg.sender_name == supplier_name;
+                        let bubble_class = if is_own { "message-bubble message-sent" } else { "message-bubble message-received" };
+                        let time_str = msg.created_at.format("%d %b %H:%M").to_string();
+                        let indent = msg.reply_to.is_some();
+                        let is_replying = *reply_to.read() == Some(msg_id);
+                        let supplier_name = supplier_name.clone();
+                        rsx! {
+                            div {
+                                class: if indent { format!("{bubble_class} message-reply") } else { bubble_class.to_string() },
+                                key: "{msg_id}",
+                                div { class: "message-header",
+                                    span { class: "message-sender", "{msg.sender_name}" }
+                                    span { class: "message-time", "{time_str}" }
+                                }
+                                p { class: "message-body", "{msg.body}" }
+                                if !is_own && !is_replying {
+                                    button {
+                                        class: "schedule-add-btn",
+                                        onclick: move |_| {
+                                            reply_to.set(Some(msg_id));
+                                            reply_body.set(String::new());
+                                        },
+                                        "Reply"
+                                    }
+                                }
+                                if is_replying {
+                                    div { class: "message-input",
+                                        textarea {
+                                            placeholder: "Write a reply...",
+                                            maxlength: "1000",
+                                            value: "{reply_body}",
+                                            oninput: move |evt| reply_body.set(evt.value()),
+                                        }
+                                        div { class: "message-input-footer",
+                                            span { class: "toll-badge", "Cost: 10 CURD" }
+                                            button {
+                                                disabled: reply_body.read().trim().is_empty() || balance < 10,
+                                                onclick: {
+                                                    let supplier_name = supplier_name.clone();
+                                                    move |_| {
+                                                        let body = reply_body.read().trim().to_string();
+                                                        if body.is_empty() { return; }
+                                                        let node = use_node_action();
+                                                        node.send(NodeAction::SendMessage {
+                                                            supplier_name: supplier_name.clone(),
+                                                            body,
+                                                            reply_to: Some(msg_id),
+                                                        });
+                                                        reply_to.set(None);
+                                                        reply_body.set(String::new());
+                                                    }
+                                                },
+                                                "Send Reply (10 CURD)"
+                                            }
+                                            button {
+                                                onclick: move |_| reply_to.set(None),
+                                                "Cancel"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    })}
                 }
             }
         }
