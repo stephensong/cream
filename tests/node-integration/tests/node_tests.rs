@@ -86,6 +86,7 @@ async fn cumulative_node_tests() {
             "Sydney",
             cream_common::location::GeoLocation::new(-33.87, 151.21),
             sf_key,
+            None,
         );
 
         let mut entries = BTreeMap::new();
@@ -803,19 +804,19 @@ async fn cumulative_node_tests() {
         let root_state: UserContractState =
             serde_json::from_slice(&root_bytes).expect("deserialize root contract");
 
-        // Root should have 1M - 2*10K = 980,000 CURD
-        let expected_balance = 1_000_000 - (2 * 10_000);
+        // Root should have 1M - 5*10K = 950,000 CURD (3 suppliers + 2 customers)
+        let expected_balance = 1_000_000 - (5 * 10_000);
         assert_eq!(
             root_state.balance_curds, expected_balance,
-            "9: root balance should be {} (1M - 2*10K), got {}",
+            "9: root balance should be {} (1M - 5*10K), got {}",
             expected_balance, root_state.balance_curds,
         );
 
-        // Verify root has genesis credit + 2 debits = 3 ledger entries
+        // Verify root has genesis credit + 5 debits = 6 ledger entries
         assert_eq!(
             root_state.ledger.len(),
-            3,
-            "9: root should have 3 ledger entries (genesis + 2 debits), got {}",
+            6,
+            "9: root should have 6 ledger entries (genesis + 5 debits), got {}",
             root_state.ledger.len()
         );
 
@@ -828,6 +829,12 @@ async fn cumulative_node_tests() {
                 h.alice.user_contract_key.as_ref().expect("Alice should have a user contract")
             } else if recipient_name == "Bob" {
                 h.bob.user_contract_key.as_ref().expect("Bob should have a user contract")
+            } else if recipient_name == "Gary" {
+                h.gary.user_contract_key.as_ref().expect("Gary should have a user contract")
+            } else if recipient_name == "Emma" {
+                h.emma.user_contract_key.as_ref().expect("Emma should have a user contract")
+            } else if recipient_name == "Iris" {
+                h.iris.user_contract_key.as_ref().expect("Iris should have a user contract")
             } else {
                 panic!("9: unexpected debit receiver: {}", recipient_name);
             };

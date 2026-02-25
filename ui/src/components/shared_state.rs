@@ -38,6 +38,9 @@ pub struct SharedState {
     /// The root user's contract key (Base58).
     #[allow(dead_code)] // used in WASM builds only
     pub root_contract_key: Option<String>,
+    /// The supplier's own user contract key (Base58), when in supplier mode.
+    #[allow(dead_code)] // used in WASM builds only
+    pub supplier_user_contract_key: Option<String>,
 }
 
 impl SharedState {

@@ -253,6 +253,7 @@ mod tests {
                 freenet_stdlib::prelude::Parameters::from(vec![]),
             )
             .unwrap(),
+            user_contract_key: None,
             updated_at: Utc::now(),
             signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
         };

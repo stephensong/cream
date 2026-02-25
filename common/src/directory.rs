@@ -24,6 +24,8 @@ pub struct DirectoryEntry {
     pub locality: Option<String>,
     pub categories: Vec<ProductCategory>,
     pub storefront_key: ContractKey,
+    #[serde(default)]
+    pub user_contract_key: Option<ContractKey>,
     pub updated_at: DateTime<Utc>,
     pub signature: Signature,
 }
@@ -40,6 +42,7 @@ impl DirectoryEntry {
             locality: self.locality.as_deref(),
             categories: &self.categories,
             storefront_key: &self.storefront_key,
+            user_contract_key: self.user_contract_key.as_ref(),
             updated_at: &self.updated_at,
         };
         serde_json::to_vec(&signable).expect("serialization should not fail")
@@ -70,6 +73,7 @@ struct SignableDirectoryEntry<'a> {
     locality: Option<&'a str>,
     categories: &'a [ProductCategory],
     storefront_key: &'a ContractKey,
+    user_contract_key: Option<&'a ContractKey>,
     updated_at: &'a DateTime<Utc>,
 }
 

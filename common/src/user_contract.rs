@@ -87,6 +87,57 @@ impl UserContractState {
         }
     }
 
+    /// Validate an incoming update for merge.
+    ///
+    /// - If the update only adds Credit entries (no debits, no metadata changes), accept without signature check
+    /// - If the update contains Debit entries or metadata changes, require owner signature
+    pub fn validate_update(&self, update: &UserContractState, owner: &VerifyingKey) -> bool {
+        #[cfg(feature = "dev")]
+        {
+            let _ = update;
+            let _ = owner;
+            #[allow(clippy::needless_return)]
+            return true;
+        }
+        #[cfg(not(feature = "dev"))]
+        {
+            // Find new ledger entries (not already in self)
+            let existing_keys: HashSet<(String, TransactionKind)> = self
+                .ledger
+                .iter()
+                .map(|tx| (tx.tx_ref.clone(), tx.kind.clone()))
+                .collect();
+
+            let new_entries: Vec<&WalletTransaction> = update
+                .ledger
+                .iter()
+                .filter(|tx| !existing_keys.contains(&(tx.tx_ref.clone(), tx.kind.clone())))
+                .collect();
+
+            // Check if metadata changed
+            let metadata_changed = update.name != self.name
+                || update.origin_supplier != self.origin_supplier
+                || update.current_supplier != self.current_supplier
+                || update.invited_by != self.invited_by
+                || update.owner != self.owner;
+
+            // If all new entries are credits and no metadata changed, accept without sig
+            let all_credits = new_entries
+                .iter()
+                .all(|tx| tx.kind == TransactionKind::Credit);
+            let has_debits = new_entries
+                .iter()
+                .any(|tx| tx.kind == TransactionKind::Debit);
+
+            if !has_debits && all_credits && !metadata_changed {
+                return true;
+            }
+
+            // Otherwise require owner signature
+            update.validate(owner)
+        }
+    }
+
     /// Derive balance from the transaction ledger.
     pub fn derive_balance(&self) -> u64 {
         self.ledger.iter().fold(0u64, |acc, tx| match tx.kind {
@@ -295,6 +346,71 @@ mod tests {
             timestamp: "2026-01-02T00:00:00.000Z".into(),
         });
         assert_eq!(state.derive_balance(), 9_500);
+    }
+
+    #[test]
+    fn validate_update_credit_only_accepted_without_sig() {
+        let state = dummy_state(Utc::now());
+        let mut update = state.clone();
+        // Add a credit entry to the update
+        update.ledger.push(WalletTransaction {
+            id: 1,
+            kind: TransactionKind::Credit,
+            amount: 500,
+            description: "Third-party credit".into(),
+            sender: "Bob".into(),
+            receiver: "Alice".into(),
+            tx_ref: "bob:1234:1".into(),
+            timestamp: "2026-01-02T00:00:00.000Z".into(),
+        });
+        update.signature = Signature::from_bytes(&[0u8; 64]); // invalid sig
+
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        // In dev mode this always passes; in prod mode credit-only should pass without valid sig
+        assert!(
+            state.validate_update(&update, &key.verifying_key()),
+            "Credit-only update should be accepted without valid signature"
+        );
+    }
+
+    #[cfg(not(feature = "dev"))]
+    #[test]
+    fn validate_update_debit_rejected_without_sig() {
+        let state = dummy_state(Utc::now());
+        let mut update = state.clone();
+        // Add a debit entry to the update
+        update.ledger.push(WalletTransaction {
+            id: 1,
+            kind: TransactionKind::Debit,
+            amount: 500,
+            description: "Unauthorized debit".into(),
+            sender: "Alice".into(),
+            receiver: "Eve".into(),
+            tx_ref: "eve:1234:1".into(),
+            timestamp: "2026-01-02T00:00:00.000Z".into(),
+        });
+        update.signature = Signature::from_bytes(&[0u8; 64]); // invalid sig
+
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        assert!(
+            !state.validate_update(&update, &key.verifying_key()),
+            "Debit update should be rejected without valid signature"
+        );
+    }
+
+    #[cfg(not(feature = "dev"))]
+    #[test]
+    fn validate_update_metadata_change_rejected_without_sig() {
+        let state = dummy_state(Utc::now());
+        let mut update = state.clone();
+        update.current_supplier = "Hacker".into();
+        update.signature = Signature::from_bytes(&[0u8; 64]); // invalid sig
+
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        assert!(
+            !state.validate_update(&update, &key.verifying_key()),
+            "Metadata-changing update should be rejected without valid signature"
+        );
     }
 
     #[test]

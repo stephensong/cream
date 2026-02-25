@@ -70,7 +70,7 @@ pub fn WalletView() -> Element {
                 h3 { class: "wallet-balance", "Balance: {balance_str}" }
             }
             if is_supplier && incoming_deposits > 0 {
-                p { class: "wallet-deposits", "Includes {deposits_str} from order deposits" }
+                p { class: "wallet-deposits", "Includes {deposits_str} held in escrow" }
             }
 
             div { class: "wallet-actions",

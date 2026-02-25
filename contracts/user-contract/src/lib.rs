@@ -17,7 +17,7 @@ mod contract_impl {
         }
         let update: UserContractState =
             serde_json::from_slice(bytes).map_err(|e| ContractError::Deser(e.to_string()))?;
-        if !update.validate(owner) {
+        if !state.validate_update(&update, owner) {
             return Err(ContractError::InvalidUpdate);
         }
         state.merge(update);

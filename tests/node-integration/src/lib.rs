@@ -102,6 +102,7 @@ pub fn make_directory_entry(
     locality: &str,
     location: GeoLocation,
     storefront_key: ContractKey,
+    user_contract_key: Option<ContractKey>,
 ) -> DirectoryEntry {
     DirectoryEntry {
         supplier: supplier_id.clone(),
@@ -112,6 +113,7 @@ pub fn make_directory_entry(
         locality: Some(locality.to_string()),
         categories: vec![],
         storefront_key,
+        user_contract_key,
         updated_at: chrono::Utc::now(),
         signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
     }

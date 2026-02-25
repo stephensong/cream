@@ -515,6 +515,7 @@ mod wasm_impl {
     enum ContractRole {
         Root,
         User,
+        ThirdParty(ContractKey),
     }
 
     /// Record a double-entry transfer between two user contracts.
@@ -561,9 +562,10 @@ mod wasm_impl {
         };
 
         // Resolve sender key
-        let sender_key = match sender {
+        let sender_key = match &sender {
             ContractRole::Root => Some(*root_contract_key),
             ContractRole::User => user_contract_key.copied(),
+            ContractRole::ThirdParty(key) => Some(*key),
         };
         if let Some(key) = sender_key {
             update_contract_ledger(api, shared, &sender, key, debit).await;
@@ -572,9 +574,10 @@ mod wasm_impl {
         }
 
         // Resolve receiver key
-        let receiver_key = match receiver {
+        let receiver_key = match &receiver {
             ContractRole::Root => Some(*root_contract_key),
             ContractRole::User => user_contract_key.copied(),
+            ContractRole::ThirdParty(key) => Some(*key),
         };
         if let Some(key) = receiver_key {
             update_contract_ledger(api, shared, &receiver, key, credit).await;
@@ -594,12 +597,43 @@ mod wasm_impl {
         contract_key: ContractKey,
         tx: cream_common::wallet::WalletTransaction,
     ) {
+        // ThirdParty: construct a minimal state with just the transaction entry.
+        // The merge logic does ledger union unconditionally, so the credit gets
+        // appended without overwriting the target's metadata. No network GET needed.
+        if matches!(role, ContractRole::ThirdParty(_)) {
+            // Use a dummy key for the minimal state — credit-only updates
+            // are accepted without signature verification
+            let dummy_key = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+            let minimal_state = UserContractState {
+                owner: cream_common::identity::CustomerId(dummy_key.verifying_key()),
+                name: String::new(),
+                origin_supplier: String::new(),
+                current_supplier: String::new(),
+                balance_curds: 0,
+                invited_by: String::new(),
+                ledger: vec![tx],
+                next_tx_id: 0,
+                updated_at: chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap(),
+                signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+            };
+            let uc_bytes = serde_json::to_vec(&minimal_state).unwrap();
+            let update = ClientRequest::ContractOp(ContractRequest::Update {
+                key: contract_key,
+                data: UpdateData::State(State::from(uc_bytes)),
+            });
+            if let Err(e) = api.send(update).await {
+                clog(&format!("[CREAM] ERROR: Failed to update third-party contract: {:?}", e));
+            }
+            return;
+        }
+
         // Find the contract state in SharedState
         let mut uc_state = {
             let state = shared.read();
             match role {
                 ContractRole::Root => state.root_user_contract.clone(),
                 ContractRole::User => state.user_contract.clone(),
+                ContractRole::ThirdParty(_) => unreachable!(),
             }
         };
 
@@ -622,6 +656,7 @@ mod wasm_impl {
                 match role {
                     ContractRole::Root => state.root_user_contract = Some(uc.clone()),
                     ContractRole::User => state.user_contract = Some(uc.clone()),
+                    ContractRole::ThirdParty(_) => unreachable!(),
                 }
             }
 
@@ -780,6 +815,60 @@ mod wasm_impl {
                         .insert(name.clone(), sf_state);
                 }
 
+                // Deploy a user contract for the supplier (same pattern as customer RegisterUser)
+                let supplier_uc_params = UserContractParameters { owner: owner_key };
+                let supplier_uc_params_bytes = serde_json::to_vec(&supplier_uc_params).unwrap();
+                let supplier_uc_contract = make_contract(
+                    USER_CONTRACT_WASM,
+                    Parameters::from(supplier_uc_params_bytes),
+                );
+                let supplier_uc_key = supplier_uc_contract.key();
+
+                let supplier_uc_state = UserContractState {
+                    owner: cream_common::identity::CustomerId(owner_key),
+                    name: name.clone(),
+                    origin_supplier: name.clone(),
+                    current_supplier: name.clone(),
+                    balance_curds: 0,
+                    invited_by: String::new(),
+                    ledger: Vec::new(),
+                    next_tx_id: 0,
+                    updated_at: chrono::Utc::now(),
+                    signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+                };
+                let supplier_uc_state_bytes = serde_json::to_vec(&supplier_uc_state).unwrap();
+
+                let put_supplier_uc = ClientRequest::ContractOp(ContractRequest::Put {
+                    contract: supplier_uc_contract,
+                    state: WrappedState::new(supplier_uc_state_bytes),
+                    related_contracts: RelatedContracts::default(),
+                    subscribe: false,
+                    blocking_subscribe: false,
+                });
+
+                clog(&format!("[CREAM] Deploying supplier user contract for {}: {:?}", name, supplier_uc_key));
+                if let Err(e) = api.send(put_supplier_uc).await {
+                    clog(&format!("[CREAM] ERROR: Failed to deploy supplier user contract: {:?}", e));
+                }
+
+                // Store supplier user contract key
+                let supplier_uc_key_str = format!("{}", supplier_uc_key);
+                shared.write().supplier_user_contract_key = Some(supplier_uc_key_str);
+
+                // Transfer initial 10,000 CURD from root → supplier
+                record_transfer(
+                    api,
+                    shared,
+                    ContractRole::Root,
+                    ContractRole::ThirdParty(supplier_uc_key),
+                    root_contract_key,
+                    None, // not using User role for receiver
+                    10_000,
+                    "Initial CURD allocation".to_string(),
+                    cream_common::identity::ROOT_USER_NAME.to_string(),
+                    name.clone(),
+                ).await;
+
                 // Now register in the directory with a real signature
                 let mut entry = DirectoryEntry {
                     supplier: supplier_id,
@@ -790,6 +879,7 @@ mod wasm_impl {
                     locality,
                     categories: vec![],
                     storefront_key: sf_key,
+                    user_contract_key: Some(supplier_uc_key),
                     updated_at: chrono::Utc::now(),
                     signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
                 };
