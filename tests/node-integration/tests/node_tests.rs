@@ -871,5 +871,237 @@ async fn cumulative_node_tests() {
     }
     println!("   PASSED");
 
+    // ═══════════════════════════════════════════════════════════════════
+    // Step 10: Fulfill order → escrow settlement
+    //
+    // Alice places a fresh order on Gary's storefront. Gary fulfills it.
+    // We manually settle escrow (root → Gary) and verify balances.
+    // ═══════════════════════════════════════════════════════════════════
+    println!("── Step 10: fulfill_order_settles_escrow ──");
+    {
+        use cream_common::user_contract::UserContractState;
+        use cream_common::wallet::{TransactionKind, WalletTransaction};
+
+        // Snapshot root balance before this step
+        let mut probe = connect_to_node_at(&node_url(3001)).await;
+        let root_bytes_before = cream_node_integration::wait_for_get(
+            &mut probe,
+            *h.root_contract_key.id(),
+            TIMEOUT,
+        )
+        .await
+        .expect("GET root contract before fulfill");
+        let root_before: UserContractState =
+            serde_json::from_slice(&root_bytes_before).expect("deserialize root before");
+        let root_balance_before = root_before.balance_curds;
+
+        // Snapshot Gary's balance before
+        let gary_uc_key = h.gary.user_contract_key.expect("Gary should have a user contract");
+        let gary_bytes_before = cream_node_integration::wait_for_get(
+            &mut probe,
+            *gary_uc_key.id(),
+            TIMEOUT,
+        )
+        .await
+        .expect("GET Gary's user contract before fulfill");
+        let gary_before: UserContractState =
+            serde_json::from_slice(&gary_bytes_before).expect("deserialize Gary before");
+        let gary_balance_before = gary_before.balance_curds;
+        drop(probe);
+
+        // Alice places an order on Gary's storefront (Reserve2Days, qty=1, price=500 → deposit=50)
+        let product_id = h.gary.storefront.products.values()
+            .find(|sp| sp.product.name == "Raw Milk")
+            .expect("Gary should have Raw Milk")
+            .product.id.clone();
+        let now = chrono::Utc::now();
+        let order = make_dummy_order(
+            &product_id,
+            &h.alice.id,
+            DepositTier::Reserve2Days,
+            1,
+            500,
+            now,
+        );
+        let order_id = order.id.0.clone();
+        let deposit_amount = order.deposit_amount;
+        assert_eq!(deposit_amount, 50, "10: deposit for Reserve2Days on 500 should be 50");
+
+        // Alice places the order (deducts from her harness balance, pushes to Gary's storefront)
+        h.alice.place_order(order, &mut h.gary).await.expect("10: Alice should afford the order");
+
+        // Alice receives the storefront update with the new order.
+        // She may receive a stale notification first (from earlier steps), so loop.
+        let placed_order_status = loop {
+            let sf = h.alice.recv_storefront_update().await;
+            if let Some(o) = sf.orders.values().find(|o| o.id.0 == order_id) {
+                break o.status.clone();
+            }
+        };
+        assert!(
+            matches!(placed_order_status, OrderStatus::Reserved { .. }),
+            "10: order should be Reserved"
+        );
+
+        // Record deposit transfer: Alice → root (escrow)
+        // Debit Alice's user contract
+        let alice_uc_key = h.alice.user_contract_key.expect("Alice should have a user contract");
+        let tx_ref = format!("escrow:{}:{}", now.timestamp_millis(), order_id);
+        let now_str = now.to_rfc3339();
+
+        let alice_debit = WalletTransaction {
+            id: 0,
+            kind: TransactionKind::Debit,
+            amount: deposit_amount,
+            description: format!("Order {} deposit", order_id),
+            sender: "Alice".to_string(),
+            receiver: cream_common::identity::ROOT_USER_NAME.to_string(),
+            tx_ref: tx_ref.clone(),
+            timestamp: now_str.clone(),
+        };
+
+        let mut probe = connect_to_node_at(&node_url(3001)).await;
+        let alice_bytes = cream_node_integration::wait_for_get(&mut probe, *alice_uc_key.id(), TIMEOUT)
+            .await.expect("GET Alice user contract");
+        let mut alice_state: UserContractState = serde_json::from_slice(&alice_bytes).unwrap();
+        alice_state.ledger.push(alice_debit);
+        alice_state.balance_curds = alice_state.derive_balance();
+        alice_state.next_tx_id = alice_state.ledger.iter().map(|t| t.id).max().unwrap_or(0) + 1;
+        alice_state.updated_at = chrono::Utc::now();
+
+        let alice_update_bytes = serde_json::to_vec(&alice_state).unwrap();
+        probe.send(ClientRequest::ContractOp(ContractRequest::Update {
+            key: alice_uc_key,
+            data: UpdateData::State(State::from(alice_update_bytes)),
+        })).await.unwrap();
+        cream_node_integration::recv_matching(&mut probe, cream_node_integration::is_update_response, TIMEOUT)
+            .await.expect("UpdateResponse for Alice debit");
+
+        // Credit root (escrow receipt)
+        let root_credit = WalletTransaction {
+            id: 0,
+            kind: TransactionKind::Credit,
+            amount: deposit_amount,
+            description: format!("Order {} deposit escrow", order_id),
+            sender: "Alice".to_string(),
+            receiver: cream_common::identity::ROOT_USER_NAME.to_string(),
+            tx_ref: tx_ref.clone(),
+            timestamp: now_str.clone(),
+        };
+
+        let root_bytes = cream_node_integration::wait_for_get(&mut probe, *h.root_contract_key.id(), TIMEOUT)
+            .await.expect("GET root for escrow credit");
+        let mut root_state: UserContractState = serde_json::from_slice(&root_bytes).unwrap();
+        root_state.ledger.push(root_credit);
+        root_state.balance_curds = root_state.derive_balance();
+        root_state.next_tx_id = root_state.ledger.iter().map(|t| t.id).max().unwrap_or(0) + 1;
+        root_state.updated_at = chrono::Utc::now();
+
+        let root_update_bytes = serde_json::to_vec(&root_state).unwrap();
+        probe.send(ClientRequest::ContractOp(ContractRequest::Update {
+            key: h.root_contract_key,
+            data: UpdateData::State(State::from(root_update_bytes)),
+        })).await.unwrap();
+        cream_node_integration::recv_matching(&mut probe, cream_node_integration::is_update_response, TIMEOUT)
+            .await.expect("UpdateResponse for root escrow credit");
+
+        // Gary fulfills the order
+        h.gary.fulfill_order(&order_id).await;
+
+        // Alice receives the fulfilled notification (may get stale notifications first)
+        loop {
+            let sf = h.alice.recv_storefront_update().await;
+            if let Some(o) = sf.orders.values().find(|o| o.id.0 == order_id) {
+                if o.status == OrderStatus::Fulfilled {
+                    break;
+                }
+            }
+        }
+
+        // Settle escrow: root → Gary (debit root, credit Gary)
+        let settle_tx_ref = format!("settle:{}:{}", chrono::Utc::now().timestamp_millis(), order_id);
+        let settle_now_str = chrono::Utc::now().to_rfc3339();
+
+        // Debit root
+        let root_settle_debit = WalletTransaction {
+            id: 0,
+            kind: TransactionKind::Debit,
+            amount: deposit_amount,
+            description: format!("Escrow settlement for order {}", order_id),
+            sender: cream_common::identity::ROOT_USER_NAME.to_string(),
+            receiver: "Gary".to_string(),
+            tx_ref: settle_tx_ref.clone(),
+            timestamp: settle_now_str.clone(),
+        };
+
+        let root_bytes = cream_node_integration::wait_for_get(&mut probe, *h.root_contract_key.id(), TIMEOUT)
+            .await.expect("GET root for settlement debit");
+        let mut root_state: UserContractState = serde_json::from_slice(&root_bytes).unwrap();
+        root_state.ledger.push(root_settle_debit);
+        root_state.balance_curds = root_state.derive_balance();
+        root_state.next_tx_id = root_state.ledger.iter().map(|t| t.id).max().unwrap_or(0) + 1;
+        root_state.updated_at = chrono::Utc::now();
+
+        let root_update_bytes = serde_json::to_vec(&root_state).unwrap();
+        probe.send(ClientRequest::ContractOp(ContractRequest::Update {
+            key: h.root_contract_key,
+            data: UpdateData::State(State::from(root_update_bytes)),
+        })).await.unwrap();
+        cream_node_integration::recv_matching(&mut probe, cream_node_integration::is_update_response, TIMEOUT)
+            .await.expect("UpdateResponse for root settlement debit");
+
+        // Credit Gary
+        let gary_settle_credit = WalletTransaction {
+            id: 0,
+            kind: TransactionKind::Credit,
+            amount: deposit_amount,
+            description: format!("Escrow settlement for order {}", order_id),
+            sender: cream_common::identity::ROOT_USER_NAME.to_string(),
+            receiver: "Gary".to_string(),
+            tx_ref: settle_tx_ref.clone(),
+            timestamp: settle_now_str.clone(),
+        };
+
+        let gary_bytes = cream_node_integration::wait_for_get(&mut probe, *gary_uc_key.id(), TIMEOUT)
+            .await.expect("GET Gary for settlement credit");
+        let mut gary_state: UserContractState = serde_json::from_slice(&gary_bytes).unwrap();
+        gary_state.ledger.push(gary_settle_credit);
+        gary_state.balance_curds = gary_state.derive_balance();
+        gary_state.next_tx_id = gary_state.ledger.iter().map(|t| t.id).max().unwrap_or(0) + 1;
+        gary_state.updated_at = chrono::Utc::now();
+
+        let gary_update_bytes = serde_json::to_vec(&gary_state).unwrap();
+        probe.send(ClientRequest::ContractOp(ContractRequest::Update {
+            key: gary_uc_key,
+            data: UpdateData::State(State::from(gary_update_bytes)),
+        })).await.unwrap();
+        cream_node_integration::recv_matching(&mut probe, cream_node_integration::is_update_response, TIMEOUT)
+            .await.expect("UpdateResponse for Gary settlement credit");
+
+        // Verify final balances
+        let gary_final_bytes = cream_node_integration::wait_for_get(&mut probe, *gary_uc_key.id(), TIMEOUT)
+            .await.expect("GET Gary final");
+        let gary_final: UserContractState = serde_json::from_slice(&gary_final_bytes).unwrap();
+        assert_eq!(
+            gary_final.balance_curds,
+            gary_balance_before + deposit_amount,
+            "10: Gary's balance should increase by deposit amount ({})",
+            deposit_amount,
+        );
+
+        let root_final_bytes = cream_node_integration::wait_for_get(&mut probe, *h.root_contract_key.id(), TIMEOUT)
+            .await.expect("GET root final");
+        let root_final: UserContractState = serde_json::from_slice(&root_final_bytes).unwrap();
+        // Root received deposit (credit) then paid it out (debit), net zero change
+        assert_eq!(
+            root_final.balance_curds,
+            root_balance_before,
+            "10: root balance should be unchanged (escrow in then out)",
+        );
+
+        drop(probe);
+    }
+    println!("   PASSED");
+
     println!("\n══ All node-integration steps passed ══");
 }

@@ -94,6 +94,7 @@ impl OrderStatus {
         matches!(
             (self, next),
             (OrderStatus::Reserved { .. }, OrderStatus::Paid)
+                | (OrderStatus::Reserved { .. }, OrderStatus::Fulfilled)
                 | (OrderStatus::Reserved { .. }, OrderStatus::Cancelled)
                 | (OrderStatus::Reserved { .. }, OrderStatus::Expired)
                 | (OrderStatus::Paid, OrderStatus::Fulfilled)
@@ -149,7 +150,7 @@ mod tests {
         assert!(reserved.can_transition_to(&OrderStatus::Paid));
         assert!(reserved.can_transition_to(&OrderStatus::Cancelled));
         assert!(reserved.can_transition_to(&OrderStatus::Expired));
-        assert!(!reserved.can_transition_to(&OrderStatus::Fulfilled));
+        assert!(reserved.can_transition_to(&OrderStatus::Fulfilled));
 
         assert!(OrderStatus::Paid.can_transition_to(&OrderStatus::Fulfilled));
         assert!(OrderStatus::Paid.can_transition_to(&OrderStatus::Cancelled));

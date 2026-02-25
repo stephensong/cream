@@ -151,6 +151,38 @@ impl Supplier {
             .unwrap_or_else(|| panic!("UpdateResponse for {}'s schedule", self.name));
     }
 
+    /// Fulfill an order on this supplier's storefront (Reserved/Paid → Fulfilled).
+    pub async fn fulfill_order(&mut self, order_id: &str) {
+        use cream_common::order::OrderStatus;
+
+        let oid = cream_common::order::OrderId(order_id.to_string());
+        let order = self
+            .storefront
+            .orders
+            .get_mut(&oid)
+            .unwrap_or_else(|| panic!("Order {} not found on {}'s storefront", order_id, self.name));
+        assert!(
+            order.status.can_transition_to(&OrderStatus::Fulfilled),
+            "Cannot fulfill order {} in status {}",
+            order_id,
+            order.status
+        );
+        order.status = OrderStatus::Fulfilled;
+
+        let sf_bytes = serde_json::to_vec(&self.storefront).unwrap();
+        self.api
+            .send(ClientRequest::ContractOp(ContractRequest::Update {
+                key: self.storefront_key,
+                data: UpdateData::State(State::from(sf_bytes)),
+            }))
+            .await
+            .unwrap();
+
+        recv_matching(&mut self.api, is_update_response, TIMEOUT)
+            .await
+            .expect("Expected UpdateResponse after fulfilling order");
+    }
+
     /// Return a reference to the local storefront state copy.
     pub fn get_storefront_state(&self) -> &StorefrontState {
         &self.storefront

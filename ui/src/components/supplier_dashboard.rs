@@ -365,7 +365,13 @@ pub fn SupplierDashboard() -> Element {
                                 cream_common::order::OrderStatus::Reserved { .. }
                                     | cream_common::order::OrderStatus::Paid
                             );
+                            let can_fulfill = matches!(
+                                order.status,
+                                cream_common::order::OrderStatus::Reserved { .. }
+                                    | cream_common::order::OrderStatus::Paid
+                            );
                             let cancel_oid = oid.clone();
+                            let fulfill_oid = oid.clone();
                             rsx! {
                                 div { class: "order-card",
                                     key: "{oid}",
@@ -373,6 +379,18 @@ pub fn SupplierDashboard() -> Element {
                                     span { class: "order-status", " — {status}" }
                                     p { "{product_name} x{order.quantity} — {total_str}" }
                                     p { "{deposit_info}" }
+                                    if can_fulfill {
+                                        button {
+                                            class: "fulfill-order-btn",
+                                            onclick: move |_| {
+                                                let node = use_node_action();
+                                                node.send(NodeAction::FulfillOrder {
+                                                    order_id: fulfill_oid.clone(),
+                                                });
+                                            },
+                                            "Mark Fulfilled"
+                                        }
+                                    }
                                     if can_cancel {
                                         button {
                                             class: "cancel-order-btn",

@@ -49,6 +49,8 @@ pub enum NodeAction {
     },
     /// Cancel an order on the supplier's storefront (refund deposit).
     CancelOrder { order_id: String },
+    /// Fulfill an order: transition to Fulfilled and settle escrowed deposit to supplier.
+    FulfillOrder { order_id: String },
     /// Update a product's price and/or quantity on the supplier's storefront.
     UpdateProduct {
         product_id: String,
@@ -1381,6 +1383,102 @@ mod wasm_impl {
                             ));
                         } else {
                             clog("[CREAM] CancelOrder: sent successfully");
+                        }
+                    } else {
+                        clog(&format!(
+                            "[CREAM] ERROR: Order {} not found in storefront",
+                            order_id
+                        ));
+                    }
+                } else {
+                    clog(&format!(
+                        "[CREAM] ERROR: Storefront state not found for {}",
+                        supplier_name
+                    ));
+                }
+            }
+
+            NodeAction::FulfillOrder { order_id } => {
+                clog(&format!("[CREAM] FulfillOrder: {}", order_id));
+                let my_supplier_id = key_manager.supplier_id();
+                let (supplier_name, sf_key) = {
+                    let state = shared.read();
+                    state
+                        .directory
+                        .entries
+                        .get(&my_supplier_id)
+                        .map(|entry| (entry.name.clone(), entry.storefront_key))
+                        .or_else(|| {
+                            sf_contract_keys
+                                .iter()
+                                .next()
+                                .map(|(name, key)| (name.clone(), *key))
+                        })
+                        .unzip()
+                };
+
+                let (Some(supplier_name), Some(sf_key)) = (supplier_name, sf_key) else {
+                    clog("[CREAM] ERROR: No storefront found, can't fulfill order");
+                    return;
+                };
+
+                let existing_sf = shared.read().storefronts.get(&supplier_name).cloned();
+                if let Some(mut sf) = existing_sf {
+                    let oid = OrderId(order_id.clone());
+                    if let Some(order) = sf.orders.get_mut(&oid) {
+                        if !order.status.can_transition_to(&OrderStatus::Fulfilled) {
+                            clog(&format!(
+                                "[CREAM] ERROR: Cannot fulfill order {} in status {}",
+                                order_id, order.status
+                            ));
+                            return;
+                        }
+                        let deposit_amount = order.deposit_amount;
+                        order.status = OrderStatus::Fulfilled;
+
+                        let sf_bytes = serde_json::to_vec(&sf).unwrap();
+                        let update = ClientRequest::ContractOp(ContractRequest::Update {
+                            key: sf_key,
+                            data: UpdateData::State(State::from(sf_bytes)),
+                        });
+                        shared
+                            .write()
+                            .storefronts
+                            .insert(supplier_name.clone(), sf);
+
+                        if let Err(e) = api.send(update).await {
+                            clog(&format!(
+                                "[CREAM] ERROR: Failed to fulfill order: {:?}",
+                                e
+                            ));
+                        } else {
+                            clog("[CREAM] FulfillOrder: sent successfully");
+                        }
+
+                        // Settle escrow: transfer deposit from root → supplier's user contract
+                        let supplier_uc_key = shared.read().directory.entries
+                            .get(&my_supplier_id)
+                            .and_then(|entry| entry.user_contract_key);
+
+                        if let Some(uc_key) = supplier_uc_key {
+                            record_transfer(
+                                api,
+                                shared,
+                                ContractRole::Root,
+                                ContractRole::User,
+                                root_contract_key,
+                                Some(&uc_key),
+                                deposit_amount,
+                                format!("Escrow settlement for order {}", order_id),
+                                cream_common::identity::ROOT_USER_NAME.to_string(),
+                                supplier_name.clone(),
+                            ).await;
+                            clog(&format!(
+                                "[CREAM] FulfillOrder: settled {} CURD escrow to {}",
+                                deposit_amount, supplier_name
+                            ));
+                        } else {
+                            clog("[CREAM] WARNING: No supplier user contract key, escrow not settled");
                         }
                     } else {
                         clog(&format!(
