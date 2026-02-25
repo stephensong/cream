@@ -166,12 +166,13 @@ fn AppLayout() -> Element {
     let order_count = state.orders.len();
     let is_customer = state.connected_supplier.is_some();
     let is_supplier = state.is_supplier;
-    let balance = state.balance();
     let connected_supplier = state.connected_supplier.clone();
     drop(state);
 
     // Determine user role: Supplier (has products), User, or Guest
     let shared_read = shared.read();
+    // Balance comes from the on-network user contract
+    let balance = shared_read.user_contract.as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
     let has_products = shared_read
         .storefronts
         .get(&moniker)
@@ -739,7 +740,7 @@ fn SetupScreen() -> Element {
                                         name: name.clone(),
                                         origin_supplier: name.clone(),
                                         current_supplier: name.clone(),
-                                        initial_balance: 10_000,
+                                        invited_by: cream_common::identity::ROOT_USER_NAME.to_string(),
                                     });
                                 }
 
@@ -752,7 +753,7 @@ fn SetupScreen() -> Element {
                                         name: name.clone(),
                                         origin_supplier: entry.name.clone(),
                                         current_supplier: entry.name.clone(),
-                                        initial_balance: 10_000,
+                                        invited_by: entry.name.clone(),
                                     });
                                 }
                             },

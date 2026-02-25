@@ -402,8 +402,8 @@ pub fn SupplierDashboard() -> Element {
 fn SupplierMessages(messages: Vec<Message>, supplier_name: String) -> Element {
     let mut reply_to = use_signal(|| None::<u64>);
     let mut reply_body = use_signal(String::new);
-    let user_state = use_user_state();
-    let balance = user_state.read().balance();
+    let shared_state = super::shared_state::use_shared_state();
+    let balance = shared_state.read().user_contract.as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
 
     rsx! {
         div { class: "dashboard-section",

@@ -12,11 +12,15 @@ use cream_common::order::Order;
 use cream_common::product::{Product, ProductCategory, ProductId};
 use cream_common::storefront::{SignedProduct, StorefrontInfo, StorefrontState, WeeklySchedule};
 
+use cream_common::user_contract::UserContractState;
+use cream_common::wallet::{TransactionKind, WalletTransaction};
+
 use crate::{
     connect_to_node_at, extract_get_response_state, extract_notification_bytes, is_get_response,
     is_put_response, is_subscribe_success, is_update_notification, is_update_response,
     make_directory_contract, make_directory_entry, make_dummy_customer, make_dummy_supplier,
-    make_storefront_contract, node_url, recv_matching, wait_for_get, wait_for_put,
+    make_storefront_contract, make_user_contract, node_url, recv_matching, wait_for_get,
+    wait_for_put,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -172,8 +176,10 @@ pub struct Customer {
     pub id: CustomerId,
     pub verifying_key: VerifyingKey,
     pub api: WebApi,
-    /// Mock CURD wallet balance (matches UI default of 10,000).
+    /// CURD wallet balance (derived from on-network ledger).
     pub balance: u64,
+    /// Contract key for this customer's user contract.
+    pub user_contract_key: Option<ContractKey>,
 }
 
 impl Customer {
@@ -275,6 +281,7 @@ pub struct TestHarness {
     pub alice: Customer,
     pub bob: Customer,
     pub directory_key: ContractKey,
+    pub root_contract_key: ContractKey,
 }
 
 impl TestHarness {
@@ -366,19 +373,21 @@ impl TestHarness {
             locality: "Sydney".to_string(),
         };
 
-        let alice = Customer {
+        let mut alice = Customer {
             name: "Alice".to_string(),
             id: alice_id,
             verifying_key: alice_vk,
             api: api_alice,
             balance: 10_000,
+            user_contract_key: None,
         };
-        let bob = Customer {
+        let mut bob = Customer {
             name: "Bob".to_string(),
             id: bob_id,
             verifying_key: bob_vk,
             api: api_bob,
             balance: 10_000,
+            user_contract_key: None,
         };
 
         // PUT directory contract (via Gary's connection).
@@ -421,6 +430,51 @@ impl TestHarness {
         register_supplier_in_directory(&mut iris, &dir_key).await;
         register_supplier_in_directory(&mut emma, &dir_key).await;
 
+        // Deploy root user contract with 1,000,000 CURD genesis credit.
+        let root_vk = cream_common::identity::root_signing_key().verifying_key();
+        let (root_contract, root_key) = make_user_contract(&root_vk);
+
+        let genesis_tx = WalletTransaction {
+            id: 0,
+            kind: TransactionKind::Credit,
+            amount: 1_000_000,
+            description: "Genesis".to_string(),
+            sender: String::new(),
+            receiver: cream_common::identity::ROOT_USER_NAME.to_string(),
+            tx_ref: "genesis:0:0".to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        };
+
+        let root_state = UserContractState {
+            owner: cream_common::identity::root_customer_id(),
+            name: cream_common::identity::ROOT_USER_NAME.to_string(),
+            origin_supplier: String::new(),
+            current_supplier: String::new(),
+            balance_curds: 1_000_000,
+            invited_by: String::new(),
+            ledger: vec![genesis_tx],
+            next_tx_id: 1,
+            updated_at: chrono::Utc::now(),
+            signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+        };
+        let root_state_bytes = serde_json::to_vec(&root_state).unwrap();
+
+        // Deploy root contract on gateway (via Gary's connection, reuse a fresh one)
+        let mut root_api = connect_to_node_at(&url_gw).await;
+        wait_for_put(
+            &mut root_api,
+            root_contract,
+            WrappedState::new(root_state_bytes),
+            TIMEOUT,
+        )
+        .await
+        .expect("PutResponse for root user contract");
+        drop(root_api);
+
+        // Deploy user contracts for Alice and Bob with initial 10,000 CURD allocation.
+        deploy_user_contract(&mut alice, &root_key, &url_gw, "Gary").await;
+        deploy_user_contract(&mut bob, &root_key, &url_n2, "Gary").await;
+
         TestHarness {
             gary,
             emma,
@@ -428,6 +482,7 @@ impl TestHarness {
             alice,
             bob,
             directory_key: dir_key,
+            root_contract_key: root_key,
         }
     }
 }
@@ -503,4 +558,93 @@ async fn register_supplier_in_directory(supplier: &mut Supplier, dir_key: &Contr
                 supplier.name
             )
         });
+}
+
+/// Deploy a user contract for a customer with initial 10,000 CURD from root.
+async fn deploy_user_contract(
+    customer: &mut Customer,
+    root_key: &ContractKey,
+    node_url: &str,
+    invited_by: &str,
+) {
+    let (uc_contract, uc_key) = make_user_contract(&customer.verifying_key);
+
+    let tx_ref = format!("root:{}:{}", chrono::Utc::now().timestamp_millis(), customer.name);
+    let now_str = chrono::Utc::now().to_rfc3339();
+
+    let initial_credit = WalletTransaction {
+        id: 0,
+        kind: TransactionKind::Credit,
+        amount: 10_000,
+        description: "Initial CURD allocation".to_string(),
+        sender: cream_common::identity::ROOT_USER_NAME.to_string(),
+        receiver: customer.name.clone(),
+        tx_ref: tx_ref.clone(),
+        timestamp: now_str.clone(),
+    };
+
+    let uc_state = UserContractState {
+        owner: customer.id.clone(),
+        name: customer.name.clone(),
+        origin_supplier: invited_by.to_string(),
+        current_supplier: invited_by.to_string(),
+        balance_curds: 10_000,
+        invited_by: invited_by.to_string(),
+        ledger: vec![initial_credit],
+        next_tx_id: 1,
+        updated_at: chrono::Utc::now(),
+        signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+    };
+
+    let uc_state_bytes = serde_json::to_vec(&uc_state).unwrap();
+
+    let mut deploy_api = connect_to_node_at(node_url).await;
+    wait_for_put(
+        &mut deploy_api,
+        uc_contract,
+        WrappedState::new(uc_state_bytes),
+        TIMEOUT,
+    )
+    .await
+    .unwrap_or_else(|| panic!("PutResponse for {}'s user contract", customer.name));
+    drop(deploy_api);
+
+    customer.user_contract_key = Some(uc_key);
+
+    // Also record the debit on root's contract
+    let root_debit = WalletTransaction {
+        id: 0,
+        kind: TransactionKind::Debit,
+        amount: 10_000,
+        description: format!("Initial CURD allocation for {}", customer.name),
+        sender: cream_common::identity::ROOT_USER_NAME.to_string(),
+        receiver: customer.name.clone(),
+        tx_ref,
+        timestamp: now_str,
+    };
+
+    // GET root state, append debit, Update
+    let mut root_api = connect_to_node_at(node_url).await;
+    let root_bytes = wait_for_get(&mut root_api, *root_key.id(), TIMEOUT)
+        .await
+        .expect("GET root contract for debit");
+    let mut root_state: UserContractState = serde_json::from_slice(&root_bytes).unwrap();
+    root_state.ledger.push(root_debit);
+    root_state.balance_curds = root_state.derive_balance();
+    root_state.next_tx_id = root_state.ledger.iter().map(|t| t.id).max().unwrap_or(0) + 1;
+    root_state.updated_at = chrono::Utc::now();
+
+    let root_update_bytes = serde_json::to_vec(&root_state).unwrap();
+    root_api
+        .send(ClientRequest::ContractOp(ContractRequest::Update {
+            key: *root_key,
+            data: UpdateData::State(State::from(root_update_bytes)),
+        }))
+        .await
+        .unwrap();
+
+    recv_matching(&mut root_api, is_update_response, TIMEOUT)
+        .await
+        .expect("UpdateResponse for root debit");
+    drop(root_api);
 }

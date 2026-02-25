@@ -165,7 +165,7 @@ fn MessageSection(supplier_name: String) -> Element {
     let mut msg_body = use_signal(String::new);
     let mut send_error = use_signal(|| None::<String>);
 
-    let balance = user_state.read().balance();
+    let balance = shared_state.read().user_contract.as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
     let my_name = user_state.read().moniker.clone().unwrap_or_default();
 
     // Get messages for this storefront

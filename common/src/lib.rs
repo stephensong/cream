@@ -9,3 +9,4 @@ pub mod postcode;
 pub mod product;
 pub mod storefront;
 pub mod user_contract;
+pub mod wallet;

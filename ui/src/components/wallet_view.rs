@@ -1,22 +1,39 @@
 use dioxus::prelude::*;
 
 use cream_common::currency::format_amount;
+use cream_common::identity::ROOT_USER_NAME;
+use cream_common::wallet::TransactionKind;
 
 use super::node_api::{use_node_action, NodeAction};
 use super::shared_state::use_shared_state;
-use super::user_state::{use_user_state, TransactionKind};
+use super::user_state::use_user_state;
+
+/// Map internal names to display names.
+fn display_name(name: &str) -> &str {
+    if name == ROOT_USER_NAME {
+        "System"
+    } else {
+        name
+    }
+}
 
 #[component]
 pub fn WalletView() -> Element {
-    let mut user_state = use_user_state();
+    let user_state = use_user_state();
     let shared_state = use_shared_state();
 
-    let state = user_state.read();
-    let base_balance = state.balance();
-    let moniker = state.moniker.clone().unwrap_or_default();
-    let is_supplier = state.is_supplier;
-    let recent_txs: Vec<_> = state.ledger.iter().rev().take(20).cloned().collect();
-    drop(state);
+    let moniker = user_state.read().moniker.clone().unwrap_or_default();
+    let is_supplier = user_state.read().is_supplier;
+
+    // Read balance and transactions from the on-network user contract
+    let shared = shared_state.read();
+    let (base_balance, recent_txs) = if let Some(ref uc) = shared.user_contract {
+        let txs: Vec<_> = uc.ledger.iter().rev().take(20).cloned().collect();
+        (uc.balance_curds, txs)
+    } else {
+        (0, Vec::new())
+    };
+    drop(shared);
 
     // Compute incoming deposit credits from network orders on this supplier's storefront
     let incoming_deposits: u64 = if is_supplier {
@@ -59,18 +76,8 @@ pub fn WalletView() -> Element {
             div { class: "wallet-actions",
                 button {
                     onclick: move |_| {
-                        let new_balance = {
-                            let mut state = user_state.write();
-                            state.record_credit(1000, "Faucet".into());
-                            state.save();
-                            state.balance()
-                        };
-                        // Sync to user contract on the network
                         let node = use_node_action();
-                        node.send(NodeAction::UpdateUserContract {
-                            current_supplier: None,
-                            balance_curds: Some(new_balance),
-                        });
+                        node.send(NodeAction::FaucetTopUp);
                     },
                     "Faucet (+1000 CURD)"
                 }
@@ -86,22 +93,32 @@ pub fn WalletView() -> Element {
                         tr {
                             th { "Time" }
                             th { "Description" }
+                            th { "Counterparty" }
                             th { "Amount" }
                         }
                     }
                     tbody {
                         for tx in &recent_txs {
-                            tr {
-                                td { class: "tx-time", "{short_timestamp(&tx.timestamp)}" }
-                                td { "{tx.description}" }
-                                td { class: match tx.kind {
-                                        TransactionKind::Credit => "tx-credit",
-                                        TransactionKind::Debit => "tx-debit",
-                                    },
-                                    {match tx.kind {
-                                        TransactionKind::Credit => format!("+{}", tx.amount),
-                                        TransactionKind::Debit => format!("-{}", tx.amount),
-                                    }}
+                            {
+                                let counterparty = match tx.kind {
+                                    TransactionKind::Credit => display_name(&tx.sender),
+                                    TransactionKind::Debit => display_name(&tx.receiver),
+                                };
+                                rsx! {
+                                    tr {
+                                        td { class: "tx-time", "{short_timestamp(&tx.timestamp)}" }
+                                        td { "{tx.description}" }
+                                        td { "{counterparty}" }
+                                        td { class: match tx.kind {
+                                                TransactionKind::Credit => "tx-credit",
+                                                TransactionKind::Debit => "tx-debit",
+                                            },
+                                            {match tx.kind {
+                                                TransactionKind::Credit => format!("+{}", tx.amount),
+                                                TransactionKind::Debit => format!("-{}", tx.amount),
+                                            }}
+                                        }
+                                    }
                                 }
                             }
                         }

@@ -733,6 +733,7 @@ async fn cumulative_node_tests() {
             verifying_key: zara_vk,
             api: api_zara,
             balance: 0,
+            user_contract_key: None,
         };
 
         // Subscribe Zara to Gary's storefront
@@ -775,6 +776,91 @@ async fn cumulative_node_tests() {
 
         // Zara's balance should still be 0
         assert_eq!(zara.balance, 0, "8: Zara's balance should still be 0");
+    }
+    println!("   PASSED");
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Step 9: Root balance accounting — verify double-entry integrity
+    //
+    // The root user started with 1,000,000 CURD and gave 10,000 each
+    // to Alice and Bob during setup. Verify the debits.
+    // ═══════════════════════════════════════════════════════════════════
+    println!("── Step 9: root_balance_accounting ──");
+    {
+        use cream_common::identity::ROOT_USER_NAME;
+        use cream_common::user_contract::UserContractState;
+        use cream_common::wallet::TransactionKind;
+
+        // GET root contract state from gateway
+        let mut probe = connect_to_node_at(&node_url(3001)).await;
+        let root_bytes = cream_node_integration::wait_for_get(
+            &mut probe,
+            *h.root_contract_key.id(),
+            TIMEOUT,
+        )
+        .await
+        .expect("GET root contract");
+        let root_state: UserContractState =
+            serde_json::from_slice(&root_bytes).expect("deserialize root contract");
+
+        // Root should have 1M - 2*10K = 980,000 CURD
+        let expected_balance = 1_000_000 - (2 * 10_000);
+        assert_eq!(
+            root_state.balance_curds, expected_balance,
+            "9: root balance should be {} (1M - 2*10K), got {}",
+            expected_balance, root_state.balance_curds,
+        );
+
+        // Verify root has genesis credit + 2 debits = 3 ledger entries
+        assert_eq!(
+            root_state.ledger.len(),
+            3,
+            "9: root should have 3 ledger entries (genesis + 2 debits), got {}",
+            root_state.ledger.len()
+        );
+
+        // Verify each debit has a matching credit on the recipient's user contract
+        for debit in root_state.ledger.iter().filter(|t| t.kind == TransactionKind::Debit) {
+            let recipient_name = &debit.receiver;
+
+            // Find the recipient's user contract key
+            let recipient_key = if recipient_name == "Alice" {
+                h.alice.user_contract_key.as_ref().expect("Alice should have a user contract")
+            } else if recipient_name == "Bob" {
+                h.bob.user_contract_key.as_ref().expect("Bob should have a user contract")
+            } else {
+                panic!("9: unexpected debit receiver: {}", recipient_name);
+            };
+
+            let recipient_bytes = cream_node_integration::wait_for_get(
+                &mut probe,
+                *recipient_key.id(),
+                TIMEOUT,
+            )
+            .await
+            .unwrap_or_else(|| panic!("GET user contract for {}", recipient_name));
+            let recipient_state: UserContractState =
+                serde_json::from_slice(&recipient_bytes)
+                    .unwrap_or_else(|e| panic!("deserialize {} user contract: {}", recipient_name, e));
+
+            // Find the matching credit by tx_ref
+            let matching_credit = recipient_state.ledger.iter().find(|t| {
+                t.tx_ref == debit.tx_ref && t.kind == TransactionKind::Credit
+            });
+
+            assert!(
+                matching_credit.is_some(),
+                "9: no matching credit on {}'s contract for tx_ref={}",
+                recipient_name, debit.tx_ref,
+            );
+
+            let credit = matching_credit.unwrap();
+            assert_eq!(credit.amount, debit.amount, "9: credit/debit amounts should match");
+            assert_eq!(credit.sender, ROOT_USER_NAME, "9: credit sender should be root");
+            assert_eq!(&credit.receiver, recipient_name, "9: credit receiver should be {}", recipient_name);
+        }
+
+        drop(probe);
     }
     println!("   PASSED");
 

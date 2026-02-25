@@ -41,6 +41,8 @@ const DIRECTORY_WASM: &[u8] =
     include_bytes!("../../../target/wasm32-unknown-unknown/release/cream_directory_contract.wasm");
 const STOREFRONT_WASM: &[u8] =
     include_bytes!("../../../target/wasm32-unknown-unknown/release/cream_storefront_contract.wasm");
+const USER_CONTRACT_WASM: &[u8] =
+    include_bytes!("../../../target/wasm32-unknown-unknown/release/cream_user_contract.wasm");
 
 /// Create a directory contract container + its key.
 pub fn make_directory_contract() -> (ContractContainer, ContractKey) {
@@ -56,6 +58,17 @@ pub fn make_storefront_contract(
     let params = StorefrontParameters { owner: *owner };
     let params_bytes = serde_json::to_vec(&params).unwrap();
     let contract = make_contract(STOREFRONT_WASM, Parameters::from(params_bytes));
+    let key = contract.key();
+    (contract, key)
+}
+
+/// Create a user contract container + its key for a given owner.
+pub fn make_user_contract(
+    owner: &ed25519_dalek::VerifyingKey,
+) -> (ContractContainer, ContractKey) {
+    let params = cream_common::user_contract::UserContractParameters { owner: *owner };
+    let params_bytes = serde_json::to_vec(&params).unwrap();
+    let contract = make_contract(USER_CONTRACT_WASM, Parameters::from(params_bytes));
     let key = contract.key();
     (contract, key)
 }

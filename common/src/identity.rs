@@ -159,6 +159,26 @@ pub fn derive_customer_signing_key(name: &str, password: &str) -> ed25519_dalek:
     derive_role_key(&base, b"cream-customer-signing-key-v1")
 }
 
+/// Name for the root user (Fedimint guardians). Prefixed with `__` to prevent
+/// collision with real user names.
+pub const ROOT_USER_NAME: &str = "__cream_root__";
+
+/// Derive a deterministic signing key for the root user.
+///
+/// The root user represents the Fedimint guardians — the source of all CURD.
+/// Its key is deterministic so every client can compute the same contract key.
+#[cfg(feature = "dev")]
+pub fn root_signing_key() -> ed25519_dalek::SigningKey {
+    let base = derive_base_key(ROOT_USER_NAME, "cream-root-genesis");
+    derive_role_key(&base, b"cream-root-signing-key-v1")
+}
+
+/// Get the root user's CustomerId (public key).
+#[cfg(feature = "dev")]
+pub fn root_customer_id() -> CustomerId {
+    CustomerId(root_signing_key().verifying_key())
+}
+
 /// A value signed by a known key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Signed<T> {

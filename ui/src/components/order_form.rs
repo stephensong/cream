@@ -3,11 +3,13 @@ use dioxus::prelude::*;
 use cream_common::currency::format_amount;
 
 use super::node_api::{use_node_action, NodeAction};
+use super::shared_state::use_shared_state;
 use super::user_state::use_user_state;
 
 #[component]
 pub fn OrderForm(supplier_name: String, product_id: String, product_name: String, price_per_unit: u64) -> Element {
     let mut user_state = use_user_state();
+    let shared_state = use_shared_state();
     let mut quantity = use_signal(|| 1u32);
     let mut deposit_tier = use_signal(|| "2-Day Reserve (10%)".to_string());
     let mut submitted_id = use_signal(|| None::<u32>);
@@ -72,7 +74,21 @@ pub fn OrderForm(supplier_name: String, product_id: String, product_name: String
                         let qty = *quantity.read();
                         let tier = deposit_tier.read().clone();
 
-                        // Place order in local state
+                        // Check balance from on-network user contract
+                        let total = price_per_unit * qty as u64;
+                        let deposit = match tier.as_str() {
+                            "2-Day Reserve (10%)" => total / 10,
+                            "1-Week Reserve (20%)" => total / 5,
+                            _ => total, // Full Payment
+                        };
+                        let balance = shared_state.read().user_contract
+                            .as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
+                        if balance < deposit {
+                            insufficient_funds.set(true);
+                            return;
+                        }
+
+                        // Place order in local state (tracking only, no balance deduction)
                         let result = user_state.write().place_order(
                             supplier.clone(),
                             product.clone(),
@@ -81,32 +97,20 @@ pub fn OrderForm(supplier_name: String, product_id: String, product_name: String
                             price_per_unit,
                         );
 
-                        match result {
-                            Some(id) => {
-                                insufficient_funds.set(false);
+                        if let Some(id) = result {
+                            insufficient_funds.set(false);
 
-                                // Send to node
-                                let node = use_node_action();
-                                node.send(NodeAction::PlaceOrder {
-                                    storefront_name: supplier.clone(),
-                                    product_id: product_id.clone(),
-                                    quantity: qty,
-                                    deposit_tier: tier,
-                                    price_per_unit,
-                                });
+                            // Send to node (PlaceOrder also handles the double-entry transfer)
+                            let node = use_node_action();
+                            node.send(NodeAction::PlaceOrder {
+                                storefront_name: supplier.clone(),
+                                product_id: product_id.clone(),
+                                quantity: qty,
+                                deposit_tier: tier,
+                                price_per_unit,
+                            });
 
-                                // Sync updated balance to user contract
-                                let new_balance = user_state.read().balance();
-                                node.send(NodeAction::UpdateUserContract {
-                                    current_supplier: None,
-                                    balance_curds: Some(new_balance),
-                                });
-
-                                submitted_id.set(Some(id));
-                            }
-                            None => {
-                                insufficient_funds.set(true);
-                            }
+                            submitted_id.set(Some(id));
                         }
                     }
                 },

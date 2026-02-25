@@ -66,13 +66,14 @@ pub enum NodeAction {
         name: String,
         origin_supplier: String,
         current_supplier: String,
-        initial_balance: u64,
+        invited_by: String,
     },
-    /// Update the user's contract state (supplier change, balance sync).
+    /// Update the user's contract state (supplier change).
     UpdateUserContract {
         current_supplier: Option<String>,
-        balance_curds: Option<u64>,
     },
+    /// Faucet: transfer 1000 CURD from root to the current user.
+    FaucetTopUp,
     /// Send a message to a supplier's storefront (costs 10 CURD toll).
     SendMessage {
         supplier_name: String,
@@ -356,6 +357,41 @@ mod wasm_impl {
             }
         }
 
+        // ── Subscribe to root user contract ─────────────────────────────
+        // Root's identity is deterministic, so we can derive its contract key.
+        let root_vk = cream_common::identity::root_signing_key().verifying_key();
+        let root_params = UserContractParameters { owner: root_vk };
+        let root_params_bytes = serde_json::to_vec(&root_params).unwrap();
+        let root_contract_container = make_contract(USER_CONTRACT_WASM, Parameters::from(root_params_bytes));
+        let root_contract_full_key: ContractKey = root_contract_container.key();
+        let root_contract_instance_id: Option<ContractInstanceId> = {
+            let root_key_str = format!("{}", root_contract_full_key);
+            let root_instance = *root_contract_full_key.id();
+
+            clog(&format!("[CREAM] Root contract key: {}", root_key_str));
+            shared.write().root_contract_key = Some(root_key_str);
+
+            // GET + subscribe to root contract
+            let get_root = ClientRequest::ContractOp(ContractRequest::Get {
+                key: root_instance,
+                return_contract_code: false,
+                subscribe: false,
+                blocking_subscribe: false,
+            });
+            if let Err(e) = api.send(get_root).await {
+                clog(&format!("[CREAM] ERROR: Failed to GET root contract: {:?}", e));
+            }
+            let sub_root = ClientRequest::ContractOp(ContractRequest::Subscribe {
+                key: root_instance,
+                summary: None,
+            });
+            if let Err(e) = api.send(sub_root).await {
+                clog(&format!("[CREAM] ERROR: Failed to subscribe to root contract: {:?}", e));
+            }
+
+            Some(root_instance)
+        };
+
         // ── Main event loop ─────────────────────────────────────────────
         loop {
             futures::select! {
@@ -379,6 +415,7 @@ mod wasm_impl {
                         &send_half,
                         &mut user_contract_instance_id,
                         &mut user_contract_key,
+                        &root_contract_full_key,
                     ).await;
                 }
 
@@ -394,6 +431,7 @@ mod wasm_impl {
                                 &mut sf_contract_keys,
                                 csn.as_deref(),
                                 user_contract_instance_id,
+                                root_contract_instance_id,
                             );
                             for follow_up in follow_ups {
                                 if let Err(e) = api.send(follow_up).await {
@@ -461,6 +499,140 @@ mod wasm_impl {
         shared.write().connected = false;
     }
 
+    /// Generate a unique transaction reference string.
+    fn generate_tx_ref(sender: &str) -> String {
+        let ts = web_sys::js_sys::Date::now() as u64;
+        let rnd = rand_u32();
+        format!("{}:{}:{}", sender, ts, rnd)
+    }
+
+    /// Get current time as ISO 8601 string.
+    fn now_iso8601() -> String {
+        web_sys::js_sys::Date::new_0().to_iso_string().into()
+    }
+
+    /// Identifies a user contract by role (for record_transfer).
+    enum ContractRole {
+        Root,
+        User,
+    }
+
+    /// Record a double-entry transfer between two user contracts.
+    ///
+    /// Appends a debit to the sender's contract and a credit to the receiver's contract,
+    /// linked by a shared `tx_ref`. Both contracts are updated on the network.
+    async fn record_transfer(
+        api: &mut freenet_stdlib::client_api::WebApi,
+        shared: &mut Signal<crate::components::shared_state::SharedState>,
+        sender: ContractRole,
+        receiver: ContractRole,
+        root_contract_key: &ContractKey,
+        user_contract_key: Option<&ContractKey>,
+        amount: u64,
+        description: String,
+        sender_name: String,
+        receiver_name: String,
+    ) {
+        let tx_ref = generate_tx_ref(&sender_name);
+        let timestamp = now_iso8601();
+
+        // Build debit entry (for sender's contract)
+        let debit = cream_common::wallet::WalletTransaction {
+            id: 0,
+            kind: cream_common::wallet::TransactionKind::Debit,
+            amount,
+            description: description.clone(),
+            sender: sender_name.clone(),
+            receiver: receiver_name.clone(),
+            tx_ref: tx_ref.clone(),
+            timestamp: timestamp.clone(),
+        };
+
+        // Build credit entry (for receiver's contract)
+        let credit = cream_common::wallet::WalletTransaction {
+            id: 0,
+            kind: cream_common::wallet::TransactionKind::Credit,
+            amount,
+            description,
+            sender: sender_name.clone(),
+            receiver: receiver_name.clone(),
+            tx_ref: tx_ref.clone(),
+            timestamp,
+        };
+
+        // Resolve sender key
+        let sender_key = match sender {
+            ContractRole::Root => Some(*root_contract_key),
+            ContractRole::User => user_contract_key.copied(),
+        };
+        if let Some(key) = sender_key {
+            update_contract_ledger(api, shared, &sender, key, debit).await;
+        } else {
+            clog("[CREAM] WARNING: sender contract key not available");
+        }
+
+        // Resolve receiver key
+        let receiver_key = match receiver {
+            ContractRole::Root => Some(*root_contract_key),
+            ContractRole::User => user_contract_key.copied(),
+        };
+        if let Some(key) = receiver_key {
+            update_contract_ledger(api, shared, &receiver, key, credit).await;
+        } else {
+            clog("[CREAM] WARNING: receiver contract key not available");
+        }
+
+        clog(&format!("[CREAM] Transfer recorded: {} CURD from {} to {} (tx_ref={})",
+            amount, sender_name, receiver_name, tx_ref));
+    }
+
+    /// Append a transaction entry to a user contract and push the update to the network.
+    async fn update_contract_ledger(
+        api: &mut freenet_stdlib::client_api::WebApi,
+        shared: &mut Signal<crate::components::shared_state::SharedState>,
+        role: &ContractRole,
+        contract_key: ContractKey,
+        tx: cream_common::wallet::WalletTransaction,
+    ) {
+        // Find the contract state in SharedState
+        let mut uc_state = {
+            let state = shared.read();
+            match role {
+                ContractRole::Root => state.root_user_contract.clone(),
+                ContractRole::User => state.user_contract.clone(),
+            }
+        };
+
+        if let Some(ref mut uc) = uc_state {
+            uc.ledger.push(tx);
+            uc.balance_curds = uc.derive_balance();
+            uc.next_tx_id = uc.ledger.iter().map(|t| t.id).max().unwrap_or(0) + 1;
+            uc.updated_at = chrono::Utc::now();
+            uc.signature = ed25519_dalek::Signature::from_bytes(&[0u8; 64]);
+
+            let uc_bytes = serde_json::to_vec(&uc).unwrap();
+            let update = ClientRequest::ContractOp(ContractRequest::Update {
+                key: contract_key,
+                data: UpdateData::State(State::from(uc_bytes)),
+            });
+
+            // Update SharedState
+            {
+                let mut state = shared.write();
+                match role {
+                    ContractRole::Root => state.root_user_contract = Some(uc.clone()),
+                    ContractRole::User => state.user_contract = Some(uc.clone()),
+                }
+            }
+
+            if let Err(e) = api.send(update).await {
+                clog(&format!("[CREAM] ERROR: Failed to update contract: {:?}", e));
+            }
+        } else {
+            clog("[CREAM] WARNING: No state found for contract");
+        }
+    }
+
     /// Convert a UI action into contract operations and send them.
     async fn handle_action(
         action: NodeAction,
@@ -475,6 +647,7 @@ mod wasm_impl {
         send_half: &mpsc::UnboundedSender<ClientRequest<'static>>,
         user_contract_instance_id: &mut Option<ContractInstanceId>,
         user_contract_key_ref: &mut Option<ContractKey>,
+        root_contract_key: &ContractKey,
     ) {
         match action {
             NodeAction::RegisterSupplier {
@@ -945,6 +1118,21 @@ mod wasm_impl {
                     clog(&format!("[CREAM] ERROR: Failed to place order: {:?}", e));
                 } else {
                     clog("[CREAM] PlaceOrder: Update sent successfully");
+
+                    // Record double-entry transfer: customer → root (deposit)
+                    let customer_name = user_state.read().moniker.clone().unwrap_or_default();
+                    record_transfer(
+                        api,
+                        shared,
+                        ContractRole::User,
+                        ContractRole::Root,
+                        root_contract_key,
+                        user_contract_key_ref.as_ref(),
+                        deposit_amount,
+                        format!("Order deposit: {}", storefront_name),
+                        customer_name,
+                        cream_common::identity::ROOT_USER_NAME.to_string(),
+                    ).await;
                 }
             }
 
@@ -1255,10 +1443,10 @@ mod wasm_impl {
                 name,
                 origin_supplier,
                 current_supplier,
-                initial_balance,
+                invited_by,
             } => {
-                clog(&format!("[CREAM] RegisterUser: {} (origin={}, current={})",
-                    name, origin_supplier, current_supplier));
+                clog(&format!("[CREAM] RegisterUser: {} (origin={}, current={}, invited_by={})",
+                    name, origin_supplier, current_supplier, invited_by));
 
                 let owner_key = key_manager.customer_verifying_key();
                 let uc_params = UserContractParameters { owner: owner_key };
@@ -1275,7 +1463,10 @@ mod wasm_impl {
                     name: name.clone(),
                     origin_supplier,
                     current_supplier,
-                    balance_curds: initial_balance,
+                    balance_curds: 0,
+                    invited_by,
+                    ledger: Vec::new(),
+                    next_tx_id: 0,
                     updated_at: now,
                     signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
                 };
@@ -1311,11 +1502,24 @@ mod wasm_impl {
                     us.user_contract_key = Some(uc_key_str);
                     us.save();
                 }
+
+                // Transfer initial 10,000 CURD from root → new user
+                record_transfer(
+                    api,
+                    shared,
+                    ContractRole::Root,
+                    ContractRole::User,
+                    root_contract_key,
+                    user_contract_key_ref.as_ref(),
+                    10_000,
+                    "Initial CURD allocation".to_string(),
+                    cream_common::identity::ROOT_USER_NAME.to_string(),
+                    name.clone(),
+                ).await;
             }
 
             NodeAction::UpdateUserContract {
                 current_supplier,
-                balance_curds,
             } => {
                 let Some(uc_key) = *user_contract_key_ref else {
                     clog("[CREAM] UpdateUserContract: no user contract key, skipping");
@@ -1327,10 +1531,8 @@ mod wasm_impl {
                     if let Some(supplier) = current_supplier {
                         uc_state.current_supplier = supplier;
                     }
-                    if let Some(balance) = balance_curds {
-                        uc_state.balance_curds = balance;
-                    }
                     uc_state.updated_at = chrono::Utc::now();
+                    uc_state.balance_curds = uc_state.derive_balance();
                     // Re-sign (dev mode: signature is ignored)
                     uc_state.signature = ed25519_dalek::Signature::from_bytes(&[0u8; 64]);
 
@@ -1351,6 +1553,23 @@ mod wasm_impl {
                 }
             }
 
+            NodeAction::FaucetTopUp => {
+                clog("[CREAM] FaucetTopUp: transferring 1000 CURD from root");
+                let user_name = user_state.read().moniker.clone().unwrap_or_default();
+                record_transfer(
+                    api,
+                    shared,
+                    ContractRole::Root,
+                    ContractRole::User,
+                    root_contract_key,
+                    user_contract_key_ref.as_ref(),
+                    1_000,
+                    "Faucet".to_string(),
+                    cream_common::identity::ROOT_USER_NAME.to_string(),
+                    user_name,
+                ).await;
+            }
+
             NodeAction::SendMessage {
                 supplier_name,
                 body,
@@ -1358,16 +1577,28 @@ mod wasm_impl {
             } => {
                 clog(&format!("[CREAM] SendMessage to {}: {} chars", supplier_name, body.len()));
 
-                // Debit 10 CURD toll from the sender's wallet
-                {
-                    let mut us_signal = *user_state;
-                    let mut us = us_signal.write();
-                    if us.record_debit(10, "Message toll".into()).is_none() {
-                        clog("[CREAM] ERROR: Insufficient balance for message toll (10 CURD)");
-                        return;
-                    }
-                    us.save();
+                // Check balance from on-network user contract
+                let current_balance = shared.read().user_contract
+                    .as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
+                if current_balance < 10 {
+                    clog("[CREAM] ERROR: Insufficient balance for message toll (10 CURD)");
+                    return;
                 }
+
+                // Debit 10 CURD toll via double-entry transfer (user → root)
+                let sender_name = user_state.read().moniker.clone().unwrap_or_default();
+                record_transfer(
+                    api,
+                    shared,
+                    ContractRole::User,
+                    ContractRole::Root,
+                    root_contract_key,
+                    user_contract_key_ref.as_ref(),
+                    10,
+                    "Message toll".to_string(),
+                    sender_name,
+                    cream_common::identity::ROOT_USER_NAME.to_string(),
+                ).await;
 
                 // Find the storefront's contract key
                 let sf_key = sf_contract_keys.get(&supplier_name).copied()
@@ -1467,6 +1698,7 @@ mod wasm_impl {
         sf_contract_keys: &mut BTreeMap<String, ContractKey>,
         customer_supplier_name: Option<&str>,
         user_contract_instance_id: Option<ContractInstanceId>,
+        root_contract_instance_id: Option<ContractInstanceId>,
     ) -> Vec<ClientRequest<'static>> {
         match response {
             ContractResponse::GetResponse { key, state, .. } => {
@@ -1478,9 +1710,23 @@ mod wasm_impl {
                 let is_user_contract = user_contract_instance_id
                     .map(|id| *key.id() == id)
                     .unwrap_or(false);
-                clog(&format!("[CREAM] GetResponse: is_directory={}, is_user_contract={}, bytes_len={}",
-                    is_directory, is_user_contract, bytes.len()));
-                if is_user_contract {
+                let is_root_contract = root_contract_instance_id
+                    .map(|id| *key.id() == id)
+                    .unwrap_or(false);
+                clog(&format!("[CREAM] GetResponse: is_directory={}, is_user_contract={}, is_root={}, bytes_len={}",
+                    is_directory, is_user_contract, is_root_contract, bytes.len()));
+                if is_root_contract {
+                    match serde_json::from_slice::<UserContractState>(bytes) {
+                        Ok(uc_state) => {
+                            clog(&format!("[CREAM] Root contract GET: balance={}, ledger_len={}",
+                                uc_state.balance_curds, uc_state.ledger.len()));
+                            shared.write().root_user_contract = Some(uc_state);
+                        }
+                        Err(e) => {
+                            clog(&format!("[CREAM] ERROR: Failed to parse root contract GetResponse: {e}"));
+                        }
+                    }
+                } else if is_user_contract {
                     match serde_json::from_slice::<UserContractState>(bytes) {
                         Ok(uc_state) => {
                             clog(&format!("[CREAM] User contract GET: name='{}', balance={}",
@@ -1552,9 +1798,28 @@ mod wasm_impl {
                 let is_user_contract = user_contract_instance_id
                     .map(|id| *key.id() == id)
                     .unwrap_or(false);
-                clog(&format!("[CREAM] UpdateNotification: is_directory={}, is_user_contract={}, bytes_len={}",
-                    is_directory, is_user_contract, bytes.len()));
-                if is_user_contract {
+                let is_root_contract = root_contract_instance_id
+                    .map(|id| *key.id() == id)
+                    .unwrap_or(false);
+                clog(&format!("[CREAM] UpdateNotification: is_directory={}, is_user_contract={}, is_root={}, bytes_len={}",
+                    is_directory, is_user_contract, is_root_contract, bytes.len()));
+                if is_root_contract {
+                    match serde_json::from_slice::<UserContractState>(bytes) {
+                        Ok(uc_update) => {
+                            clog(&format!("[CREAM] Root contract notification: balance={}, ledger_len={}",
+                                uc_update.balance_curds, uc_update.ledger.len()));
+                            let mut state = shared.write();
+                            if let Some(existing) = state.root_user_contract.as_mut() {
+                                existing.merge(uc_update);
+                            } else {
+                                state.root_user_contract = Some(uc_update);
+                            }
+                        }
+                        Err(e) => {
+                            clog(&format!("[CREAM] ERROR: Failed to parse root contract notification: {e}"));
+                        }
+                    }
+                } else if is_user_contract {
                     match serde_json::from_slice::<UserContractState>(bytes) {
                         Ok(uc_update) => {
                             clog(&format!("[CREAM] User contract notification: name='{}', balance={}",
