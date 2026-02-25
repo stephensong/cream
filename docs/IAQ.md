@@ -321,7 +321,7 @@ CREAM uses a single currency: **curds**. Every price, deposit, payment, refund, 
 
 ### What is a curd?
 
-A curd is a unit of [Fedimint](https://fedimint.org) e-cash. Each curd is backed 1:1 by a Bitcoin satoshi held in the federation's multisig wallet. By holding curds, you are holding Bitcoin — just in a more private and convenient form.
+A curd is a unit of e-cash backed 1:1 by a Bitcoin satoshi. Each curd is held by a **guardian federation** — either CREAM's native FROST-based guardians (see "How does the guardian federation work?" below) or a [Fedimint](https://fedimint.org) federation. By holding curds, you are holding Bitcoin — just in a more private and convenient form.
 
 Curds are issued via Chaumian blind signatures: the federation that mints a curd cannot link it back to who received it or trace how it's spent. This is the privacy guarantee that makes CREAM work — participants transact freely without the federation (or anyone else) being able to trace the flow of funds.
 
@@ -350,11 +350,108 @@ The exact fee schedule and distribution mechanism are yet to be determined, but 
 
 ### The trust trade-off
 
-The cost of curds' privacy and speed is trust in the Fedimint federation. A threshold of guardian nodes (f < n/3) must remain honest for the system to work. If enough guardians collude, they could theoretically mint unbacked curds or refuse to honour redemptions.
+The cost of curds' privacy and speed is trust in the guardian federation — whether CREAM-native (FROST) or Fedimint. A threshold of guardian nodes must remain honest for the system to work. If enough guardians collude, they could theoretically mint unbacked curds or refuse to honour redemptions.
 
-For a local dairy marketplace, this is an acceptable model — especially since the federation could be run by the supplier community itself. The guardians are the farmers. Their reputation, their livelihoods, and their community relationships are at stake. And the amounts involved (dairy product deposits and payments) are small enough that the risk-reward for guardian misbehaviour doesn't make sense.
+For a local dairy marketplace, this is an acceptable model — especially since the federation is run by the community itself. The guardians are trusted community members (not necessarily suppliers). Their reputation, their livelihoods, and their community relationships are at stake. And the amounts involved (dairy product deposits and payments) are small enough that the risk-reward for guardian misbehaviour doesn't make sense.
 
 Since every curd is backed 1:1 by a satoshi, holding curds is economically equivalent to holding Bitcoin. The federation is a privacy layer and convenience layer, not a speculative instrument.
+
+---
+
+## How does the guardian federation work?
+
+CREAM has its own native guardian federation — a small set of trusted nodes that collectively control the root authority (source of all CURD, escrow for deposits, toll collection). This is architecturally inspired by Fedimint's guardian model but built directly into CREAM, making Fedimint an optional integration rather than a hard dependency.
+
+### The root user
+
+There is a **root user** — the system account that represents the guardian federation. Root is the source of all CURD (initial float), holds deposits in escrow, and collects message tolls. Root's user contract lives on Freenet like any other user contract. Its balance is auditable: total CURD issued minus allocations minus refunds.
+
+The root user is not a single person — it's a collective identity controlled by the guardian federation via threshold cryptography. No single guardian holds the root private key. A quorum of guardians (e.g. 2-of-3, 3-of-5) must cooperate to authorise any debit from root's ledger.
+
+### Guardian nodes
+
+A guardian node is a Freenet node operated by a trusted community member. Guardians are **not** implicitly suppliers — they are infrastructure operators. A guardian may also choose to be a supplier, but the roles are independent.
+
+Guardian responsibilities:
+- **Hold a key share** of the root signing key (via FROST threshold signatures)
+- **Participate in signing rounds** when root debits are requested (escrow releases, initial allocations, refunds)
+- **Maintain liveness** — the network needs a quorum of guardians available at all times
+- **Run DKG (distributed key generation)** when the guardian set changes
+
+### Bootstrapping ceremony
+
+The network bootstraps incrementally:
+
+1. **Genesis**: The root user starts as a single entity — the first guardian. They hold the full root key (FROST supports 1-of-1 as a degenerate case). The root public key is established at this point and never changes.
+2. **Second guardian joins**: The root user invites guardian #2. They run a DKG protocol together, resharing the root key into a 2-of-2 threshold scheme. The public key stays the same — only the key shares change.
+3. **Third guardian joins**: Another DKG round, resharing into a 2-of-3 threshold scheme. The network is now live — any single guardian can go down without disrupting operations.
+4. **Growth**: Additional guardians can join via further DKG resharing rounds (3-of-5, 4-of-7, etc.), always maintaining a fault-tolerant quorum.
+
+The critical property: the root public key is fixed at genesis and never changes. Every contract that references root's identity continues to work through every guardian set transition. Key resharing changes who holds the shares, not the public key they produce.
+
+### FROST threshold signatures
+
+CREAM uses **FROST (Flexible Round-Optimized Schnorr Threshold signatures)** for guardian key management. FROST allows the guardian set to collectively produce a single ed25519 signature without any party ever reconstructing the full private key.
+
+Why FROST over multi-sig:
+- **Single signature, single public key** — the user contract sees one owner key and one signature, just like any other user. The contract validation logic doesn't need to know about guardians at all.
+- **Key shares never leave guardians** — no single guardian can sign alone, no reconstructed secret exists anywhere.
+- **Compatible with ed25519** — CREAM already uses ed25519 throughout. The `frost-ed25519` crate provides a working implementation.
+- **Key resharing** — guardians can be added or removed without changing the public key, enabling smooth transitions.
+
+### The user contract validation rule
+
+User contracts enforce a simple rule: **anyone can credit, only the owner can debit**.
+
+- **Credit entries** (receiving CURD) can be appended by anyone — no signature required from the contract owner. This enables direct peer-to-peer transfers: a customer can credit a supplier's contract for a deposit without the supplier's cooperation.
+- **Debit entries** (spending CURD) must be signed by the contract owner. For regular users, this is their personal ed25519 key. For the root user, this is the guardian federation's threshold key — requiring a quorum to authorise.
+
+This validation rule is the foundation of the entire CURD economy:
+- **Initial allocation**: Root debits itself (threshold-signed), credits the new user (no signature needed on the user's contract)
+- **Order deposit**: Customer debits themselves (self-signed), credits root's escrow (no signature needed on root's contract)
+- **Escrow release**: Root debits itself (threshold-signed), credits the supplier (no signature needed on the supplier's contract)
+- **Refund**: Root debits itself (threshold-signed), credits the customer back (no signature needed)
+- **Message toll**: Customer debits themselves (self-signed), credits root (no signature needed)
+
+Guardian involvement is only required for root debits — everything else flows freely without threshold signing coordination.
+
+### The rendezvous service's role
+
+The rendezvous service (Cloudflare Workers, edge-routed, globally distributed) expands from simple name→address lookup to become the guardian coordination layer — analogous to a WebRTC signaling server:
+
+- **Guardian discovery**: Publishes the current guardian set and the root contract key so all participants can find them.
+- **DKG coordination**: When bootstrapping or rotating the guardian set, guardians exchange key generation messages through the rendezvous service. It relays but never holds key material.
+- **Signing request relay**: When a client needs a root debit (escrow release, refund, initial allocation), it posts the request to the rendezvous service, which fans it out to guardians for threshold signing. The signed result is posted back to the Freenet contract.
+- **Health and failover**: Guardian heartbeats, liveness detection, and leadership coordination for signing rounds.
+
+The rendezvous service remains untrusted infrastructure — it routes messages but never holds keys or funds. If it goes down, existing operations continue (Freenet contracts are self-sustaining); only new guardian coordination and discovery are affected. Multiple rendezvous instances can run for redundancy.
+
+### Lightning settlement
+
+CURD is backed by Bitcoin satoshis. The guardian federation collectively controls a Lightning node (or threshold-controls channel keys):
+
+- **Buy CURD (peg-in)**: Send sats via Lightning → guardian federation mints equivalent CURD (credit to user's ledger, debit from root's float)
+- **Sell CURD (peg-out)**: User requests redemption → guardian federation threshold-signs a Lightning payment, sends sats to user's Lightning wallet
+
+This is functionally identical to Fedimint's peg-in/peg-out model, but without Fedimint's consensus engine — the guardian coordination happens through FROST signing rounds relayed via the rendezvous service.
+
+### Relationship to Fedimint
+
+The guardian federation architecture is designed to be **isomorphic with Fedimint**:
+
+- In **CREAM-native mode**: Guardians run FROST directly, threshold-sign root contract updates, and manage Lightning settlement through coordinated signing.
+- In **Fedimint mode**: The Fedimint federation *is* the guardian set. Their existing threshold key *is* the root key. Fedimint's consensus engine handles coordination. The CREAM user contract interface is identical — same owner public key, same signature validation.
+
+The interface is the same either way. The root contract has an owner public key; updates need a valid signature against that key. Whether that signature came from CREAM's FROST guardians or a Fedimint federation is an implementation detail. This makes Fedimint optional — valuable for its battle-tested consensus and rich module ecosystem, but not a hard dependency.
+
+### Trust model
+
+The guardian federation's trust requirements are comparable to Fedimint's:
+
+- **Threshold honesty**: A quorum of guardians (e.g. 2-of-3) must be honest. If enough guardians collude, they could mint unbacked CURD or refuse refunds.
+- **Acceptable for local communities**: In a dairy marketplace, guardians are community members with real-world reputations. The amounts involved are small. The risk-reward for misbehaviour doesn't make sense.
+- **Auditable**: Root's ledger is public on Freenet. Anyone can verify that total CURD issued matches total sats locked. Any discrepancy is immediately visible.
+- **Recoverable**: If a guardian goes down, the remaining quorum continues operating. If a guardian is compromised, the set can be reshared to exclude them without changing the root public key.
 
 ---
 
