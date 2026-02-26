@@ -3,8 +3,7 @@
 
 A decentralized peer-to-peer raw dairy marketplace built on Freenet. Suppliers list products, customers browse and order, all coordinated with strong privacy through cryptographically signed contracts with no central server.
 
-CURD (Completely Uncensorable Raw Dairy) is a form of e-cash implemented via the wondrous [Fedimint protocol](https://fedimint.org) allowing for totally private transactions within CREAM. CURD tokens can be exchanged for 
-Bitcoin here (TODO: link forthcoming)
+CURD (Completely Uncensorable Raw Dairy) is Bitcoin-backed e-cash managed by CREAM's FROST threshold guardian federation, allowing for private transactions within CREAM. CURD tokens can be exchanged for Bitcoin via Lightning (TODO: link forthcoming)
 
 
 ## Project Structure

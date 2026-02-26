@@ -125,9 +125,9 @@ CURDs stands for **Completely Unstoppable Raw Dairy** — a playful name for the
 
 Technically:
 
-- CURDs are **Bitcoin‑backed e‑cash** issued by a Fedimint federation.
-- A *federation* is a group of known guardians who collectively hold Bitcoin in multisig and issue private e‑cash tokens against it.
-- Users deposit BTC to the federation and receive CURDs; they can later redeem CURDs back into BTC, subject to the federation’s rules.
+- CURDs are **Bitcoin‑backed e‑cash** issued by CREAM’s guardian federation.
+- A *guardian federation* is a group of trusted community members who collectively hold Bitcoin via threshold cryptography (FROST) and issue private e‑cash tokens against it.
+- Users deposit BTC to the federation (via Lightning) and receive CURDs; they can later redeem CURDs back into BTC.
 
 Practically, as a user:
 
@@ -194,7 +194,7 @@ Each federation holds Bitcoin and issues CURDs within its own circle of trust. D
 CREAM aims for strong, practical privacy:
 
 - The underlying network (Freenet) avoids central servers and routes data in a way that does not easily reveal who is talking to whom.
-- CURDs are implemented as **Chaumian e‑cash**, which hides who paid whom, while still enforcing balances and preventing double‑spends.
+- CURDs use a **privacy‑preserving e‑cash** design, which hides who paid whom, while still enforcing balances and preventing double‑spends.
 - Cash in person has no digital trail at all.
 
 That said:
@@ -225,7 +225,7 @@ That is completely fine.
 CREAM is built so that:
 
 - You can treat it mostly as a **private noticeboard and reservation tool**.
-- You can hand over physical cash at pickup and ignore almost everything about Bitcoin, CURDs, and Fedimint if you want to.
+- You can hand over physical cash at pickup and ignore almost everything about Bitcoin and CURDs if you want to.
 - The more technical parts can be handled by:
   - Guardians.
   - Local “power users”.
@@ -260,7 +260,7 @@ There are initially three guardians. They jointly assist with signing transactio
 
 Guardians use a threshold‑signing protocol called FROST (Flexible Round‑Optimized Schnorr Threshold), which means no single guardian ever holds or can use the full private key. As long as a majority of guardians are online and behaving honestly, the network can continue to operate safely: required signatures can be produced, but no minority of guardians can unilaterally steal or misdirect funds.
 
-CREAM is designed to interoperate with “real” Fedimint e‑cash wallets, so communities that already use Fedimint‑style federations can plug those wallets into CREAM. At the same time, CREAM also provides its own wallet implementation that uses plain Bitcoin sats directly, so users are not forced to adopt or trust a separate Fedimint e‑cash token if they prefer to use Bitcoin or cash for funding and settlement.
+In the future, CREAM may optionally support Fedimint e‑cash wallets for communities that prefer that model, but this is not required. CREAM's native FROST‑based guardian federation provides all the same guarantees — threshold custody, escrow, and Lightning settlement — without the additional dependency.
 
 
 

@@ -197,7 +197,7 @@ The supplier node is the user's only connection to the Freenet network. This mea
 
 These risks are mitigated by several factors:
 
-- **The Fedimint layer protects money regardless.** Even if a supplier manipulates Freenet contract state, e-cash deposits are locked in the federation's consensus. The supplier can't steal funds by tampering with the coordination layer.
+- **The guardian federation protects money regardless.** Even if a supplier manipulates Freenet contract state, deposits are held in escrow by the FROST guardian federation. The supplier can't steal funds by tampering with the coordination layer.
 - **Fallback suppliers enable cross-checking.** If a user occasionally connects through a different node and sees different state, the inconsistency is detectable.
 - **Reputation is at stake.** Supplier reputation (see below) is publicly computable. Misbehaviour leads to user migration, which is visible in the login history across user contracts.
 - **The real-world relationship.** In a local dairy marketplace, you physically visit the farm. The trust relationship already exists — trusting a supplier not to tamper with your network view is comparable to trusting them not to sell you bad milk.
@@ -271,7 +271,7 @@ Supplier reputation is derived from observable, publicly verifiable data in Free
 |--------|--------|-----------------|
 | **Uptime / availability** | Subscription failures, ping timeouts observed by other nodes | Is the node reliably reachable? |
 | **Order fulfilment rate** | Storefront contract order statuses | Ratio of Fulfilled to Cancelled/Expired orders |
-| **Refund timeliness** | User contract inboxes, Fedimint escrow release timestamps | When orders are cancelled, how quickly do refunds appear? |
+| **Refund timeliness** | User contract inboxes, escrow release timestamps | When orders are cancelled, how quickly do refunds appear? |
 | **Onboarding count** | User contracts with this supplier as origin | How many users has this supplier brought into the network? |
 | **Active users** | User contracts with this supplier as current | How many users currently connect through this node? |
 | **User retention** | Origin vs. current supplier across user contracts | Of those onboarded, how many still connect through this supplier vs. having migrated away? |
@@ -321,18 +321,18 @@ CREAM uses a single currency: **curds**. Every price, deposit, payment, refund, 
 
 ### What is a curd?
 
-A curd is a unit of e-cash backed 1:1 by a Bitcoin satoshi. Each curd is held by a **guardian federation** — either CREAM's native FROST-based guardians (see "How does the guardian federation work?" below) or a [Fedimint](https://fedimint.org) federation. By holding curds, you are holding Bitcoin — just in a more private and convenient form.
+A curd is a unit of e-cash backed 1:1 by a Bitcoin satoshi. Each curd is held by CREAM's **guardian federation** — a set of trusted community nodes that collectively control the root authority via FROST threshold signatures (see "How does the guardian federation work?" below). By holding curds, you are holding Bitcoin — just in a more private and convenient form.
 
-Curds are issued via Chaumian blind signatures: the federation that mints a curd cannot link it back to who received it or trace how it's spent. This is the privacy guarantee that makes CREAM work — participants transact freely without the federation (or anyone else) being able to trace the flow of funds.
+Curds are managed through CREAM's double-entry ledger: user contracts track balances, the root user (controlled by the guardian federation) holds escrow and issues allocations. The guardian federation cannot unilaterally trace or block individual transactions — a threshold quorum is required for any root operation, and the ledger is publicly auditable on the Freenet network.
 
 ### How do you get curds?
 
-Through the Fedimint federation's built-in Lightning gateway:
+Through the guardian federation's Lightning gateway:
 
-- **Buy curds (peg-in)**: Send Bitcoin satoshis via Lightning → receive an equal number of curds in your CREAM wallet.
-- **Sell curds (peg-out)**: Redeem curds → receive Bitcoin satoshis via Lightning.
+- **Buy curds (peg-in)**: Send Bitcoin satoshis via Lightning → the guardian federation credits equivalent curds to your CREAM wallet (a debit from root's float, a credit to your user contract).
+- **Sell curds (peg-out)**: Request redemption → the guardian federation threshold-signs a Lightning payment to your wallet, debiting your user contract.
 
-This uses Fedimint's standard Lightning module — no custom integration needed. Any Bitcoin Lightning wallet (Phoenix, Muun, Wallet of Satoshi, etc.) can send sats to the CREAM federation and receive curds in return.
+Any Bitcoin Lightning wallet (Phoenix, Muun, Wallet of Satoshi, etc.) can send sats to the CREAM federation and receive curds in return.
 
 ### Why curds rather than raw Bitcoin?
 
@@ -344,13 +344,13 @@ Curds provide three things that raw Bitcoin (on-chain or Lightning) doesn't:
 
 ### Curds as network gas
 
-Curds also serve as the **fee currency for the CREAM network**. Every network operation (creating a user contract, listing a product, placing an order, updating a storefront) costs a small amount of curds. This prevents spam and abuse while funding the infrastructure — Fedimint federation guardians and Freenet node operators.
+Curds also serve as the **fee currency for the CREAM network**. Every network operation (creating a user contract, listing a product, placing an order, updating a storefront) costs a small amount of curds. This prevents spam and abuse while funding the infrastructure — guardian nodes and Freenet node operators.
 
 The exact fee schedule and distribution mechanism are yet to be determined, but the fees will be very low — fractions of a cent per operation. The marketplace should feel free to use; fees exist to prevent abuse, not to extract revenue.
 
 ### The trust trade-off
 
-The cost of curds' privacy and speed is trust in the guardian federation — whether CREAM-native (FROST) or Fedimint. A threshold of guardian nodes must remain honest for the system to work. If enough guardians collude, they could theoretically mint unbacked curds or refuse to honour redemptions.
+The cost of curds' privacy and speed is trust in the guardian federation. A threshold of guardian nodes must remain honest for the system to work. If enough guardians collude, they could theoretically mint unbacked curds or refuse to honour redemptions.
 
 For a local dairy marketplace, this is an acceptable model — especially since the federation is run by the community itself. The guardians are trusted community members (not necessarily suppliers). Their reputation, their livelihoods, and their community relationships are at stake. And the amounts involved (dairy product deposits and payments) are small enough that the risk-reward for guardian misbehaviour doesn't make sense.
 
@@ -360,7 +360,7 @@ Since every curd is backed 1:1 by a satoshi, holding curds is economically equiv
 
 ## How does the guardian federation work?
 
-CREAM has its own native guardian federation — a small set of trusted nodes that collectively control the root authority (source of all CURD, escrow for deposits, toll collection). This is architecturally inspired by Fedimint's guardian model but built directly into CREAM, making Fedimint an optional integration rather than a hard dependency.
+CREAM has its own native guardian federation — a small set of trusted nodes that collectively control the root authority (source of all CURD, escrow for deposits, toll collection).
 
 ### The root user
 
@@ -439,20 +439,15 @@ CURD is backed by Bitcoin satoshis. The guardian federation collectively control
 - **Buy CURD (peg-in)**: Send sats via Lightning → guardian federation mints equivalent CURD (credit to user's ledger, debit from root's float)
 - **Sell CURD (peg-out)**: User requests redemption → guardian federation threshold-signs a Lightning payment, sends sats to user's Lightning wallet
 
-This is functionally identical to Fedimint's peg-in/peg-out model, but without Fedimint's consensus engine — the guardian coordination happens through FROST signing rounds relayed via the rendezvous service.
+The guardian coordination happens through FROST signing rounds relayed via the rendezvous service.
 
-### Relationship to Fedimint
+### Future: Fedimint wallet integration
 
-The guardian federation architecture is designed to be **isomorphic with Fedimint**:
+CREAM's guardian architecture is designed to be compatible with Fedimint. If a community already runs a Fedimint federation, their existing threshold key could serve as the root key, and Fedimint's consensus engine would handle coordination. The CREAM user contract interface would be identical — same owner public key, same signature validation.
 
-- In **CREAM-native mode**: Guardians run FROST directly, threshold-sign root contract updates, and manage Lightning settlement through coordinated signing.
-- In **Fedimint mode**: The Fedimint federation *is* the guardian set. Their existing threshold key *is* the root key. Fedimint's consensus engine handles coordination. The CREAM user contract interface is identical — same owner public key, same signature validation.
-
-The interface is the same either way. The root contract has an owner public key; updates need a valid signature against that key. Whether that signature came from CREAM's FROST guardians or a Fedimint federation is an implementation detail. This makes Fedimint optional — valuable for its battle-tested consensus and rich module ecosystem, but not a hard dependency.
+This is a post-launch consideration. CREAM's native FROST-based guardian federation provides all the same guarantees — threshold custody, escrow, and Lightning settlement — without the additional complexity and dependency of a full Fedimint deployment. Fedimint integration may be offered as an optional wallet backend for communities that prefer it.
 
 ### Trust model
-
-The guardian federation's trust requirements are comparable to Fedimint's:
 
 - **Threshold honesty**: A quorum of guardians (e.g. 2-of-3) must be honest. If enough guardians collude, they could mint unbacked CURD or refuse refunds.
 - **Acceptable for local communities**: In a dairy marketplace, guardians are community members with real-world reputations. The amounts involved are small. The risk-reward for misbehaviour doesn't make sense.
@@ -605,17 +600,17 @@ Test 12 (`customer-rendezvous`) runs in a separate Playwright project because it
 
 ## How do deposits and refunds work?
 
-CREAM uses a **contract-based escrow** model. The storefront contract — the same Freenet contract that already holds products and orders — also serves as the escrow state machine and communication channel for deposit funds.
+CREAM uses a **ledger-based escrow** model. When a user places an order, the deposit amount is transferred from the user's CURD balance to the root user's escrow account via the double-entry ledger. The guardian federation (via FROST threshold signatures) controls the root account and releases escrow funds based on order outcomes.
 
 ### The deposit flow
 
-When a user places an order, they include Fedimint e-cash tokens (curds) as the deposit. The deposit amount is determined by the order's deposit tier (e.g. 10%, 25%, 50%). The tokens are bearer instruments — whoever holds the bytes can redeem them.
+When a user places an order, they transfer curds to escrow as the deposit. The deposit amount is determined by the order's deposit tier (e.g. 10%, 25%, 50%).
 
-1. **User places order**: The user's app mints e-cash tokens via the Fedimint client, includes them in the order as `deposit_tokens: Vec<u8>`, and posts the order to the storefront contract as a state update.
-2. **Contract validates**: The storefront contract's `verify_delta()` checks the state transition is legal (new order, valid signature, correct deposit tier). The contract does not understand the e-cash tokens — it just stores the bytes.
-3. **Supplier receives tokens**: The supplier's node is subscribed to its own storefront contract. When the update notification arrives, the supplier's node extracts and stores the deposit tokens locally. The supplier now holds the deposit.
+1. **User places order**: The user's app debits their user contract (self-signed) and credits the root user's escrow balance. Simultaneously, the order is posted to the storefront contract as a state update.
+2. **Contract validates**: The storefront contract's `verify_delta()` checks the state transition is legal (new order, valid signature, correct deposit tier). The user contract validates the debit signature.
+3. **Escrow is held by root**: The deposit now sits in root's escrow ledger, controlled by the guardian federation. Neither the user nor the supplier can unilaterally access it.
 
-At this point, the deposit tokens are in the supplier's possession. What happens next depends on how the order resolves.
+At this point, the deposit is held in escrow by the guardian federation. What happens next depends on how the order resolves.
 
 ### Terminal states and fund flows
 
@@ -623,23 +618,23 @@ An order can reach three terminal states, each with a different fund flow:
 
 #### Fulfilled (happy path)
 
-The user collects their product. The supplier marks the order as `Fulfilled` via a contract update. The user pays the remaining balance (total price minus deposit) in person or via a second e-cash transfer. The supplier keeps the deposit tokens they already hold and redeems them through the Fedimint federation. Everyone is happy.
+The user collects their product. The supplier marks the order as `Fulfilled` via a contract update. The user pays the remaining balance (total price minus deposit) in person or via a second CURD transfer. The guardian federation threshold-signs the escrow release — debiting root's escrow and crediting the supplier's user contract. Everyone is happy.
 
 #### Cancelled (supplier-initiated)
 
 The supplier cannot or chooses not to fulfil the order. The deposit must be returned to the user.
 
 1. **Supplier updates the storefront contract** transitioning the order to `Cancelled`.
-2. **Supplier writes refund tokens to the user's contract** — because every transacting participant has a user contract on the network, the supplier can deliver the refund directly to the user's inbox rather than stuffing encrypted blobs into the storefront. The user's app is subscribed to its own contract and receives the refund immediately.
-3. **Fedimint escrow releases automatically** — on the money layer, the federation releases the locked deposit back to the user's e-cash (see below).
+2. **Guardian federation releases escrow** — the guardians threshold-sign a root debit that credits the deposit back to the user's user contract.
+3. **User receives notification** — the user's app is subscribed to its own contract and sees the refund immediately.
 
-With the dual-layer architecture, the Freenet-side refund tokens serve as a backup communication channel. The Fedimint escrow is the authoritative fund release — it doesn't require trust because the federation held the funds from the start.
+The user doesn't need to trust the supplier — the guardian federation held the funds from the start and releases them back automatically on cancellation.
 
 #### Expired (user no-show)
 
 The user reserved product, the supplier held it aside, and the user never collected within the reservation window. The supplier is owed the deposit as compensation for the opportunity cost of holding inventory.
 
-On the Freenet layer, the contract transitions to `Expired` (the supplier's node runs the expiry check, already implemented in `node_api.rs`) and the held product is released back to available inventory. On the Fedimint layer, the supplier claims the locked deposit from the federation after the timeout. No refund is posted.
+On the Freenet layer, the contract transitions to `Expired` (the supplier's node runs the expiry check, already implemented in `node_api.rs`) and the held product is released back to available inventory. The guardian federation threshold-signs the escrow release to the supplier's user contract. No refund is posted.
 
 ### How Freenet contract notifications work
 
@@ -666,102 +661,66 @@ In our codebase, this is exactly what `node_comms()` in `node_api.rs` already do
 - Only the user and authorised parties (suppliers they've ordered from) can write to the contract
 - Inbox messages are append-only — a supplier can deliver a refund but can't delete previous entries
 
-**Neither Freenet contract enforces fund movement** — that's the Fedimint escrow's job. The Freenet layer coordinates; the Fedimint layer moves money. Together, the dual-layer architecture eliminates the trust gap: the Fedimint federation holds deposits from the moment an order is placed, so supplier insolvency is not a risk and cancellation refunds are automatic.
+**Freenet contracts enforce coordination; the guardian federation enforces fund movement.** The user contract ledger tracks balances, and the root user (controlled by the FROST guardian federation) holds escrow. This eliminates the trust gap: the guardian federation holds deposits from the moment an order is placed, so supplier insolvency is not a risk and cancellation refunds are automatic.
 
 ### Why the trust model works
 
-With the dual-layer architecture (Freenet contracts + Fedimint escrow), trust requirements are minimal:
+With the guardian-based escrow model, trust requirements are minimal:
 
 - **Fulfilment**: No trust needed. User pays, gets product. Supplier gets paid. Both parties are satisfied before the transaction completes.
-- **Expiry**: No trust needed. Fedimint federation releases locked deposit to supplier after timeout.
-- **Cancellation**: No trust needed. Fedimint federation releases locked deposit back to user automatically. The supplier doesn't need to have funds — the federation already has them.
+- **Expiry**: No trust needed. Guardian federation releases locked deposit to supplier after timeout.
+- **Cancellation**: No trust needed. Guardian federation releases locked deposit back to user automatically. The supplier doesn't need to have funds — the federation already has them.
 
 ---
 
-## How do the Freenet and Fedimint "contracts" work together for escrow?
+## How does escrow work in CREAM?
 
-Both Freenet and Fedimint use the word "contract", but they mean fundamentally different things. CREAM uses both in parallel for every transaction — they serve complementary roles.
+CREAM's escrow is built directly into the native ledger. There is no separate escrow system — the same Freenet contracts and FROST guardian federation that manage CURD balances also manage escrow.
 
-### What "contract" means in each system
+### How it works
 
-A **Freenet contract** is a passive data container with validation rules. It defines a chunk of state that lives on the network, plus functions that accept or reject proposed changes (`verify_delta()`), merge updates (`update_state()`), and summarise state for sync. The contract code runs on hosting nodes when someone proposes a state change — it can say "yes, this transition is valid" or "no, reject it." But it cannot initiate anything, hold funds, execute logic on a timer, or interact with external systems. It's a gatekeeper, not an actor.
+When a user places an order, their deposit is debited from their user contract and credited to the root user's escrow balance. The root user is controlled by the FROST guardian federation — no single guardian can release or redirect escrow funds.
 
-A **Fedimint contract** is a conditional fund lock inside the federation's consensus. It lives within a Fedimint transaction as inputs and outputs. A contract says: "these funds are locked, and here are the conditions under which they can be released." The federation's consensus engine — a quorum of guardian nodes running AlephBFT — actively evaluates the conditions and releases funds when they're met.
+The storefront contract tracks the order's status progression (Reserved → Paid → Fulfilled/Cancelled/Expired). When a terminal state is reached, the guardian federation threshold-signs the appropriate escrow release:
 
-The Lightning module gives the clearest example: an `OutgoingContract` locks e-cash and says "release these funds to the gateway when it provides the preimage for this payment hash." The federation guardians actively verify the preimage and execute the release. The contract is *enforced* by the consensus, not just *validated*.
+- **Fulfilled**: Root debits escrow, credits supplier
+- **Cancelled**: Root debits escrow, credits user (refund)
+- **Expired**: Root debits escrow, credits supplier (compensation)
 
-### The dual-layer architecture
-
-CREAM runs both mechanisms for every order. They are not alternatives — they are complementary layers:
-
-- **Fedimint escrow** is the money layer. A custom Fedimint module locks the deposit in the federation's consensus at order time. The funds are genuinely held — the supplier cannot spend them before fulfilment or expiry, and the user gets them back automatically on cancellation. No trust required. No insolvency risk.
-
-- **Freenet contracts** are the coordination layer. The storefront contract tracks order status, product listings, and state transitions. User contracts provide a persistent inbox for each participant — a direct channel for refund delivery, messages, and notifications. Together they handle all the coordination that doesn't involve moving money.
-
-Both layers process the same events (order placed, fulfilled, cancelled, expired) but each handles the aspect it's good at. The Freenet contracts coordinate; the Fedimint escrow moves money.
-
-### The Fedimint escrow module
-
-CREAM includes a custom Fedimint module (following the three-part `common`/`client`/`server` pattern) that defines an escrow contract type:
-
-1. **User places order**: A Fedimint transaction locks the deposit amount into an `EscrowOutput` with conditions — release to supplier on fulfilment or expiry, release back to user on cancellation. Simultaneously, the order is posted to the Freenet storefront contract.
-2. **Federation enforces**: The guardian nodes hold the locked funds in consensus. When someone submits an `EscrowInput` claiming the funds, the server module's `validate_input()` checks whether the claim satisfies the conditions. If yes, the funds move. If no, rejected.
-3. **Resolution**: Whoever meets the conditions submits a transaction to claim. The federation executes it atomically — funds move from the escrow to the claimant's e-cash notes in a single consensus round. The Freenet contract records the terminal state.
-
-### Dual wallets and reconciliation
-
-Each CREAM client maintains two wallet views:
-
-- **Freenet-side wallet**: Tracks the token flows visible across the user's contract and storefront contracts — deposits posted with orders, refund notifications received, balances derived from the transaction ledger.
-- **Fedimint-side wallet**: Tracks the escrow locks and releases managed by the federation — deposits locked, funds claimed on fulfilment/expiry, refunds released on cancellation.
-
-These two views should always agree. If they diverge — say the Freenet contract shows an order as Fulfilled but the Fedimint escrow hasn't been claimed yet — something has gone wrong and the discrepancy points directly to the problem. This built-in reconciliation is invaluable for debugging a system spanning two decentralised networks.
-
-### How the terminal states work across both layers
+### How the terminal states work
 
 #### Fulfilled (happy path)
 
-| Layer | What happens |
-|-------|-------------|
-| Freenet | Supplier updates order status to `Fulfilled` |
-| Fedimint | Supplier submits `EscrowInput` with fulfilment proof → federation releases deposit to supplier's e-cash |
+| Step | What happens |
+|------|-------------|
+| 1 | Supplier updates order status to `Fulfilled` in the storefront contract |
+| 2 | Guardian federation threshold-signs escrow release — root debits escrow, credits supplier's user contract |
 
 #### Cancelled (supplier-initiated)
 
-| Layer | What happens |
-|-------|-------------|
-| Freenet | Supplier updates order status to `Cancelled` in storefront; writes refund notification to user's contract inbox |
-| Fedimint | Supplier submits `EscrowInput` with cancellation signature → federation releases deposit back to user's e-cash |
+| Step | What happens |
+|------|-------------|
+| 1 | Supplier updates order status to `Cancelled` in storefront |
+| 2 | Guardian federation threshold-signs escrow refund — root debits escrow, credits user's user contract |
 
-The user doesn't need to trust the supplier — the federation holds the funds and releases them automatically. The supplier's insolvency is irrelevant because the deposit was locked before the supplier ever saw the order. The Freenet-side notification to the user's contract is a courtesy — the Fedimint escrow is the authoritative fund release.
+The user doesn't need to trust the supplier — the guardian federation held the funds from the moment the order was placed. The supplier's insolvency is irrelevant because the deposit was locked before the supplier ever saw the order.
 
 #### Expired (user no-show)
 
-| Layer | What happens |
-|-------|-------------|
-| Freenet | Order transitions to `Expired`; held product released back to inventory |
-| Fedimint | Expiry time passes → supplier submits `EscrowInput` with timeout proof → federation releases deposit to supplier's e-cash |
+| Step | What happens |
+|------|-------------|
+| 1 | Order transitions to `Expired`; held product released back to inventory |
+| 2 | Guardian federation threshold-signs escrow release — root debits escrow, credits supplier's user contract |
 
-### Binary size impact
+### What Freenet contracts enforce
 
-The Fedimint client SDK is already a required dependency for CURD wallet functionality (minting, redeeming, peg-in/peg-out via the mint module). The custom escrow module adds minimal overhead on top of this:
-
-- A minimal Fedimint module following the `fedimint-dummy-client` template is ~400-800 lines of client code + ~100-200 lines of common types.
-- It reuses cryptographic dependencies (ed25519, BLS12-381) already pulled in by the mint module.
-- Estimated binary impact: ~30-50 KB uncompressed on a WASM binary that already includes `fedimint-client` + mint.
-
-The heavy cost (Fedimint client SDK + crypto) is paid once for the wallet. The escrow module rides alongside for near-zero marginal cost.
-
-### What each layer enforces
-
-| | Freenet contracts | Fedimint escrow |
+| | Freenet contracts | Guardian federation (FROST) |
 |---|---|---|
-| **Valid state transitions** | Yes — `verify_delta()` rejects illegal status changes | Yes — `validate_input()` rejects invalid claims |
-| **Correct signatures** | Yes — only supplier/user can update their fields | Yes — claim conditions are cryptographically verified |
-| **Actual fund custody** | No — can't enforce fund movement | Yes — federation holds and releases real funds |
-| **Insolvency protection** | No — not its job | Yes — funds locked upfront, always available |
-| **Communication channel** | Yes — storefronts for orders, user contracts for direct delivery | No — only fund locks and releases |
-| **Participant reachability** | Yes — user contracts make everyone contactable | No — federation doesn't route messages |
-| **Works offline/degraded** | Yes — Freenet state persists on hosting nodes | Requires federation quorum to be reachable |
+| **Valid state transitions** | Yes — `verify_delta()` rejects illegal status changes | N/A — guardians act on contract state |
+| **Correct signatures** | Yes — only supplier/user can update their fields | Yes — threshold quorum required for root operations |
+| **Actual fund custody** | Yes — ledger balances in user contracts | Yes — root escrow controlled by threshold key |
+| **Insolvency protection** | Yes — deposits locked in root's escrow upfront | Yes — no single guardian can access funds |
+| **Communication channel** | Yes — storefronts for orders, user contracts for direct delivery | No — guardians only sign operations |
+| **Works offline/degraded** | Yes — Freenet state persists on hosting nodes | Requires guardian quorum to be reachable |
 
 ---
