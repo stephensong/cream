@@ -327,6 +327,13 @@ description = "Install rendezvous service dependencies"
 cwd = "rendezvous"
 script = ["npm install"]
 
+[tasks.test-rendezvous]
+description = "Run rendezvous service unit tests"
+dependencies = ["rendezvous-install"]
+cwd = "rendezvous"
+command = "npx"
+args = ["vitest", "run"]
+
 [tasks.dev-rendezvous]
 description = "Run rendezvous service locally (wrangler dev)"
 dependencies = ["rendezvous-install"]
