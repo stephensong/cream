@@ -724,3 +724,116 @@ The user doesn't need to trust the supplier — the guardian federation held the
 | **Works offline/degraded** | Yes — Freenet state persists on hosting nodes | Requires guardian quorum to be reachable |
 
 ---
+
+## How do guardian nodes run in production? (StartOS)
+
+CREAM guardian nodes are packaged as a service for **StartOS** (from [Start9 Labs](https://start9.com)) — a self-hosting Linux OS where each service runs in an isolated Docker container. StartOS provides a web UI for service management (no CLI needed), automatic Tor hidden services for every installed service, a dependency system that auto-wires services together, health checks, backups, and updates. StartOS itself is written primarily in Rust.
+
+Target hardware: 8-16 GB RAM, quad-core CPU, 1-2 TB NVMe. The Start9 Server One (2025 model: Ryzen 7-5825U, 16 GB DDR4, 2 TB NVMe) is the reference platform.
+
+### Why StartOS for CREAM guardians?
+
+1. **Bitcoin + Lightning already packaged** — `bitcoind`, `lnd`, `c-lightning` are in the StartOS marketplace. Guardian nodes declare them as dependencies and StartOS auto-configures the connections.
+2. **Multi-box federation** — each Start9 box runs one guardian. Three boxes = a 2-of-3 federation for DKG, resharing, and signing rounds.
+3. **Realistic deployment model** — suppliers in production would run exactly this: a Start9 box with Bitcoin + Lightning + CREAM.
+4. **Tor networking built in** — services get `.onion` addresses automatically, enabling guardian communication over real network conditions without manual port forwarding.
+5. **Resource constraint as design target** — if CREAM runs well on a Start9 box alongside Bitcoin + Lightning, it'll run well anywhere.
+
+### Package architecture
+
+CREAM is bundled as a single StartOS service: Freenet node + CREAM contracts + UI in one Docker container. No separate Freenet package — Freenet is purpose-built for CREAM at this stage.
+
+```
+cream-startos/
+  manifest.yaml         # Service metadata, deps, ports, health checks
+  Dockerfile            # Builds Freenet + CREAM into one image
+  docker_entrypoint.sh  # Starts Freenet node, serves CREAM UI
+  scripts/embassy.ts    # Config UI, dependency wiring, health checks
+  instructions.md       # User-facing docs in StartOS UI
+  icon.png
+  LICENSE
+  Makefile
+```
+
+### Dependencies declared in manifest
+
+| Dependency | Purpose | Critical? |
+|-----------|---------|-----------|
+| `bitcoind` | Bitcoin full node for blockchain validation | Yes |
+| `lnd` or `c-lightning` | Lightning channels for CURD peg-in/peg-out | Yes |
+
+### Interfaces
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| 3001 | WebSocket | Freenet node API (for mobile customer connections) |
+| 8080 | HTTP | CREAM UI (supplier dashboard) |
+| 8787 | HTTP | Rendezvous service (optional, one guardian hosts this) |
+
+### Inter-service communication
+
+StartOS auto-configures Tor-based service discovery. The CREAM service connects to Bitcoin Core via RPC at `<bitcoind-onion>.onion:8332` and to Lightning via gRPC at `<lnd-onion>.onion:10009`, with credentials auto-injected via TypeScript dependency procedures.
+
+### Guardian ceremony testing plan
+
+**Phase 1: Single box**
+- Package CREAM as a StartOS service
+- Install on one Start9 box alongside `bitcoind` + `lnd`
+- Verify Freenet node starts, UI serves, Lightning connectivity works
+- This is the 1-of-1 genesis guardian (degenerate FROST case)
+
+**Phase 2: Three boxes**
+- Install CREAM on all three Start9 boxes
+- Run DKG ceremony: three guardians establish a 2-of-3 threshold key
+- Root public key established at genesis, shared across all boxes
+- Verify guardians can discover each other (via rendezvous or direct Tor addresses)
+
+**Phase 3: Operational testing**
+- Test threshold signing: escrow release requires 2-of-3 guardian cooperation
+- Test guardian failover: take one box offline, verify 2-of-3 quorum still signs
+- Test key resharing: add a 4th guardian (3-of-5), verify root public key unchanged
+- Test CURD peg-in/peg-out via Lightning across the guardian federation
+
+### Resource budget
+
+Assuming a Start9 Server One (16 GB RAM, quad-core):
+
+| Service | Estimated RAM | Notes |
+|---------|-------------|-------|
+| Bitcoin Core | 2-4 GB | Pruned mode possible for testing |
+| LND | 500 MB - 1 GB | |
+| Freenet node | 500 MB - 1 GB | TBD — needs profiling |
+| CREAM UI/contracts | 200-500 MB | Dioxus WASM served via Freenet |
+| OS + StartOS | 1-2 GB | |
+| **Total** | **~5-8 GB** | Comfortable on 16 GB box |
+
+CREAM (Freenet + contracts + UI) should target **< 1.5 GB RAM** to leave headroom.
+
+### Packaging steps
+
+1. Get Start9 boxes running with `bitcoind` + `lnd`
+2. Install `start-sdk` from the [start-os repo](https://github.com/Start9Labs/start-os)
+3. Create `cream-startos` wrapper repo from [hello-world template](https://github.com/Start9Labs/hello-world-startos)
+4. Write Dockerfile that builds Freenet + CREAM from source
+5. Write `manifest.yaml` with dependencies on `bitcoind` + `lnd`
+6. Write TypeScript config procedures for dependency wiring
+7. Build `.s9pk` package: `start-sdk pack`
+8. Sideload onto Start9 box: `start-cli package install cream.s9pk`
+9. Test single-box guardian, then expand to three boxes
+
+### Key resources
+
+| Resource | URL |
+|----------|-----|
+| StartOS docs | https://docs.start9.com/ |
+| Packaging guide | https://docs.start9.com/0.3.5.x/developer-docs/packaging |
+| Manifest spec | https://docs.start9.com/0.3.5.x/developer-docs/specification/manifest |
+| Dependencies spec | https://docs.start9.com/0.3.5.x/developer-docs/specification/dependencies |
+| JS procedures | https://docs.start9.com/0.3.5.x/developer-docs/specification/js-procedure |
+| Hello world template | https://github.com/Start9Labs/hello-world-startos |
+| Bitcoin Core wrapper | https://github.com/Start9Labs/bitcoind-startos |
+| LND wrapper | https://github.com/Start9Labs/lnd-startos |
+| StartOS GitHub | https://github.com/Start9Labs/start-os |
+| Start9 marketplace | https://marketplace.start9.com/ |
+
+---
