@@ -89,4 +89,9 @@ impl KeyManager {
     pub fn sign_raw(&self, message: &[u8]) -> [u8; 64] {
         self.supplier_signing_key.sign(message).to_bytes()
     }
+
+    /// Sign a user contract state update (customer key).
+    pub fn sign_user_contract(&self, message: &[u8]) -> Signature {
+        self.customer_signing_key.sign(message)
+    }
 }

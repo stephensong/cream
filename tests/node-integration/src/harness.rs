@@ -471,7 +471,9 @@ impl TestHarness {
         put_storefront(&mut emma, emma_sf_contract).await;
 
         // Deploy root user contract with 1,000,000 CURD genesis credit.
-        let root_vk = cream_common::identity::root_signing_key().verifying_key();
+        let root_id = cream_common::identity::root_customer_id();
+        let root_vk = *root_id.0.as_bytes();
+        let root_vk = ed25519_dalek::VerifyingKey::from_bytes(&root_vk).unwrap();
         let (root_contract, root_key) = make_user_contract(&root_vk);
 
         let genesis_tx = WalletTransaction {
@@ -485,7 +487,7 @@ impl TestHarness {
             timestamp: chrono::Utc::now().to_rfc3339(),
         };
 
-        let root_state = UserContractState {
+        let mut root_state = UserContractState {
             owner: cream_common::identity::root_customer_id(),
             name: cream_common::identity::ROOT_USER_NAME.to_string(),
             origin_supplier: String::new(),
@@ -497,6 +499,7 @@ impl TestHarness {
             updated_at: chrono::Utc::now(),
             signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
         };
+        root_state.signature = cream_common::identity::root_sign(&root_state.signable_bytes());
         let root_state_bytes = serde_json::to_vec(&root_state).unwrap();
 
         // Deploy root contract on gateway (via Gary's connection, reuse a fresh one)
@@ -686,6 +689,7 @@ async fn deploy_supplier_user_contract(
     root_state.balance_curds = root_state.derive_balance();
     root_state.next_tx_id = root_state.ledger.iter().map(|t| t.id).max().unwrap_or(0) + 1;
     root_state.updated_at = chrono::Utc::now();
+    root_state.signature = cream_common::identity::root_sign(&root_state.signable_bytes());
 
     let root_update_bytes = serde_json::to_vec(&root_state).unwrap();
     root_api
@@ -776,6 +780,7 @@ async fn deploy_user_contract(
     root_state.balance_curds = root_state.derive_balance();
     root_state.next_tx_id = root_state.ledger.iter().map(|t| t.id).max().unwrap_or(0) + 1;
     root_state.updated_at = chrono::Utc::now();
+    root_state.signature = cream_common::identity::root_sign(&root_state.signable_bytes());
 
     let root_update_bytes = serde_json::to_vec(&root_state).unwrap();
     root_api

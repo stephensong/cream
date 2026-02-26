@@ -9,7 +9,7 @@ web = ["dioxus/web", "dioxus/router"]
 mobile = ["dioxus/mobile", "dioxus/router"]
 
 [dependencies]
-cream-common = { path = "../common", features = ["dev"] }
+cream-common = { path = "../common", features = ["dev", "frost"] }
 dioxus = { version = "0.7" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

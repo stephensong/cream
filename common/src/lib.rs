@@ -11,3 +11,6 @@ pub mod storefront;
 pub mod user_contract;
 pub mod wallet;
 pub mod wallet_backend;
+
+#[cfg(feature = "frost")]
+pub mod frost;

@@ -174,9 +174,30 @@ pub fn root_signing_key() -> ed25519_dalek::SigningKey {
 }
 
 /// Get the root user's CustomerId (public key).
+///
+/// When the `frost` feature is enabled, this returns the FROST group key
+/// (threshold signature). Otherwise falls back to the single-signer key.
 #[cfg(feature = "dev")]
 pub fn root_customer_id() -> CustomerId {
-    CustomerId(root_signing_key().verifying_key())
+    #[cfg(feature = "frost")]
+    {
+        CustomerId(crate::frost::dev_root_verifying_key())
+    }
+    #[cfg(not(feature = "frost"))]
+    {
+        CustomerId(root_signing_key().verifying_key())
+    }
+}
+
+/// Sign a message as the root user using FROST threshold signatures.
+///
+/// In trusted-dealer mode, all key shares are held locally and signing
+/// is performed in a single process. Production will use distributed
+/// guardian signing.
+#[cfg(all(feature = "dev", feature = "frost"))]
+pub fn root_sign(message: &[u8]) -> ed25519_dalek::Signature {
+    let (keys, pkg) = crate::frost::dev_root_frost_keys();
+    crate::frost::sign_with_threshold(message, &keys, &pkg, 2)
 }
 
 /// A value signed by a known key.

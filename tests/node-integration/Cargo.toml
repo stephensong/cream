@@ -7,7 +7,7 @@ edition = "2021"
 node-tests = []
 
 [dependencies]
-cream-common = { path = "../../common", features = ["dev"] }
+cream-common = { path = "../../common", features = ["dev", "frost"] }
 freenet-stdlib = { version = "0.1", features = ["net"] }
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.27"

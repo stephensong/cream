@@ -651,7 +651,12 @@ mod wasm_impl {
             uc.balance_curds = uc.derive_balance();
             uc.next_tx_id = uc.ledger.iter().map(|t| t.id).max().unwrap_or(0) + 1;
             uc.updated_at = chrono::Utc::now();
-            uc.signature = ed25519_dalek::Signature::from_bytes(&[0u8; 64]);
+            uc.signature = match role {
+                ContractRole::Root => {
+                    cream_common::identity::root_sign(&uc.signable_bytes())
+                }
+                _ => ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+            };
 
             let uc_bytes = serde_json::to_vec(&uc).unwrap();
             let update = ClientRequest::ContractOp(ContractRequest::Update {
