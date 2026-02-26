@@ -996,6 +996,7 @@ async fn cumulative_node_tests() {
         root_state.balance_curds = root_state.derive_balance();
         root_state.next_tx_id = root_state.ledger.iter().map(|t| t.id).max().unwrap_or(0) + 1;
         root_state.updated_at = chrono::Utc::now();
+        root_state.signature = cream_common::identity::root_sign(&root_state.signable_bytes());
 
         let root_update_bytes = serde_json::to_vec(&root_state).unwrap();
         probe.send(ClientRequest::ContractOp(ContractRequest::Update {
@@ -1041,6 +1042,7 @@ async fn cumulative_node_tests() {
         root_state.balance_curds = root_state.derive_balance();
         root_state.next_tx_id = root_state.ledger.iter().map(|t| t.id).max().unwrap_or(0) + 1;
         root_state.updated_at = chrono::Utc::now();
+        root_state.signature = cream_common::identity::root_sign(&root_state.signable_bytes());
 
         let root_update_bytes = serde_json::to_vec(&root_state).unwrap();
         probe.send(ClientRequest::ContractOp(ContractRequest::Update {

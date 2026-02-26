@@ -1,9 +1,7 @@
 use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
-#[cfg(not(feature = "dev"))]
-use ed25519_dalek::Verifier;
-use ed25519_dalek::{Signature, VerifyingKey};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use crate::identity::CustomerId;
@@ -76,8 +74,17 @@ impl UserContractState {
     pub fn validate(&self, owner: &VerifyingKey) -> bool {
         #[cfg(feature = "dev")]
         {
+            // In dev mode, verify root contract signatures for real (FROST produces
+            // valid ed25519 sigs). Non-root contracts still use zero-signature
+            // placeholders, so bypass those.
+            #[cfg(feature = "frost")]
+            {
+                if self.owner == crate::identity::root_customer_id() {
+                    let msg = self.signable_bytes();
+                    return owner.verify(&msg, &self.signature).is_ok();
+                }
+            }
             let _ = owner;
-            #[allow(clippy::needless_return)]
             return true;
         }
         #[cfg(not(feature = "dev"))]
@@ -94,6 +101,15 @@ impl UserContractState {
     pub fn validate_update(&self, update: &UserContractState, owner: &VerifyingKey) -> bool {
         #[cfg(feature = "dev")]
         {
+            // In dev mode, verify root contract update signatures for real.
+            // Non-root contracts still bypass (zero-signature placeholders).
+            #[cfg(feature = "frost")]
+            {
+                if self.owner == crate::identity::root_customer_id() {
+                    // Fall through to the production validation logic below
+                    return self.validate_update_inner(update, owner);
+                }
+            }
             let _ = update;
             let _ = owner;
             #[allow(clippy::needless_return)]
@@ -101,41 +117,46 @@ impl UserContractState {
         }
         #[cfg(not(feature = "dev"))]
         {
-            // Find new ledger entries (not already in self)
-            let existing_keys: HashSet<(String, TransactionKind)> = self
-                .ledger
-                .iter()
-                .map(|tx| (tx.tx_ref.clone(), tx.kind.clone()))
-                .collect();
-
-            let new_entries: Vec<&WalletTransaction> = update
-                .ledger
-                .iter()
-                .filter(|tx| !existing_keys.contains(&(tx.tx_ref.clone(), tx.kind.clone())))
-                .collect();
-
-            // Check if metadata changed
-            let metadata_changed = update.name != self.name
-                || update.origin_supplier != self.origin_supplier
-                || update.current_supplier != self.current_supplier
-                || update.invited_by != self.invited_by
-                || update.owner != self.owner;
-
-            // If all new entries are credits and no metadata changed, accept without sig
-            let all_credits = new_entries
-                .iter()
-                .all(|tx| tx.kind == TransactionKind::Credit);
-            let has_debits = new_entries
-                .iter()
-                .any(|tx| tx.kind == TransactionKind::Debit);
-
-            if !has_debits && all_credits && !metadata_changed {
-                return true;
-            }
-
-            // Otherwise require owner signature
-            update.validate(owner)
+            self.validate_update_inner(update, owner)
         }
+    }
+
+    /// Inner validation logic shared by dev (root-only) and production paths.
+    fn validate_update_inner(&self, update: &UserContractState, owner: &VerifyingKey) -> bool {
+        // Find new ledger entries (not already in self)
+        let existing_keys: HashSet<(String, TransactionKind)> = self
+            .ledger
+            .iter()
+            .map(|tx| (tx.tx_ref.clone(), tx.kind.clone()))
+            .collect();
+
+        let new_entries: Vec<&WalletTransaction> = update
+            .ledger
+            .iter()
+            .filter(|tx| !existing_keys.contains(&(tx.tx_ref.clone(), tx.kind.clone())))
+            .collect();
+
+        // Check if metadata changed
+        let metadata_changed = update.name != self.name
+            || update.origin_supplier != self.origin_supplier
+            || update.current_supplier != self.current_supplier
+            || update.invited_by != self.invited_by
+            || update.owner != self.owner;
+
+        // If all new entries are credits and no metadata changed, accept without sig
+        let all_credits = new_entries
+            .iter()
+            .all(|tx| tx.kind == TransactionKind::Credit);
+        let has_debits = new_entries
+            .iter()
+            .any(|tx| tx.kind == TransactionKind::Debit);
+
+        if !has_debits && all_credits && !metadata_changed {
+            return true;
+        }
+
+        // Otherwise require owner signature
+        update.validate(owner)
     }
 
     /// Derive balance from the transaction ledger.
