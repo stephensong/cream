@@ -30,6 +30,16 @@ test.describe('Customer Rendezvous Flow', () => {
     // Give the fire-and-forget rendezvous registration time to complete
     await supplierPage.waitForTimeout(3_000);
 
+    // ── Verify rendezvous API directly ─────────────────────────────────────────
+    const resp = await supplierPage.request.get('http://localhost:8787/lookup/gary');
+    expect(resp.status()).toBe(200);
+    const body = await resp.json();
+    expect(body.name).toBe('gary');
+    expect(body.address).toMatch(/^ws:\/\//);
+    expect(body.storefront_key).toBeTruthy();
+    // Security: public_key should not be exposed
+    expect(body).not.toHaveProperty('public_key');
+
     // ── Customer side: auto-connect via ?supplier= URL param ─────────────────
     await waitForAppLoadAt(customerPage, `${APP_URL}/?supplier=gary`);
     await completeSetup(customerPage, {
@@ -61,6 +71,21 @@ test.describe('Customer Rendezvous Flow', () => {
     // Products should have Order buttons
     const firstProduct = customerPage.locator('.product-card').first();
     await expect(firstProduct.locator('button:has-text("Order")')).toBeVisible();
+
+    // ── Place an order ─────────────────────────────────────────────────────────
+    await firstProduct.locator('button:has-text("Order")').click();
+    await expect(customerPage.locator('.order-form')).toBeVisible({ timeout: 5_000 });
+    await customerPage.locator('.order-form input[type="number"]').fill('2');
+    await customerPage.locator('.order-form button:has-text("Place Order")').click();
+
+    // Confirm the order submission
+    await expect(customerPage.locator('.order-confirmation')).toBeVisible({ timeout: 15_000 });
+    await expect(customerPage.locator('.order-confirmation h3')).toHaveText('Order Submitted!');
+
+    // ── Verify order appears in My Orders ──────────────────────────────────────
+    await customerPage.click('button:has-text("My Orders")');
+    await expect(customerPage.locator('.order-card').first()).toBeVisible({ timeout: 15_000 });
+    await expect(customerPage.locator('.order-status')).toContainText('Reserved');
 
     // Cleanup
     await supplierContext.close();
