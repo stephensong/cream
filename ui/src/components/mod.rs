@@ -1,3 +1,4 @@
+pub mod accordion_md;
 pub mod app;
 pub mod directory_view;
 pub mod faq_view;
