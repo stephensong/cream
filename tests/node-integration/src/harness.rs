@@ -621,7 +621,8 @@ async fn deploy_supplier_user_contract(
 ) {
     let (uc_contract, uc_key) = make_user_contract(&supplier.verifying_key);
 
-    let tx_ref = format!("root:{}:{}", chrono::Utc::now().timestamp_millis(), supplier.name);
+    // Deterministic tx_ref so UI re-registration deduplicates against this credit.
+    let tx_ref = format!("genesis:{}", supplier.name);
     let now_str = chrono::Utc::now().to_rfc3339();
 
     let initial_credit = WalletTransaction {
@@ -710,7 +711,8 @@ async fn deploy_user_contract(
 ) {
     let (uc_contract, uc_key) = make_user_contract(&customer.verifying_key);
 
-    let tx_ref = format!("root:{}:{}", chrono::Utc::now().timestamp_millis(), customer.name);
+    // Deterministic tx_ref so UI re-registration deduplicates against this credit.
+    let tx_ref = format!("genesis:{}", customer.name);
     let now_str = chrono::Utc::now().to_rfc3339();
 
     let initial_credit = WalletTransaction {

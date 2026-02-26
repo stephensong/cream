@@ -26,39 +26,12 @@ pub fn DirectoryView() -> Element {
     let state = user_state.read();
     let user_postcode = state.postcode.clone().unwrap_or_default();
 
-    // Build supplier list from multiple sources
+    // Build supplier list from the network directory
     let mut suppliers: Vec<SupplierEntry> = Vec::new();
-
-    // Add current user if they're a supplier
-    if state.is_supplier {
-        let moniker = state.moniker.clone().unwrap_or_default();
-        let desc = state
-            .supplier_description
-            .clone()
-            .unwrap_or("Local supplier".into());
-        let postcode = state.postcode.clone().unwrap_or_default();
-        // Use product count from the network storefront, not local UserState
-        let product_count = shared_state
-            .read()
-            .storefronts
-            .get(&moniker)
-            .map(|sf| sf.products.len())
-            .unwrap_or(0);
-        let locality = state.locality.clone();
-        suppliers.push(SupplierEntry {
-            name: moniker,
-            description: desc,
-            postcode: postcode.clone(),
-            locality,
-            distance_km: Some(0.0),
-            product_count,
-        });
-    }
     drop(state);
 
-    // Add suppliers from the Freenet directory (SharedState)
-    // Determine our own SupplierId so we can skip our own directory entry
-    // (we already added ourselves from local state above).
+    // Add suppliers from the Freenet directory (SharedState),
+    // filtering out the current user's own entry.
     let my_supplier_id = {
         let km_signal: Signal<Option<crate::components::key_manager::KeyManager>> = use_context();
         let km_guard = km_signal.read();
@@ -66,22 +39,8 @@ pub fn DirectoryView() -> Element {
     };
     {
         let shared = shared_state.read();
-        #[cfg(target_family = "wasm")]
-        {
-            web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
-                &format!("[CREAM] DirectoryView render: {} directory entries, {} storefronts cached",
-                    shared.directory.entries.len(), shared.storefronts.len())
-            ));
-            // Dump all storefront keys and their product counts
-            for (sf_name, sf) in &shared.storefronts {
-                web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
-                    &format!("[CREAM]   storefronts[\"{}\"] = {} products (info.name=\"{}\")",
-                        sf_name, sf.products.len(), sf.info.name)
-                ));
-            }
-        }
         for entry in shared.directory.entries.values() {
-            // Skip our own entry (already added from local state above)
+            // Skip our own entry — suppliers manage their storefront via "My Storefront"
             if let Some(ref my_id) = my_supplier_id {
                 if &entry.supplier == my_id {
                     continue;

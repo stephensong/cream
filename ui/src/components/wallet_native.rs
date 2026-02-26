@@ -62,6 +62,7 @@ impl CreamNativeWallet {
             description,
             sender_name,
             receiver_name,
+            None,
         )
         .await;
 
@@ -70,6 +71,43 @@ impl CreamNativeWallet {
             amount,
             timestamp,
             bearer_token: None, // CREAM-native has no bearer tokens
+        }
+    }
+
+    /// Execute a transfer with a caller-supplied tx_ref (for idempotency).
+    pub async fn do_transfer_with_ref(
+        &mut self,
+        api: &mut freenet_stdlib::client_api::WebApi,
+        sender: ContractRole,
+        receiver: ContractRole,
+        amount: u64,
+        description: String,
+        sender_name: String,
+        receiver_name: String,
+        tx_ref: String,
+    ) -> TransferReceipt {
+        let timestamp = now_iso8601();
+
+        record_transfer(
+            api,
+            &mut self.shared,
+            sender,
+            receiver,
+            &self.root_contract_key,
+            self.user_contract_key.as_ref(),
+            amount,
+            description,
+            sender_name,
+            receiver_name,
+            Some(tx_ref.clone()),
+        )
+        .await;
+
+        TransferReceipt {
+            tx_ref,
+            amount,
+            timestamp,
+            bearer_token: None,
         }
     }
 
@@ -93,6 +131,29 @@ impl CreamNativeWallet {
         .await
     }
 
+    /// Transfer from root to user with a deterministic tx_ref for idempotency.
+    /// Used for initial CURD allocation so re-registration doesn't double-allocate.
+    pub async fn transfer_from_root_idempotent(
+        &mut self,
+        api: &mut freenet_stdlib::client_api::WebApi,
+        amount: u64,
+        description: String,
+        recipient_name: String,
+        tx_ref: String,
+    ) -> TransferReceipt {
+        self.do_transfer_with_ref(
+            api,
+            ContractRole::Root,
+            ContractRole::User,
+            amount,
+            description,
+            cream_common::identity::ROOT_USER_NAME.to_string(),
+            recipient_name,
+            tx_ref,
+        )
+        .await
+    }
+
     /// Transfer from root to a third-party contract (e.g. supplier registration).
     pub async fn transfer_from_root_to_third_party(
         &mut self,
@@ -110,6 +171,29 @@ impl CreamNativeWallet {
             description,
             cream_common::identity::ROOT_USER_NAME.to_string(),
             recipient_name,
+        )
+        .await
+    }
+
+    /// Transfer from root to third-party with a deterministic tx_ref for idempotency.
+    pub async fn transfer_from_root_to_third_party_idempotent(
+        &mut self,
+        api: &mut freenet_stdlib::client_api::WebApi,
+        recipient_key: ContractKey,
+        amount: u64,
+        description: String,
+        recipient_name: String,
+        tx_ref: String,
+    ) -> TransferReceipt {
+        self.do_transfer_with_ref(
+            api,
+            ContractRole::Root,
+            ContractRole::ThirdParty(recipient_key),
+            amount,
+            description,
+            cream_common::identity::ROOT_USER_NAME.to_string(),
+            recipient_name,
+            tx_ref,
         )
         .await
     }

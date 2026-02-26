@@ -47,9 +47,14 @@ test.describe('View Storefront', () => {
 
     await waitForConnected(page);
 
-    // Navigate to own storefront via directory
-    const garyCard = page.locator('.supplier-card', { hasText: 'Gary' });
-    await garyCard.locator('a:has-text("View Storefront")').click();
+    // Navigate to own storefront via clicking another supplier's link to
+    // discover the URL pattern, then navigate directly to Gary's storefront.
+    // (Gary is filtered out of the directory since suppliers don't see themselves.)
+    const anyLink = page.locator('.supplier-card a:has-text("View Storefront")').first();
+    const href = await anyLink.getAttribute('href');
+    // href is like "/supplier/SomeName" — replace the name with Gary
+    const garyHref = href!.replace(/\/supplier\/.*/, '/supplier/Gary');
+    await page.goto(new URL(garyHref, page.url()).toString());
 
     await expect(page.locator('.storefront-view')).toBeVisible();
     await expect(page.locator('.own-storefront-note')).toBeVisible();

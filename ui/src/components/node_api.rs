@@ -541,8 +541,9 @@ mod wasm_impl {
         description: String,
         sender_name: String,
         receiver_name: String,
+        override_tx_ref: Option<String>,
     ) {
-        let tx_ref = generate_tx_ref(&sender_name);
+        let tx_ref = override_tx_ref.unwrap_or_else(|| generate_tx_ref(&sender_name));
         let timestamp = now_iso8601();
 
         // Build debit entry (for sender's contract)
@@ -870,13 +871,15 @@ mod wasm_impl {
                 let supplier_uc_key_str = format!("{}", supplier_uc_key);
                 shared.write().supplier_user_contract_key = Some(supplier_uc_key_str);
 
-                // Transfer initial 10,000 CURD from root → supplier
-                wallet.transfer_from_root_to_third_party(
+                // Transfer initial 10,000 CURD from root → supplier.
+                // Use a deterministic tx_ref so re-registration deduplicates.
+                wallet.transfer_from_root_to_third_party_idempotent(
                     api,
                     supplier_uc_key,
                     10_000,
                     "Initial CURD allocation".to_string(),
                     name.clone(),
+                    format!("genesis:{}", name),
                 ).await;
 
                 // Now register in the directory with a real signature
@@ -1689,13 +1692,16 @@ mod wasm_impl {
                     us.save();
                 }
 
-                // Transfer initial 10,000 CURD from root → new user
+                // Transfer initial 10,000 CURD from root → new user.
+                // Use a deterministic tx_ref so re-registration deduplicates
+                // (the ledger merge uses tx_ref+kind as the dedup key).
                 wallet.user_contract_key = Some(uc_key);
-                wallet.transfer_from_root(
+                wallet.transfer_from_root_idempotent(
                     api,
                     10_000,
                     "Initial CURD allocation".to_string(),
                     name.clone(),
+                    format!("genesis:{}", name),
                 ).await;
             }
 
