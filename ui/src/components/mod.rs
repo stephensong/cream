@@ -1,5 +1,6 @@
 pub mod app;
 pub mod directory_view;
+pub mod faq_view;
 pub mod iaq_view;
 pub mod key_manager;
 pub mod my_orders;

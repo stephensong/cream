@@ -6,6 +6,7 @@ use cream_common::postcode::{
 };
 
 use super::directory_view::DirectoryView;
+use super::faq_view::FaqView;
 use super::iaq_view::IaqView;
 use super::key_manager::KeyManager;
 use super::my_orders::MyOrders;
@@ -54,6 +55,8 @@ pub enum Route {
     Dashboard {},
     #[route("/wallet")]
     Wallet {},
+    #[route("/faq")]
+    Faq {},
     #[route("/iaq")]
     Iaq {},
     #[redirect("/", || Route::Directory {})]
@@ -222,6 +225,11 @@ fn AppLayout() -> Element {
                         span { class: "role-badge", " [{role_label}]" }
                         button {
                             class: "iaq-btn",
+                            onclick: move |_| { nav.push(Route::Faq {}); },
+                            "FAQ"
+                        }
+                        button {
+                            class: "iaq-btn",
                             onclick: move |_| { nav.push(Route::Iaq {}); },
                             "IAQ"
                         }
@@ -296,6 +304,12 @@ fn Dashboard() -> Element {
 #[component]
 fn Wallet() -> Element {
     rsx! { WalletView {} }
+}
+
+/// Route component: renders the FAQ.
+#[component]
+fn Faq() -> Element {
+    rsx! { FaqView {} }
 }
 
 /// Route component: renders the IAQ documentation.

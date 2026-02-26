@@ -372,11 +372,17 @@ The root user is not a single person — it's a collective identity controlled b
 
 A guardian node is a Freenet node operated by a trusted community member. Guardians are **not** implicitly suppliers — they are infrastructure operators. A guardian may also choose to be a supplier, but the roles are independent.
 
+Each guardian runs three services:
+- A **CREAM/Freenet node** — participates in the peer-to-peer network, hosts contracts, and processes signing rounds
+- A **Bitcoin full node** — validates the blockchain independently, ensuring the federation's Bitcoin holdings are verifiable without trusting external services
+- A **Lightning node** — manages payment channels for peg-in/peg-out (buying and selling CURD for sats), enabling fast settlement without on-chain transactions for every trade
+
 Guardian responsibilities:
 - **Hold a key share** of the root signing key (via FROST threshold signatures)
 - **Participate in signing rounds** when root debits are requested (escrow releases, initial allocations, refunds)
 - **Maintain liveness** — the network needs a quorum of guardians available at all times
 - **Run DKG (distributed key generation)** when the guardian set changes
+- **Operate Bitcoin and Lightning infrastructure** — keep nodes synced, channels funded, and available for peg-in/peg-out settlement
 
 ### Bootstrapping ceremony
 
