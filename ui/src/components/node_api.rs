@@ -97,6 +97,11 @@ pub fn use_node_coroutine() {
     use_coroutine(|rx: UnboundedReceiver<NodeAction>| node_comms(rx));
 }
 
+// ─── WASM re-exports for wallet backend ─────────────────────────────────────
+
+#[cfg(target_family = "wasm")]
+pub(crate) use wasm_impl::{generate_tx_ref, now_iso8601, record_transfer, ContractRole};
+
 // ─── WASM implementation ────────────────────────────────────────────────────
 
 #[cfg(target_family = "wasm")]
@@ -125,6 +130,7 @@ mod wasm_impl {
     use super::NodeAction;
     use crate::components::key_manager::KeyManager;
     use crate::components::shared_state::use_shared_state;
+    use crate::components::wallet_native::CreamNativeWallet;
 
     /// Sleep for the given number of milliseconds (WASM-compatible).
     #[allow(dead_code)] // used in supplier mode heartbeat
@@ -502,19 +508,19 @@ mod wasm_impl {
     }
 
     /// Generate a unique transaction reference string.
-    fn generate_tx_ref(sender: &str) -> String {
+    pub(crate) fn generate_tx_ref(sender: &str) -> String {
         let ts = web_sys::js_sys::Date::now() as u64;
         let rnd = rand_u32();
         format!("{}:{}:{}", sender, ts, rnd)
     }
 
     /// Get current time as ISO 8601 string.
-    fn now_iso8601() -> String {
+    pub(crate) fn now_iso8601() -> String {
         web_sys::js_sys::Date::new_0().to_iso_string().into()
     }
 
     /// Identifies a user contract by role (for record_transfer).
-    enum ContractRole {
+    pub(crate) enum ContractRole {
         Root,
         User,
         ThirdParty(ContractKey),
@@ -524,7 +530,7 @@ mod wasm_impl {
     ///
     /// Appends a debit to the sender's contract and a credit to the receiver's contract,
     /// linked by a shared `tx_ref`. Both contracts are updated on the network.
-    async fn record_transfer(
+    pub(crate) async fn record_transfer(
         api: &mut freenet_stdlib::client_api::WebApi,
         shared: &mut Signal<crate::components::shared_state::SharedState>,
         sender: ContractRole,
@@ -686,6 +692,13 @@ mod wasm_impl {
         user_contract_key_ref: &mut Option<ContractKey>,
         root_contract_key: &ContractKey,
     ) {
+        // Construct wallet backend for this action dispatch
+        let mut wallet = CreamNativeWallet::new(
+            *shared,
+            *root_contract_key,
+            *user_contract_key_ref,
+        );
+
         match action {
             NodeAction::RegisterSupplier {
                 name,
@@ -858,16 +871,11 @@ mod wasm_impl {
                 shared.write().supplier_user_contract_key = Some(supplier_uc_key_str);
 
                 // Transfer initial 10,000 CURD from root → supplier
-                record_transfer(
+                wallet.transfer_from_root_to_third_party(
                     api,
-                    shared,
-                    ContractRole::Root,
-                    ContractRole::ThirdParty(supplier_uc_key),
-                    root_contract_key,
-                    None, // not using User role for receiver
+                    supplier_uc_key,
                     10_000,
                     "Initial CURD allocation".to_string(),
-                    cream_common::identity::ROOT_USER_NAME.to_string(),
                     name.clone(),
                 ).await;
 
@@ -1186,6 +1194,7 @@ mod wasm_impl {
                     status: OrderStatus::Reserved { expires_at },
                     created_at: now,
                     signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+                    escrow_token: None,
                 };
 
                 // Sign the order with the customer key
@@ -1213,17 +1222,11 @@ mod wasm_impl {
 
                     // Record double-entry transfer: customer → root (deposit)
                     let customer_name = user_state.read().moniker.clone().unwrap_or_default();
-                    record_transfer(
+                    wallet.transfer_to_root(
                         api,
-                        shared,
-                        ContractRole::User,
-                        ContractRole::Root,
-                        root_contract_key,
-                        user_contract_key_ref.as_ref(),
                         deposit_amount,
                         format!("Order deposit: {}", storefront_name),
                         customer_name,
-                        cream_common::identity::ROOT_USER_NAME.to_string(),
                     ).await;
                 }
             }
@@ -1461,16 +1464,11 @@ mod wasm_impl {
                             .and_then(|entry| entry.user_contract_key);
 
                         if let Some(uc_key) = supplier_uc_key {
-                            record_transfer(
+                            wallet.settle_escrow_to_supplier(
                                 api,
-                                shared,
-                                ContractRole::Root,
-                                ContractRole::User,
-                                root_contract_key,
-                                Some(&uc_key),
+                                uc_key,
                                 deposit_amount,
                                 format!("Escrow settlement for order {}", order_id),
-                                cream_common::identity::ROOT_USER_NAME.to_string(),
                                 supplier_name.clone(),
                             ).await;
                             clog(&format!(
@@ -1692,16 +1690,11 @@ mod wasm_impl {
                 }
 
                 // Transfer initial 10,000 CURD from root → new user
-                record_transfer(
+                wallet.user_contract_key = Some(uc_key);
+                wallet.transfer_from_root(
                     api,
-                    shared,
-                    ContractRole::Root,
-                    ContractRole::User,
-                    root_contract_key,
-                    user_contract_key_ref.as_ref(),
                     10_000,
                     "Initial CURD allocation".to_string(),
-                    cream_common::identity::ROOT_USER_NAME.to_string(),
                     name.clone(),
                 ).await;
             }
@@ -1744,16 +1737,10 @@ mod wasm_impl {
             NodeAction::FaucetTopUp => {
                 clog("[CREAM] FaucetTopUp: transferring 1000 CURD from root");
                 let user_name = user_state.read().moniker.clone().unwrap_or_default();
-                record_transfer(
+                wallet.transfer_from_root(
                     api,
-                    shared,
-                    ContractRole::Root,
-                    ContractRole::User,
-                    root_contract_key,
-                    user_contract_key_ref.as_ref(),
                     1_000,
                     "Faucet".to_string(),
-                    cream_common::identity::ROOT_USER_NAME.to_string(),
                     user_name,
                 ).await;
             }
@@ -1775,17 +1762,11 @@ mod wasm_impl {
 
                 // Debit 10 CURD toll via double-entry transfer (user → root)
                 let sender_name = user_state.read().moniker.clone().unwrap_or_default();
-                record_transfer(
+                wallet.transfer_to_root(
                     api,
-                    shared,
-                    ContractRole::User,
-                    ContractRole::Root,
-                    root_contract_key,
-                    user_contract_key_ref.as_ref(),
                     10,
                     "Message toll".to_string(),
                     sender_name,
-                    cream_common::identity::ROOT_USER_NAME.to_string(),
                 ).await;
 
                 // Find the storefront's contract key

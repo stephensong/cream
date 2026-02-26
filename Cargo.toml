@@ -7,6 +7,7 @@ members = [
     "contracts/user-contract",
     "delegates/cream-delegate",
     "tests/node-integration",
+    "tests/fedimint-integration",
 ]
 exclude = ["ui"]
 

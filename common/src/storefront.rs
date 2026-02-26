@@ -513,6 +513,7 @@ mod tests {
             status,
             created_at: Utc::now(),
             signature: Signature::from_bytes(&[0u8; 64]),
+            escrow_token: None,
         }
     }
 

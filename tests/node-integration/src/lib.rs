@@ -169,6 +169,7 @@ pub fn make_dummy_order(
         status: OrderStatus::Reserved { expires_at },
         created_at,
         signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+        escrow_token: None,
     }
 }
 

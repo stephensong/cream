@@ -129,6 +129,10 @@ pub struct Order {
     pub created_at: DateTime<Utc>,
     /// Customer's signature over the order data.
     pub signature: Signature,
+    /// Bearer token for Fedimint escrow (OOBNotes serialized as string).
+    /// None for CREAM-native orders where escrow is implicit via root account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escrow_token: Option<String>,
 }
 
 #[cfg(test)]

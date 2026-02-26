@@ -11,4 +11,8 @@ pub mod shared_state;
 pub mod storefront_view;
 pub mod supplier_dashboard;
 pub mod user_state;
+#[cfg(target_family = "wasm")]
+pub mod wallet_native;
+pub mod wallet_fedimint;
+pub mod wallet_router;
 pub mod wallet_view;
