@@ -367,7 +367,7 @@ mod wasm_impl {
 
         // ── Subscribe to root user contract ─────────────────────────────
         // Root's identity is deterministic, so we can derive its contract key.
-        let root_vk = cream_common::identity::root_signing_key().verifying_key();
+        let root_vk = cream_common::identity::root_customer_id().0;
         let root_params = UserContractParameters { owner: root_vk };
         let root_params_bytes = serde_json::to_vec(&root_params).unwrap();
         let root_contract_container = make_contract(USER_CONTRACT_WASM, Parameters::from(root_params_bytes));
