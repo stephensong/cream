@@ -16,12 +16,13 @@ pub fn ScheduleEditor(
     on_save: EventHandler<WeeklySchedule>,
     on_cancel: EventHandler<()>,
 ) -> Element {
-    // Read the schedule prop eagerly (it's a ReadOnlySignal in Dioxus 0.7)
-    // so that `use_signal` captures the concrete value, not the signal.
-    let schedule_snapshot: Vec<Vec<(u8, u8)>> = (0..7)
+    // Editable state: initialised from the schedule prop.
+    // The key prop on this component is bumped each time the editor is
+    // opened, forcing a fresh mount so use_signal runs its initializer.
+    let initial: Vec<Vec<(u8, u8)>> = (0..7)
         .map(|day| schedule.get_ranges(day))
         .collect();
-    let mut ranges: Signal<Vec<Vec<(u8, u8)>>> = use_signal(move || schedule_snapshot.clone());
+    let mut ranges: Signal<Vec<Vec<(u8, u8)>>> = use_signal(move || initial.clone());
 
     let options = time_options();
 

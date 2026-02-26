@@ -356,12 +356,21 @@ impl TestHarness {
         let (dir_contract, dir_key) = make_directory_contract();
 
         // Build initial storefront states
-        let gary_sf = make_initial_storefront(
+        let mut gary_sf = make_initial_storefront(
             &gary_id,
             "Gary's Farm",
             "Real Beaut Dairy",
             GeoLocation::new(-30.0977, 152.6583),
         );
+        // Populate Gary's schedule: Mon–Fri 9:00–17:00, Sat 9:00–12:00
+        // (Step 7 will update this to Mon–Fri 8:00–17:00 to test notifications)
+        let mut schedule = WeeklySchedule::new();
+        for day in 0..5u8 {
+            schedule.set_range(day, 18, 34, true); // 9:00 = slot 18, 17:00 = slot 34
+        }
+        schedule.set_range(5, 18, 24, true); // Sat: 9:00 = slot 18, 12:00 = slot 24
+        gary_sf.info.schedule = Some(schedule);
+        gary_sf.info.timezone = Some("Australia/Sydney".to_string());
         let emma_sf = make_initial_storefront(
             &emma_id,
             "Emma's Farm",

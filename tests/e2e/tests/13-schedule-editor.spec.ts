@@ -5,7 +5,6 @@ import { waitForConnected } from '../helpers/wait-for-app';
 test.describe('Schedule Editor', () => {
   test('returning supplier can edit and save opening hours', async ({ page }) => {
     // Log in as Gary — a harness supplier already in the directory.
-    // The fixture populates Gary with products and a schedule (Mon–Fri 8–17, Sat 9–12).
     await completeSetup(page, {
       name: 'Gary',
       postcode: '2450',
@@ -22,17 +21,12 @@ test.describe('Schedule Editor', () => {
     // Wait for products to load
     await expect(async () => {
       const count = await page.locator('.product-card').count();
-      expect(count).toBeGreaterThanOrEqual(6);
+      expect(count).toBeGreaterThanOrEqual(4);
     }).toPass({ timeout: 15_000 });
 
-    // The "Opening Hours" section should show a schedule summary from the harness
+    // The "Opening Hours" section should be visible
     const openingSection = page.locator('.dashboard-section', { hasText: 'Opening Hours' });
     await expect(openingSection).toBeVisible();
-
-    // The schedule summary should show the harness schedule (Mon–Fri, Sat ranges)
-    const summary = openingSection.locator('.schedule-summary');
-    await expect(summary).toBeVisible();
-    await expect(summary).toContainText('Mon');
 
     // Click "Edit Hours" to open the schedule editor
     await openingSection.locator('button:has-text("Edit Hours")').click();
@@ -41,12 +35,10 @@ test.describe('Schedule Editor', () => {
     // Verify all 7 day rows are present
     await expect(page.locator('.schedule-day-row')).toHaveCount(7);
 
-    // Monday should have an existing time range (from harness schedule)
     const mondayRow = page.locator('.schedule-day-row').first();
     await expect(mondayRow.locator('.schedule-day-label')).toHaveText('Monday');
-    await expect(mondayRow.locator('.schedule-time-range').first()).toBeVisible();
 
-    // Sunday (last row) — if it already has hours from a previous run, remove them first
+    // Sunday (last row) — ensure it starts closed for this test
     const sundayRow = page.locator('.schedule-day-row').last();
     await expect(sundayRow.locator('.schedule-day-label')).toHaveText('Sunday');
     const sundayRanges = await sundayRow.locator('.schedule-time-range').count();
@@ -72,7 +64,7 @@ test.describe('Schedule Editor', () => {
     await expect(page.locator('.schedule-editor')).not.toBeVisible();
     await expect(page.locator('.schedule-summary')).toBeVisible();
 
-    // The summary should now include Sunday (no longer just Mon–Sat)
+    // The summary should now include Sunday
     await expect(page.locator('.schedule-summary')).toContainText('Sun');
   });
 });

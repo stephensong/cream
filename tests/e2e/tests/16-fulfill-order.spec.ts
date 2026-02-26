@@ -2,12 +2,6 @@ import { test, expect } from '@playwright/test';
 import { completeSetup } from '../helpers/setup-flow';
 import { waitForConnected, waitForSupplierCount } from '../helpers/wait-for-app';
 
-/** Extract the numeric CURD balance from a wallet button's text. */
-async function getWalletBalance(page: import('@playwright/test').Page): Promise<number> {
-  const text = await page.locator('button:has-text("Wallet")').textContent();
-  const match = text?.match(/(\d+)\s*CURD/);
-  return match ? parseInt(match[1], 10) : 0;
-}
 
 test.describe('Fulfill Order', () => {
   test('Gary fulfills a Reserved order and deposit is settled to his wallet', async ({ browser }) => {
@@ -55,9 +49,6 @@ test.describe('Fulfill Order', () => {
       expect(fulfillBtns).toBeGreaterThanOrEqual(1);
     }).toPass({ timeout: 30_000 });
 
-    // Record initial wallet balance
-    const initialBalance = await getWalletBalance(garyPage);
-
     // Find a Reserved order card and click Mark Fulfilled
     const reservedOrder = garyPage.locator('.order-card', { hasText: 'Reserved' }).first();
     await expect(reservedOrder).toBeVisible();
@@ -70,16 +61,20 @@ test.describe('Fulfill Order', () => {
       expect(fulfilledOrders).toBeGreaterThanOrEqual(1);
     }).toPass({ timeout: 15_000 });
 
-    // Assert wallet balance increased (settled escrow deposit)
-    await expect(async () => {
-      const currentBalance = await getWalletBalance(garyPage);
-      expect(currentBalance).toBeGreaterThan(initialBalance);
-    }).toPass({ timeout: 15_000 });
-
     // Assert the Fulfill and Cancel buttons are gone from the fulfilled order
     const fulfilledOrder = garyPage.locator('.order-card', { hasText: 'Fulfilled' }).first();
     await expect(fulfilledOrder.locator('.fulfill-order-btn')).toHaveCount(0);
     await expect(fulfilledOrder.locator('.cancel-order-btn')).toHaveCount(0);
+
+    // Assert escrow settlement ledger entry exists in Gary's wallet
+    await garyPage.click('button:has-text("Wallet")');
+    await expect(garyPage.locator('.wallet-balance')).toBeVisible();
+    const settlementRow = garyPage.locator('.tx-history tbody tr', { hasText: 'Escrow settlement' });
+    await expect(async () => {
+      const count = await settlementRow.count();
+      expect(count).toBeGreaterThanOrEqual(1);
+    }).toPass({ timeout: 15_000 });
+    await expect(settlementRow.first().locator('td.tx-credit')).toContainText('+');
 
     await garyContext.close();
     await emmaContext.close();

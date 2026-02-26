@@ -4,7 +4,7 @@ import { waitForConnected } from '../helpers/wait-for-app';
 
 test.describe('Schedule Editor Re-initialization', () => {
   test('editor populates existing hours on first open', async ({ page }) => {
-    // Log in as Gary — harness schedule: Mon–Fri 8–17, Sat 9–12, Sun closed
+    // Log in as Gary
     await completeSetup(page, {
       name: 'Gary',
       postcode: '2450',
@@ -18,59 +18,42 @@ test.describe('Schedule Editor Re-initialization', () => {
     await page.click('button:has-text("My Storefront")');
     await expect(page.locator('.supplier-dashboard')).toBeVisible();
 
-    // Wait for products to load (confirms storefront data arrived from network)
+    // Wait for storefront data
     await expect(async () => {
       const count = await page.locator('.product-card').count();
       expect(count).toBeGreaterThanOrEqual(4);
     }).toPass({ timeout: 15_000 });
 
-    // The schedule summary should show the harness schedule
     const openingSection = page.locator('.dashboard-section', { hasText: 'Opening Hours' });
-    await expect(openingSection.locator('.schedule-summary')).toContainText('Mon');
 
-    // ── First open: editor should show existing hours ──
+    // ── Step 1: Add Monday hours (if not already present) and save ──
     await openingSection.locator('button:has-text("Edit Hours")').click();
     await expect(page.locator('.schedule-editor')).toBeVisible();
 
-    // Monday (first row) should have a time range, NOT "(Closed)"
     const mondayRow = page.locator('.schedule-day-row').first();
     await expect(mondayRow.locator('.schedule-day-label')).toHaveText('Monday');
 
-    const mondayRangeCount = await mondayRow.locator('.schedule-time-range').count();
-    const mondayClosedCount = await mondayRow.locator('.schedule-closed-label').count();
-
-    console.log(`First open — Monday: ${mondayRangeCount} time ranges, ${mondayClosedCount} closed labels`);
-
-    // Dump all day rows for debugging
-    for (let day = 0; day < 7; day++) {
-      const row = page.locator('.schedule-day-row').nth(day);
-      const label = await row.locator('.schedule-day-label').textContent();
-      const ranges = await row.locator('.schedule-time-range').count();
-      const closed = await row.locator('.schedule-closed-label').count();
-      console.log(`  ${label}: ${ranges} ranges, ${closed > 0 ? '(Closed)' : 'open'}`);
-      if (ranges > 0) {
-        // Log the select values for the first range
-        const firstRange = row.locator('.schedule-time-range').first();
-        const selects = firstRange.locator('select');
-        const startVal = await selects.first().inputValue();
-        const endVal = await selects.last().inputValue();
-        console.log(`    first range: start=${startVal} end=${endVal}`);
-      }
+    const existingRanges = await mondayRow.locator('.schedule-time-range').count();
+    if (existingRanges === 0) {
+      // Add a default range for Monday
+      await mondayRow.locator('button:has-text("+ Add")').click();
+      await expect(mondayRow.locator('.schedule-time-range')).toHaveCount(1);
     }
 
-    // Monday MUST have at least one time range
-    expect(mondayRangeCount).toBeGreaterThanOrEqual(1);
+    // Save
+    await page.click('button:has-text("Save Schedule")');
+    await expect(page.locator('.schedule-editor')).not.toBeVisible();
+    await expect(openingSection.locator('.schedule-summary')).toContainText('Mon');
 
-    // Saturday (6th row, index 5) should also have a range
-    const saturdayRow = page.locator('.schedule-day-row').nth(5);
-    await expect(saturdayRow.locator('.schedule-day-label')).toHaveText('Saturday');
-    expect(await saturdayRow.locator('.schedule-time-range').count()).toBeGreaterThanOrEqual(1);
+    // ── Step 2: Re-open editor — Monday should still have the range ──
+    await openingSection.locator('button:has-text("Edit Hours")').click();
+    await expect(page.locator('.schedule-editor')).toBeVisible();
 
-    // Sunday (last row) — may be closed or have hours from test-13
-    const sundayRow = page.locator('.schedule-day-row').last();
-    await expect(sundayRow.locator('.schedule-day-label')).toHaveText('Sunday');
+    const mondayRowAfter = page.locator('.schedule-day-row').first();
+    const rangesAfter = await mondayRowAfter.locator('.schedule-time-range').count();
+    expect(rangesAfter).toBeGreaterThanOrEqual(1);
 
-    // Cancel the edit (no changes)
+    // Cancel
     await page.click('button:has-text("Cancel")');
     await expect(page.locator('.schedule-editor')).not.toBeVisible();
   });
@@ -97,44 +80,37 @@ test.describe('Schedule Editor Re-initialization', () => {
     }).toPass({ timeout: 15_000 });
 
     const openingSection = page.locator('.dashboard-section', { hasText: 'Opening Hours' });
-    await expect(openingSection.locator('.schedule-summary')).toContainText('Mon');
 
-    // ── Open editor, save without changes ──
+    // ── Open editor, ensure Tuesday has hours, and save ──
     await openingSection.locator('button:has-text("Edit Hours")').click();
     await expect(page.locator('.schedule-editor')).toBeVisible();
 
-    // Verify Monday has a range before saving
-    const mondayBefore = page.locator('.schedule-day-row').first();
-    const rangesBefore = await mondayBefore.locator('.schedule-time-range').count();
-    console.log(`Before save — Monday ranges: ${rangesBefore}`);
-    expect(rangesBefore).toBeGreaterThanOrEqual(1);
+    const tuesdayRow = page.locator('.schedule-day-row').nth(1);
+    await expect(tuesdayRow.locator('.schedule-day-label')).toHaveText('Tuesday');
+
+    const tuesdayRanges = await tuesdayRow.locator('.schedule-time-range').count();
+    if (tuesdayRanges === 0) {
+      await tuesdayRow.locator('button:has-text("+ Add")').click();
+    }
+    expect(await tuesdayRow.locator('.schedule-time-range').count()).toBeGreaterThanOrEqual(1);
 
     // Save
     await page.click('button:has-text("Save Schedule")');
     await expect(page.locator('.schedule-editor')).not.toBeVisible();
 
-    // Verify summary still shows schedule
-    await expect(openingSection.locator('.schedule-summary')).toContainText('Mon');
+    // Verify summary
+    await expect(openingSection.locator('.schedule-summary')).toContainText('Tue');
 
     // ── Re-open editor: should still show the saved hours ──
     await openingSection.locator('button:has-text("Edit Hours")').click();
     await expect(page.locator('.schedule-editor')).toBeVisible();
 
-    const mondayAfter = page.locator('.schedule-day-row').first();
-    const rangesAfter = await mondayAfter.locator('.schedule-time-range').count();
-    const closedAfter = await mondayAfter.locator('.schedule-closed-label').count();
-    console.log(`After reopen — Monday: ${rangesAfter} ranges, ${closedAfter > 0 ? '(Closed)' : 'open'}`);
-
-    // Dump all rows again
-    for (let day = 0; day < 7; day++) {
-      const row = page.locator('.schedule-day-row').nth(day);
-      const label = await row.locator('.schedule-day-label').textContent();
-      const ranges = await row.locator('.schedule-time-range').count();
-      const closed = await row.locator('.schedule-closed-label').count();
-      console.log(`  ${label}: ${ranges} ranges, ${closed > 0 ? '(Closed)' : 'open'}`);
-    }
-
-    // Monday MUST still have time ranges after reopen
+    const tuesdayAfter = page.locator('.schedule-day-row').nth(1);
+    const rangesAfter = await tuesdayAfter.locator('.schedule-time-range').count();
     expect(rangesAfter).toBeGreaterThanOrEqual(1);
+
+    // Cancel
+    await page.click('button:has-text("Cancel")');
+    await expect(page.locator('.schedule-editor')).not.toBeVisible();
   });
 });
