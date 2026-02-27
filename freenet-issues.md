@@ -97,7 +97,7 @@ Consider either:
 
 ## Duplicate RequestStreaming Delivery Causes PUT Timeout (Separate from StreamId Collision)
 
-**Status**: To be reported upstream
+**Status**: Filed as [Issue #3317](https://github.com/freenet/freenet-core/issues/3317)
 **Severity**: High — causes intermittent 60-second PUT timeouts even with the StreamId collision fix applied
 **Affected code**: `crates/core/src/operations/put.rs`, message routing/forwarding logic
 
