@@ -595,6 +595,31 @@
     margin-bottom: 1rem;
   }
 
+  .exchange-rate {
+    font-size: 0.9rem;
+    color: #94a3b8;
+    margin-bottom: 1rem;
+    font-style: italic;
+  }
+
+  .peg-section {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 0.75rem;
+    padding: 1.25rem;
+    margin-bottom: 1rem;
+  }
+
+  .peg-section h3 {
+    margin-bottom: 0.75rem;
+  }
+
+  .peg-preview {
+    font-size: 0.85rem;
+    color: #34d399;
+    margin-top: 0.25rem;
+  }
+
   .accordion-section {
     border-bottom: 1px solid #334155;
   }

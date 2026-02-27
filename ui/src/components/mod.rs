@@ -17,4 +17,5 @@ pub mod user_state;
 pub mod wallet_native;
 pub mod wallet_fedimint;
 pub mod wallet_router;
+pub mod lightning_mock;
 pub mod wallet_view;

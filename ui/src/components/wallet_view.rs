@@ -2,6 +2,7 @@ use dioxus::prelude::*;
 
 use cream_common::currency::format_amount;
 use cream_common::identity::ROOT_USER_NAME;
+use cream_common::lightning_gateway::CURD_PER_SAT;
 use cream_common::wallet::TransactionKind;
 
 use super::node_api::{use_node_action, NodeAction};
@@ -63,6 +64,17 @@ pub fn WalletView() -> Element {
     let balance_str = format_amount(displayed_balance);
     let deposits_str = format_amount(incoming_deposits);
 
+    // Peg-in state
+    let mut pegin_sats = use_signal(|| String::new());
+    // Peg-out state
+    let mut pegout_curd = use_signal(|| String::new());
+    let mut pegout_bolt11 = use_signal(|| String::new());
+
+    // Read signals eagerly so Dioxus subscribes to changes for button disabled state
+    let pegin_sats_val: u64 = pegin_sats.read().parse().unwrap_or(0);
+    let pegout_curd_val: u64 = pegout_curd.read().parse().unwrap_or(0);
+    let pegout_bolt11_empty = pegout_bolt11.read().is_empty();
+
     rsx! {
         div { class: "wallet-view",
             h2 { "CREAM Wallet" }
@@ -73,6 +85,86 @@ pub fn WalletView() -> Element {
                 p { class: "wallet-deposits", "Includes {deposits_str} held in escrow" }
             }
 
+            p { class: "exchange-rate", "Exchange rate: 1 sat = {CURD_PER_SAT} CURD" }
+
+            // ── Peg-In ──
+            div { class: "peg-section",
+                h3 { "Deposit (Lightning Peg-In)" }
+                div { class: "form-group",
+                    label { "Amount (sats)" }
+                    input {
+                        r#type: "number",
+                        min: "1",
+                        placeholder: "e.g. 100",
+                        value: "{pegin_sats}",
+                        oninput: move |e| pegin_sats.set(e.value()),
+                    }
+                    if pegin_sats_val > 0 {
+                        {
+                            let curd = pegin_sats_val * CURD_PER_SAT;
+                            rsx! { p { class: "peg-preview", "You will receive {format_amount(curd)}" } }
+                        }
+                    }
+                }
+                button {
+                    disabled: pegin_sats_val == 0,
+                    onclick: move |_| {
+                        let sats: u64 = pegin_sats.read().parse().unwrap_or(0);
+                        if sats > 0 {
+                            let node = use_node_action();
+                            node.send(NodeAction::PegIn { amount_sats: sats });
+                            pegin_sats.set(String::new());
+                        }
+                    },
+                    "Deposit via Lightning"
+                }
+            }
+
+            // ── Peg-Out ──
+            div { class: "peg-section",
+                h3 { "Withdraw (Lightning Peg-Out)" }
+                div { class: "form-group",
+                    label { "Amount (CURD)" }
+                    input {
+                        r#type: "number",
+                        min: "1",
+                        placeholder: "e.g. 500",
+                        value: "{pegout_curd}",
+                        oninput: move |e| pegout_curd.set(e.value()),
+                    }
+                    if pegout_curd_val > 0 {
+                        {
+                            let sats = pegout_curd_val / CURD_PER_SAT;
+                            rsx! { p { class: "peg-preview", "You will withdraw {sats} sats" } }
+                        }
+                    }
+                }
+                div { class: "form-group",
+                    label { "BOLT11 Invoice" }
+                    input {
+                        r#type: "text",
+                        placeholder: "lnbc...",
+                        value: "{pegout_bolt11}",
+                        oninput: move |e| pegout_bolt11.set(e.value()),
+                    }
+                }
+                button {
+                    disabled: pegout_curd_val == 0 || pegout_bolt11_empty,
+                    onclick: move |_| {
+                        let curd: u64 = pegout_curd.read().parse().unwrap_or(0);
+                        let bolt11 = pegout_bolt11.read().clone();
+                        if curd > 0 && !bolt11.is_empty() {
+                            let node = use_node_action();
+                            node.send(NodeAction::PegOut { amount_curd: curd, bolt11 });
+                            pegout_curd.set(String::new());
+                            pegout_bolt11.set(String::new());
+                        }
+                    },
+                    "Withdraw to Lightning"
+                }
+            }
+
+            // ── Faucet (dev only) ──
             div { class: "wallet-actions",
                 button {
                     onclick: move |_| {
@@ -81,9 +173,6 @@ pub fn WalletView() -> Element {
                     },
                     "Faucet (+1000 CURD)"
                 }
-            }
-            p { class: "wallet-note",
-                "This is a mock wallet for demonstration. Fedimint integration coming later."
             }
 
             if !recent_txs.is_empty() {

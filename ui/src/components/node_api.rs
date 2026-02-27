@@ -74,6 +74,10 @@ pub enum NodeAction {
     UpdateUserContract {
         current_supplier: Option<String>,
     },
+    /// Peg-in: deposit BTC via Lightning, receive CURD.
+    PegIn { amount_sats: u64 },
+    /// Peg-out: burn CURD and withdraw BTC via Lightning.
+    PegOut { amount_curd: u64, bolt11: String },
     /// Faucet: transfer 1000 CURD from root to the current user.
     FaucetTopUp,
     /// Send a message to a supplier's storefront (costs 10 CURD toll).
@@ -1375,6 +1379,11 @@ mod wasm_impl {
                             ));
                             return;
                         }
+
+                        // Capture refund info before mutating
+                        let deposit_amount = order.deposit_amount;
+                        let customer_vk = order.customer.0;
+
                         order.status = OrderStatus::Cancelled;
 
                         let sf_bytes = serde_json::to_vec(&sf).unwrap();
@@ -1394,6 +1403,32 @@ mod wasm_impl {
                             ));
                         } else {
                             clog("[CREAM] CancelOrder: sent successfully");
+                        }
+
+                        // Refund escrow deposit: root → customer's user contract
+                        if deposit_amount > 0 {
+                            let customer_uc_params = UserContractParameters { owner: customer_vk };
+                            let customer_params_bytes = serde_json::to_vec(&customer_uc_params).unwrap();
+                            let customer_uc_contract = make_contract(
+                                USER_CONTRACT_WASM,
+                                Parameters::from(customer_params_bytes),
+                            );
+                            let customer_uc_key = customer_uc_contract.key();
+
+                            let saved_key = wallet.user_contract_key;
+                            wallet.user_contract_key = Some(customer_uc_key);
+                            wallet.transfer_from_root(
+                                api,
+                                deposit_amount,
+                                format!("Escrow refund: cancelled order {}", order_id),
+                                "customer".to_string(),
+                            ).await;
+                            wallet.user_contract_key = saved_key;
+
+                            clog(&format!(
+                                "[CREAM] CancelOrder: refunded {} CURD to customer",
+                                deposit_amount
+                            ));
                         }
                     } else {
                         clog(&format!(
@@ -1742,6 +1777,88 @@ mod wasm_impl {
                     }
                 } else {
                     clog("[CREAM] UpdateUserContract: no existing user contract state");
+                }
+            }
+
+            NodeAction::PegIn { amount_sats } => {
+                use cream_common::lightning_gateway::{LightningGateway, PaymentStatus, CURD_PER_SAT};
+                use super::super::lightning_mock::MockLightningGateway;
+
+                clog(&format!("[CREAM] PegIn: {} sats → {} CURD", amount_sats, amount_sats * CURD_PER_SAT));
+                let mut gw = MockLightningGateway::new();
+
+                let invoice = match gw.create_invoice(amount_sats, "CURD peg-in") {
+                    Ok(inv) => inv,
+                    Err(e) => {
+                        clog(&format!("[CREAM] ERROR: PegIn create_invoice failed: {}", e));
+                        return;
+                    }
+                };
+
+                match gw.check_invoice(&invoice.payment_hash) {
+                    Ok(PaymentStatus::Success { .. }) => {
+                        let curd_amount = amount_sats * CURD_PER_SAT;
+                        let user_name = user_state.read().moniker.clone().unwrap_or_default();
+                        wallet.transfer_from_root(
+                            api,
+                            curd_amount,
+                            format!("Lightning peg-in ({} sats)", amount_sats),
+                            user_name,
+                        ).await;
+                        clog(&format!("[CREAM] PegIn: credited {} CURD", curd_amount));
+                    }
+                    Ok(_) => {
+                        clog("[CREAM] ERROR: PegIn invoice not yet paid");
+                    }
+                    Err(e) => {
+                        clog(&format!("[CREAM] ERROR: PegIn check_invoice failed: {}", e));
+                    }
+                }
+            }
+
+            NodeAction::PegOut { amount_curd, bolt11 } => {
+                use cream_common::lightning_gateway::{LightningGateway, PaymentStatus, CURD_PER_SAT};
+                use super::super::lightning_mock::MockLightningGateway;
+
+                let sats_out = amount_curd / CURD_PER_SAT;
+                clog(&format!("[CREAM] PegOut: {} CURD → {} sats", amount_curd, sats_out));
+
+                // Check balance
+                let current_balance = shared.read().user_contract
+                    .as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
+                if current_balance < amount_curd {
+                    clog(&format!(
+                        "[CREAM] ERROR: PegOut insufficient balance: have {}, need {}",
+                        current_balance, amount_curd
+                    ));
+                    return;
+                }
+
+                // Debit CURD from user → root
+                let user_name = user_state.read().moniker.clone().unwrap_or_default();
+                wallet.transfer_to_root(
+                    api,
+                    amount_curd,
+                    format!("Lightning peg-out ({} sats)", sats_out),
+                    user_name.clone(),
+                ).await;
+
+                // Pay the Lightning invoice
+                let mut gw = MockLightningGateway::new();
+                match gw.pay_invoice(&bolt11) {
+                    Ok(PaymentStatus::Success { .. }) => {
+                        clog(&format!("[CREAM] PegOut: paid {} sats to {}", sats_out, bolt11));
+                    }
+                    Ok(_) | Err(_) => {
+                        // Refund on failure
+                        clog("[CREAM] ERROR: PegOut Lightning payment failed, refunding");
+                        wallet.transfer_from_root(
+                            api,
+                            amount_curd,
+                            "Lightning peg-out refund (payment failed)".to_string(),
+                            user_name,
+                        ).await;
+                    }
                 }
             }
 
