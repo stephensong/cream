@@ -687,6 +687,7 @@ dependencies = [
  "dioxus",
  "ed25519-dalek",
  "freenet-stdlib",
+ "frost-ed25519",
  "futures",
  "getrandom 0.2.17",
  "pulldown-cmark",

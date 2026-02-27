@@ -404,6 +404,9 @@ mod wasm_impl {
             Some(root_instance)
         };
 
+        // ── Create signing service ───────────────────────────────────────
+        let signing_service = crate::components::signing_service::SigningService::from_env();
+
         // ── Main event loop ─────────────────────────────────────────────
         loop {
             futures::select! {
@@ -428,6 +431,7 @@ mod wasm_impl {
                         &mut user_contract_instance_id,
                         &mut user_contract_key,
                         &root_contract_full_key,
+                        &signing_service,
                     ).await;
                 }
 
@@ -546,6 +550,7 @@ mod wasm_impl {
         sender_name: String,
         receiver_name: String,
         override_tx_ref: Option<String>,
+        signing_service: &crate::components::signing_service::SigningService,
     ) {
         let tx_ref = override_tx_ref.unwrap_or_else(|| generate_tx_ref(&sender_name));
         let timestamp = now_iso8601();
@@ -581,7 +586,7 @@ mod wasm_impl {
             ContractRole::ThirdParty(key) => Some(*key),
         };
         if let Some(key) = sender_key {
-            update_contract_ledger(api, shared, &sender, key, debit).await;
+            update_contract_ledger(api, shared, &sender, key, debit, signing_service).await;
         } else {
             clog("[CREAM] WARNING: sender contract key not available");
         }
@@ -593,7 +598,7 @@ mod wasm_impl {
             ContractRole::ThirdParty(key) => Some(*key),
         };
         if let Some(key) = receiver_key {
-            update_contract_ledger(api, shared, &receiver, key, credit).await;
+            update_contract_ledger(api, shared, &receiver, key, credit, signing_service).await;
         } else {
             clog("[CREAM] WARNING: receiver contract key not available");
         }
@@ -609,6 +614,7 @@ mod wasm_impl {
         role: &ContractRole,
         contract_key: ContractKey,
         tx: cream_common::wallet::WalletTransaction,
+        signing_service: &crate::components::signing_service::SigningService,
     ) {
         // ThirdParty: construct a minimal state with just the transaction entry.
         // The merge logic does ledger union unconditionally, so the credit gets
@@ -657,7 +663,11 @@ mod wasm_impl {
             uc.updated_at = chrono::Utc::now();
             uc.signature = match role {
                 ContractRole::Root => {
-                    cream_common::identity::root_sign(&uc.signable_bytes())
+                    signing_service.sign(&uc.signable_bytes()).await
+                        .unwrap_or_else(|e| {
+                            clog(&format!("[CREAM] ERROR: FROST signing failed: {}", e));
+                            ed25519_dalek::Signature::from_bytes(&[0u8; 64])
+                        })
                 }
                 _ => ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
             };
@@ -701,12 +711,14 @@ mod wasm_impl {
         user_contract_instance_id: &mut Option<ContractInstanceId>,
         user_contract_key_ref: &mut Option<ContractKey>,
         root_contract_key: &ContractKey,
+        signing_service: &crate::components::signing_service::SigningService,
     ) {
         // Construct wallet backend for this action dispatch
         let mut wallet = CreamNativeWallet::new(
             *shared,
             *root_contract_key,
             *user_contract_key_ref,
+            signing_service.clone(),
         );
 
         match action {

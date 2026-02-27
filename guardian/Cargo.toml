@@ -1,0 +1,21 @@
+[package]
+name = "cream-guardian"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "cream-guardian"
+path = "src/main.rs"
+
+[dependencies]
+cream-common = { path = "../common", features = ["dev", "frost"] }
+frost-ed25519 = { version = "2.1", default-features = false, features = ["serde"] }
+rand_chacha = "0.3"
+rand = "0.8"
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ed25519-dalek = { version = "2", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }

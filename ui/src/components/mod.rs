@@ -10,6 +10,7 @@ pub mod order_form;
 pub mod rendezvous;
 pub mod schedule_editor;
 pub mod shared_state;
+pub mod signing_service;
 pub mod storefront_view;
 pub mod supplier_dashboard;
 pub mod user_state;

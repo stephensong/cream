@@ -10,16 +10,19 @@ use freenet_stdlib::prelude::ContractKey;
 
 use super::node_api::{generate_tx_ref, now_iso8601, record_transfer, ContractRole};
 use super::shared_state::SharedState;
+use super::signing_service::SigningService;
 
 /// CREAM-native wallet backed by on-network double-entry user contracts.
 ///
-/// Holds only Copy types (Dioxus signals, contract keys). The `WebApi` handle
-/// is passed into each operation via `with_api()` since it's borrowed mutably
-/// by the broader action handler and can't live inside the wallet struct.
+/// Holds only Copy types (Dioxus signals, contract keys) plus a signing service.
+/// The `WebApi` handle is passed into each operation via `with_api()` since
+/// it's borrowed mutably by the broader action handler and can't live inside
+/// the wallet struct.
 pub struct CreamNativeWallet {
     pub shared: Signal<SharedState>,
     pub root_contract_key: ContractKey,
     pub user_contract_key: Option<ContractKey>,
+    pub signing_service: SigningService,
 }
 
 impl CreamNativeWallet {
@@ -27,11 +30,13 @@ impl CreamNativeWallet {
         shared: Signal<SharedState>,
         root_contract_key: ContractKey,
         user_contract_key: Option<ContractKey>,
+        signing_service: SigningService,
     ) -> Self {
         Self {
             shared,
             root_contract_key,
             user_contract_key,
+            signing_service,
         }
     }
 
@@ -63,6 +68,7 @@ impl CreamNativeWallet {
             sender_name,
             receiver_name,
             None,
+            &self.signing_service,
         )
         .await;
 
@@ -100,6 +106,7 @@ impl CreamNativeWallet {
             sender_name,
             receiver_name,
             Some(tx_ref.clone()),
+            &self.signing_service,
         )
         .await;
 

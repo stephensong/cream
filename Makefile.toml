@@ -132,11 +132,12 @@ command = "cargo"
 args = ["test", "-p", "cream-node-integration", "--features", "node-tests", "--", "--nocapture"]
 
 [tasks.kill-stale]
-description = "Kill stale dx serve, freenet, and cargo-make processes from previous fixture runs"
+description = "Kill stale dx serve, freenet, guardian, and cargo-make processes from previous fixture runs"
 script = [
     '''
     set -euo pipefail
     pkill -f "dx serve" 2>/dev/null || true
+    pkill -f "cream-guardian" 2>/dev/null || true
     # Kill stale cargo-make fixture processes but not the current one ($$=shell, PPID chain)
     CURRENT_CARGO_MAKE=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
     for pid in $(pgrep -f "cargo-make make fixture" 2>/dev/null); do
@@ -149,14 +150,80 @@ script = [
     '''
 ]
 
+# ─── Guardian Daemon ──────────────────────────────────────────────────────
+
+[tasks.build-guardian]
+description = "Build FROST guardian daemon"
+command = "cargo"
+args = ["build", "-p", "cream-guardian"]
+
+[tasks.start-guardians]
+description = "Start 3 FROST guardian daemons on ports 3010/3011/3012"
+dependencies = ["build-guardian"]
+script = [
+    '''
+    set -euo pipefail
+    PIDS_DIR="${HOME}/.cache/freenet/pids"
+    LOGS_DIR="${HOME}/.cache/freenet/logs"
+    mkdir -p "${PIDS_DIR}" "${LOGS_DIR}"
+
+    GUARDIAN_BIN="./target/debug/cream-guardian"
+
+    for i in 1 2 3; do
+        PORT=$((3009 + i))
+        echo "Starting guardian ${i} on port ${PORT}..."
+        : > "${LOGS_DIR}/guardian-${i}.log"
+        nohup "${GUARDIAN_BIN}" --share-index "${i}" --port "${PORT}" \
+            >> "${LOGS_DIR}/guardian-${i}.log" 2>&1 &
+        echo $! > "${PIDS_DIR}/guardian-${i}.pid"
+    done
+
+    # Wait for all 3 to be ready
+    for i in 1 2 3; do
+        PORT=$((3009 + i))
+        for attempt in $(seq 1 10); do
+            if curl -s "http://localhost:${PORT}/health" > /dev/null 2>&1; then
+                echo "Guardian ${i} ready on port ${PORT}"
+                break
+            fi
+            if [ "${attempt}" -eq 10 ]; then
+                echo "ERROR: Guardian ${i} failed to start on port ${PORT}"
+                cat "${LOGS_DIR}/guardian-${i}.log" 2>/dev/null | tail -5
+                exit 1
+            fi
+            sleep 1
+        done
+    done
+    echo "All 3 guardians ready"
+    '''
+]
+
+[tasks.stop-guardians]
+description = "Stop all FROST guardian daemons"
+script = [
+    '''
+    PIDS_DIR="${HOME}/.cache/freenet/pids"
+    for i in 1 2 3; do
+        pidfile="${PIDS_DIR}/guardian-${i}.pid"
+        if [ -f "${pidfile}" ]; then
+            kill $(cat "${pidfile}") 2>/dev/null || true
+            rm -f "${pidfile}"
+        fi
+    done
+    pkill -f "cream-guardian" 2>/dev/null || true
+    echo "Guardians stopped"
+    '''
+]
+
 [tasks.fixture]
-description = "Full manual-testing fixture: build contracts, start network, run tests, start rendezvous, launch UI dev server"
-dependencies = ["kill-stale", "test-node", "restart-rendezvous", "tailwind-install", "tailwind-build"]
+description = "Full manual-testing fixture: build contracts, start network, run tests, start guardians, start rendezvous, launch UI dev server"
+dependencies = ["kill-stale", "test-node", "start-guardians", "restart-rendezvous", "tailwind-install", "tailwind-build"]
 cwd = "ui"
 command = "dx"
 args = ["serve"]
 [tasks.fixture.env]
 CREAM_RENDEZVOUS_URL = "http://localhost:8787"
+CREAM_GUARDIAN_URLS = "http://localhost:3010,http://localhost:3011,http://localhost:3012"
 
 [tasks.restart-rendezvous]
 description = "Kill any stale wrangler and start fresh rendezvous service on port 8787"
