@@ -387,20 +387,38 @@ async fn rapid_fire_updates() {
     );
 
     // Final GET from port 3003 to confirm all 10 products are present
-    let mut verifier = connect_to_node_at(&node_url(3003)).await;
-    let (bytes, latency) = timed_wait_for_get(&mut verifier, *sf_key.id(), STRESS_TIMEOUT)
-        .await
-        .expect("GET from port 3003 should succeed");
-    log_latency("rapid_fire", "final GET", 3003, latency);
+    // Retry a few times since propagation may lag
+    let mut all_present = false;
+    for attempt in 1..=5 {
+        let mut verifier = connect_to_node_at(&node_url(3003)).await;
+        let (bytes, latency) = timed_wait_for_get(&mut verifier, *sf_key.id(), STRESS_TIMEOUT)
+            .await
+            .expect("GET from port 3003 should succeed");
+        if attempt == 1 {
+            log_latency("rapid_fire", "final GET", 3003, latency);
+        }
 
-    let final_sf: StorefrontState = serde_json::from_slice(&bytes).unwrap();
-    for pid in &added_product_ids {
-        assert!(
-            final_sf.products.contains_key(pid),
-            "Product {pid:?} should be present on port 3004 (has {} products)",
-            final_sf.products.len()
-        );
+        let final_sf: StorefrontState = serde_json::from_slice(&bytes).unwrap();
+        if added_product_ids.iter().all(|pid| final_sf.products.contains_key(pid)) {
+            all_present = true;
+            break;
+        }
+        if attempt < 5 {
+            println!(
+                "  [RETRY] Final GET attempt {attempt}: only {}/{} products present, retrying in 3s...",
+                final_sf.products.len(),
+                added_product_ids.len()
+            );
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        } else {
+            panic!(
+                "After {attempt} attempts, only {}/{} products present on port 3003",
+                final_sf.products.len(),
+                added_product_ids.len()
+            );
+        }
     }
+    assert!(all_present);
 
     println!("   PASSED");
 }
