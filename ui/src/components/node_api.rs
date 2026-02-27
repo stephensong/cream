@@ -1415,15 +1415,13 @@ mod wasm_impl {
                             );
                             let customer_uc_key = customer_uc_contract.key();
 
-                            let saved_key = wallet.user_contract_key;
-                            wallet.user_contract_key = Some(customer_uc_key);
-                            wallet.transfer_from_root(
+                            wallet.transfer_from_root_to_third_party(
                                 api,
+                                customer_uc_key,
                                 deposit_amount,
                                 format!("Escrow refund: cancelled order {}", order_id),
                                 "customer".to_string(),
                             ).await;
-                            wallet.user_contract_key = saved_key;
 
                             clog(&format!(
                                 "[CREAM] CancelOrder: refunded {} CURD to customer",
