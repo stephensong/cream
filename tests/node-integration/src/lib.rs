@@ -364,6 +364,31 @@ pub async fn wait_for_put(
     }
 }
 
+/// Like `wait_for_get`, but also returns how long it took.
+pub async fn timed_wait_for_get(
+    api: &mut WebApi,
+    key: ContractInstanceId,
+    timeout: Duration,
+) -> Option<(Vec<u8>, Duration)> {
+    let start = Instant::now();
+    let bytes = wait_for_get(api, key, timeout).await?;
+    Some((bytes, start.elapsed()))
+}
+
+/// Like `recv_matching`, but also returns how long it took.
+pub async fn timed_recv_matching<F>(
+    api: &mut WebApi,
+    predicate: F,
+    timeout: Duration,
+) -> Option<(HostResponse, Duration)>
+where
+    F: Fn(&HostResponse) -> bool,
+{
+    let start = Instant::now();
+    let resp = recv_matching(api, predicate, timeout).await?;
+    Some((resp, start.elapsed()))
+}
+
 /// Extract UpdateNotification bytes from a HostResponse.
 pub fn extract_notification_bytes(resp: &HostResponse) -> Option<Vec<u8>> {
     if let HostResponse::ContractResponse(ContractResponse::UpdateNotification { update, .. }) =
