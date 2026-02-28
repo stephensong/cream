@@ -158,7 +158,7 @@ command = "cargo"
 args = ["build", "-p", "cream-guardian"]
 
 [tasks.start-guardians]
-description = "Start 3 FROST guardian daemons with DKG on ports 3010/3011/3012"
+description = "Start 3 FROST guardian daemons with DKG on ports 3010/3011/3012, connected to co-located Freenet nodes"
 dependencies = ["build-guardian"]
 script = [
     '''
@@ -178,28 +178,36 @@ script = [
     PEERS_2="http://localhost:3010,http://localhost:3012"
     PEERS_3="http://localhost:3010,http://localhost:3011"
 
+    # Co-located Freenet node URLs (guardian i → ws:3004+i)
+    NODE_URL_1="ws://localhost:3005/v1/contract/command?encodingProtocol=native"
+    NODE_URL_2="ws://localhost:3006/v1/contract/command?encodingProtocol=native"
+    NODE_URL_3="ws://localhost:3007/v1/contract/command?encodingProtocol=native"
+
     for i in 1 2 3; do
         PORT=$((3009 + i))
         eval "PEERS=\$PEERS_${i}"
-        echo "Starting guardian ${i} on port ${PORT} with peers ${PEERS}..."
+        eval "NODE_URL=\$NODE_URL_${i}"
+        echo "Starting guardian ${i} on port ${PORT} with peers ${PEERS} and node ${NODE_URL}..."
         : > "${LOGS_DIR}/guardian-${i}.log"
         nohup "${GUARDIAN_BIN}" --share-index "${i}" --port "${PORT}" --peers "${PEERS}" \
+            --node-url "${NODE_URL}" \
             >> "${LOGS_DIR}/guardian-${i}.log" 2>&1 &
         echo $! > "${PIDS_DIR}/guardian-${i}.pid"
     done
 
-    # Wait for all 3 to be ready (DKG takes a few seconds)
+    # Wait for all 3 to be ready (DKG) and connected to their nodes
     for i in 1 2 3; do
         PORT=$((3009 + i))
-        for attempt in $(seq 1 30); do
+        for attempt in $(seq 1 60); do
             HEALTH=$(curl -s "http://localhost:${PORT}/health" 2>/dev/null || echo "")
-            if echo "${HEALTH}" | grep -q '"ready":true'; then
-                echo "Guardian ${i} ready on port ${PORT}"
+            if echo "${HEALTH}" | grep -q '"ready":true' && echo "${HEALTH}" | grep -q '"node_connected":true'; then
+                echo "Guardian ${i} ready and node-connected on port ${PORT}"
                 break
             fi
-            if [ "${attempt}" -eq 30 ]; then
-                echo "ERROR: Guardian ${i} failed to become ready on port ${PORT}"
-                cat "${LOGS_DIR}/guardian-${i}.log" 2>/dev/null | tail -10
+            if [ "${attempt}" -eq 60 ]; then
+                echo "ERROR: Guardian ${i} failed to become ready/connected on port ${PORT}"
+                echo "Last health: ${HEALTH}"
+                cat "${LOGS_DIR}/guardian-${i}.log" 2>/dev/null | tail -20
                 exit 1
             fi
             sleep 1
@@ -208,7 +216,7 @@ script = [
 
     # Save the public key for reference
     curl -s "http://localhost:3010/public-key" > "${KEYS_BASE}/guardian-public-key.json"
-    echo "All 3 guardians ready (DKG complete, public key saved)"
+    echo "All 3 guardians ready (DKG complete, nodes connected, public key saved)"
     '''
 ]
 
@@ -325,7 +333,7 @@ script = [
 ]
 
 [tasks.reset-network]
-description = "Stop all Freenet processes, wipe state, start multi-node network (1 gateway + 3 nodes)"
+description = "Stop all Freenet processes, wipe state, start multi-node network (1 gateway + 3 nodes + 3 guardian nodes)"
 script = [
     '''
     set -euo pipefail
@@ -340,9 +348,12 @@ script = [
     sleep 2
 
     # Wipe node state and stale config (nodes share config-dir, so config.toml conflicts)
-    rm -rf "${BASE}/gw1/db" "${BASE}/n1/db" "${BASE}/n2/db" "${BASE}/n3/db" "${HOME}/.local/share/freenet/db"
+    rm -rf "${BASE}/gw1/db" "${BASE}/n1/db" "${BASE}/n2/db" "${BASE}/n3/db"
+    rm -rf "${BASE}/g1/db" "${BASE}/g2/db" "${BASE}/g3/db"
+    rm -rf "${HOME}/.local/share/freenet/db"
     rm -f "${BASE}/config.toml"
     mkdir -p "${KEYS}" "${PIDS}" "${LOGS}" "${BASE}/gw1" "${BASE}/n1" "${BASE}/n2" "${BASE}/n3"
+    mkdir -p "${BASE}/g1" "${BASE}/g2" "${BASE}/g3"
 
     # Generate X25519 transport keypair if missing
     if [ ! -f "${KEYS}/gw1_private_key.pem" ] || head -1 "${KEYS}/gw1_private_key.pem" | grep -q "BEGIN"; then
@@ -429,9 +440,49 @@ TOML
     echo $! > "${PIDS}/n3.pid"
     sleep 2
 
-    # Verify all four are running
+    # Guardian co-located Freenet nodes (g1, g2, g3)
+    echo "Starting guardian node g1 on ws:3005..."
+    : > "${LOGS}/g1.log"
+    nohup env ${ENV} freenet network \
+        --skip-load-from-network \
+        --config-dir "${BASE}" \
+        --ws-api-port 3005 \
+        --public-network-port 3105 \
+        --data-dir "${BASE}/g1" \
+        --network-port 3105 \
+        >> "${LOGS}/g1.log" 2>&1 &
+    echo $! > "${PIDS}/g1.pid"
+    sleep 2
+
+    echo "Starting guardian node g2 on ws:3006..."
+    : > "${LOGS}/g2.log"
+    nohup env ${ENV} freenet network \
+        --skip-load-from-network \
+        --config-dir "${BASE}" \
+        --ws-api-port 3006 \
+        --public-network-port 3106 \
+        --data-dir "${BASE}/g2" \
+        --network-port 3106 \
+        >> "${LOGS}/g2.log" 2>&1 &
+    echo $! > "${PIDS}/g2.pid"
+    sleep 2
+
+    echo "Starting guardian node g3 on ws:3007..."
+    : > "${LOGS}/g3.log"
+    nohup env ${ENV} freenet network \
+        --skip-load-from-network \
+        --config-dir "${BASE}" \
+        --ws-api-port 3007 \
+        --public-network-port 3107 \
+        --data-dir "${BASE}/g3" \
+        --network-port 3107 \
+        >> "${LOGS}/g3.log" 2>&1 &
+    echo $! > "${PIDS}/g3.pid"
+    sleep 2
+
+    # Verify all seven are running
     RUNNING=0
-    for port in 3001 3002 3003 3004; do
+    for port in 3001 3002 3003 3004 3005 3006 3007; do
         if ss -tlnp 2>/dev/null | grep -q ":${port} "; then
             RUNNING=$((RUNNING + 1))
         else
@@ -441,14 +492,17 @@ TOML
                 3002) tail -5 "${LOGS}/n1.log" 2>/dev/null ;;
                 3003) tail -5 "${LOGS}/n2.log" 2>/dev/null ;;
                 3004) tail -5 "${LOGS}/n3.log" 2>/dev/null ;;
+                3005) tail -5 "${LOGS}/g1.log" 2>/dev/null ;;
+                3006) tail -5 "${LOGS}/g2.log" 2>/dev/null ;;
+                3007) tail -5 "${LOGS}/g3.log" 2>/dev/null ;;
             esac
         fi
     done
 
-    if [ "${RUNNING}" -eq 4 ]; then
-        echo "Multi-node network ready: gateway=3001, node-1=3002, node-2=3003, node-3=3004"
+    if [ "${RUNNING}" -eq 7 ]; then
+        echo "Multi-node network ready: gw=3001, n1=3002, n2=3003, n3=3004, g1=3005, g2=3006, g3=3007"
     else
-        echo "ERROR: Only ${RUNNING}/4 nodes started. Check logs in ${LOGS}/"
+        echo "ERROR: Only ${RUNNING}/7 nodes started. Check logs in ${LOGS}/"
         exit 1
     fi
     ''',

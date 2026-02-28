@@ -1367,6 +1367,7 @@ dependencies = [
  "cream-common",
  "dirs",
  "ed25519-dalek",
+ "freenet-stdlib",
  "frost-ed25519",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -1374,7 +1375,10 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
  "tower-http",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

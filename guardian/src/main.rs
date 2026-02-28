@@ -6,9 +6,15 @@
 //! 1. **Keys on disk** → load and activate immediately
 //! 2. **`--peers` provided, no keys** → run DKG ceremony with peer guardians
 //! 3. **No `--peers`, no keys** → `dev_root_frost_keys()` fallback (trusted dealer)
+//!
+//! Optionally connects to a co-located Freenet node (`--node-url`) and subscribes
+//! to critical contracts (directory, root user) to strengthen replication.
+
+mod contracts;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -17,6 +23,7 @@ use axum::http::Method;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::Parser;
+use freenet_stdlib::client_api::{ClientRequest, ContractRequest, ContractResponse, HostResponse};
 use frost_ed25519 as frost;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
@@ -45,6 +52,11 @@ struct Cli {
     /// (e.g. "http://localhost:3011,http://localhost:3012").
     #[arg(long, value_delimiter = ',')]
     peers: Vec<String>,
+
+    /// WebSocket URL of the co-located Freenet node.
+    /// (e.g. "ws://localhost:3005/v1/contract/command?encodingProtocol=native")
+    #[arg(long)]
+    node_url: Option<String>,
 }
 
 struct AppState {
@@ -54,6 +66,7 @@ struct AppState {
     public_key_package: RwLock<Option<frost::keys::PublicKeyPackage>>,
     nonces: Mutex<BTreeMap<String, (frost::round1::SigningNonces, Instant)>>,
     dkg_state: Mutex<DkgState>,
+    node_connected: AtomicBool,
 }
 
 impl AppState {
@@ -105,6 +118,7 @@ struct HealthResponse {
     status: String,
     identifier: frost::Identifier,
     ready: bool,
+    node_connected: bool,
 }
 
 #[derive(Serialize)]
@@ -277,6 +291,7 @@ async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRespon
         status: "ok".to_string(),
         identifier: state.identifier,
         ready: state.is_ready(),
+        node_connected: state.node_connected.load(Ordering::Relaxed),
     })
 }
 
@@ -449,6 +464,124 @@ async fn run_dkg(state: Arc<AppState>, peers: Vec<String>) {
     println!("DKG: ceremony complete — guardian is ready for signing");
 }
 
+// ─── Contract Monitoring ─────────────────────────────────────────────────────
+
+/// Connect to the co-located Freenet node and subscribe to critical contracts.
+///
+/// Waits for signing readiness (keys loaded/DKG complete), then connects via
+/// WebSocket and subscribes to the directory and root user contracts. Runs an
+/// event loop logging `UpdateNotification` events. Reconnects on disconnect.
+async fn monitor_contracts(state: Arc<AppState>, node_url: String) {
+    // Wait until keys are ready (DKG may still be running)
+    loop {
+        if state.is_ready() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    let pubkey_package = state
+        .public_key_package
+        .read()
+        .await
+        .clone()
+        .expect("public key package must be set when ready");
+
+    let directory_key = contracts::directory_contract_key();
+    let root_user_key = contracts::root_user_contract_key(&pubkey_package);
+
+    println!(
+        "Node monitor: directory contract key = {}",
+        directory_key
+    );
+    println!(
+        "Node monitor: root user contract key = {}",
+        root_user_key
+    );
+
+    let mut backoff = std::time::Duration::from_secs(1);
+    let max_backoff = std::time::Duration::from_secs(30);
+
+    loop {
+        println!("Node monitor: connecting to {} ...", node_url);
+
+        let ws_conn = match tokio_tungstenite::connect_async(&node_url).await {
+            Ok((conn, _)) => conn,
+            Err(e) => {
+                println!("Node monitor: WebSocket connect failed: {} (retrying in {:?})", e, backoff);
+                state.node_connected.store(false, Ordering::Relaxed);
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(max_backoff);
+                continue;
+            }
+        };
+
+        let mut api = freenet_stdlib::client_api::WebApi::start(ws_conn);
+
+        // Subscribe to directory contract
+        if let Err(e) = api
+            .send(ClientRequest::ContractOp(ContractRequest::Subscribe {
+                key: *directory_key.id(),
+                summary: None,
+            }))
+            .await
+        {
+            println!("Node monitor: failed to subscribe to directory: {}", e);
+            state.node_connected.store(false, Ordering::Relaxed);
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(max_backoff);
+            continue;
+        }
+        println!("Node monitor: subscribed to directory contract");
+
+        // Subscribe to root user contract
+        if let Err(e) = api
+            .send(ClientRequest::ContractOp(ContractRequest::Subscribe {
+                key: *root_user_key.id(),
+                summary: None,
+            }))
+            .await
+        {
+            println!("Node monitor: failed to subscribe to root user contract: {}", e);
+            state.node_connected.store(false, Ordering::Relaxed);
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(max_backoff);
+            continue;
+        }
+        println!("Node monitor: subscribed to root user contract");
+
+        state.node_connected.store(true, Ordering::Relaxed);
+        backoff = std::time::Duration::from_secs(1); // Reset backoff on success
+        println!("Node monitor: connected and subscribed — listening for updates");
+
+        // Event loop: log notifications
+        loop {
+            match api.recv().await {
+                Ok(HostResponse::ContractResponse(ContractResponse::UpdateNotification {
+                    key,
+                    ..
+                })) => {
+                    println!("Node monitor: update notification for contract {}", key);
+                }
+                Ok(HostResponse::Ok) => {
+                    // Subscription acknowledgement or other OK — ignore
+                }
+                Ok(other) => {
+                    println!("Node monitor: received {:?}", other);
+                }
+                Err(e) => {
+                    println!("Node monitor: connection error: {} — reconnecting", e);
+                    state.node_connected.store(false, Ordering::Relaxed);
+                    break;
+                }
+            }
+        }
+
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(max_backoff);
+    }
+}
+
 /// Map a FROST Identifier to its peer URL.
 ///
 /// Peer URLs are ordered by their share index, excluding our own index.
@@ -493,6 +626,7 @@ async fn main() {
         public_key_package: RwLock::new(None),
         nonces: Mutex::new(BTreeMap::new()),
         dkg_state: Mutex::new(DkgState::default()),
+        node_connected: AtomicBool::new(false),
     });
 
     // ── Key initialization ──
@@ -557,6 +691,14 @@ async fn main() {
         let peers = cli.peers.clone();
         tokio::spawn(async move {
             run_dkg(dkg_state, peers).await;
+        });
+    }
+
+    // Spawn node monitor if --node-url provided
+    if let Some(node_url) = cli.node_url {
+        let monitor_state = state.clone();
+        tokio::spawn(async move {
+            monitor_contracts(monitor_state, node_url).await;
         });
     }
 
