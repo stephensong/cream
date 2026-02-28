@@ -1,0 +1,103 @@
+id: cream-guardian
+title: CREAM Guardian
+version: 0.1.0
+release-notes: Initial release — FROST threshold guardian for the CREAM marketplace.
+license: MIT
+wrapper-repo: https://github.com/nicobao/cream
+upstream-repo: https://github.com/nicobao/cream
+support-site: https://github.com/nicobao/cream/issues
+marketing-site: https://github.com/nicobao/cream
+build: ["make"]
+description:
+  short: FROST threshold guardian for CREAM e-cash
+  long: |
+    A FROST threshold signing guardian for the CREAM (CURD Retail Exchange And Marketplace)
+    decentralized dairy marketplace. Guardians collectively manage the root signing key for
+    CURD e-cash operations using distributed key generation (DKG) and threshold signatures.
+    A federation of guardians (e.g. 2-of-3) ensures no single party controls the funds.
+assets:
+  license: LICENSE
+  icon: icon.png
+  instructions: instructions.md
+main:
+  type: docker
+  image: main
+  entrypoint: docker_entrypoint.sh
+  args: []
+  mounts:
+    main: /data
+    compat: /mnt/assets
+  io-format: yaml
+  inject: true
+  shm-size-mb: null
+  sigterm-timeout: 30
+health-checks:
+  main:
+    name: Guardian API
+    success-message: Guardian is ready and accepting signing requests.
+    type: script
+config:
+  get:
+    type: script
+  set:
+    type: script
+volumes:
+  main:
+    type: data
+  compat:
+    type: assets
+interfaces:
+  main:
+    name: Guardian API
+    description: HTTP API for FROST signing, DKG, health checks, and configuration queries.
+    tor-config:
+      port-mapping:
+        3010: "3010"
+    lan-config:
+      3010:
+        ssl: false
+        internal: 3010
+    ui: false
+    protocols:
+      - tcp
+      - http
+dependencies:
+  bitcoind:
+    version: ">=0.21.1.1 <29.0.0"
+    requirement:
+      type: opt-in
+      how: Required for future Lightning peg-in/peg-out support.
+    description: Bitcoin Core provides the base layer for CURD-to-BTC settlement.
+  lnd:
+    version: ">=0.14.0 <1.0.0"
+    requirement:
+      type: opt-in
+      how: Required for future Lightning peg-in/peg-out support.
+    description: LND provides Lightning Network channels for fast CURD settlement.
+backup:
+  create:
+    type: docker
+    image: compat
+    system: true
+    entrypoint: compat
+    args:
+      - duplicity
+      - create
+      - /mnt/backup
+      - /data
+    mounts:
+      BACKUP: /mnt/backup
+      main: /data
+  restore:
+    type: docker
+    image: compat
+    system: true
+    entrypoint: compat
+    args:
+      - duplicity
+      - restore
+      - /mnt/backup
+      - /data
+    mounts:
+      BACKUP: /mnt/backup
+      main: /data

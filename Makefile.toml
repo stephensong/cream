@@ -983,3 +983,8 @@ script = [
     echo "=== test-redeal PASSED ==="
     ''',
 ]
+
+[tasks.build-s9pk]
+description = "Build StartOS .s9pk package for cream-guardian"
+cwd = "cream-startos"
+command = "make"
