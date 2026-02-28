@@ -25,7 +25,11 @@ pub enum SigningService {
     /// All shares in-process (trusted dealer mode).
     Local,
     /// Distributed signing via guardian HTTP daemons.
-    Remote { guardian_urls: Vec<String> },
+    Remote {
+        guardian_urls: Vec<String>,
+        /// Cached public key package, fetched from guardian on first use.
+        cached_pubkey: std::sync::Arc<std::sync::Mutex<Option<frost_ed25519::keys::PublicKeyPackage>>>,
+    },
 }
 
 #[allow(dead_code)] // used in WASM builds
@@ -39,6 +43,7 @@ impl SigningService {
         } else {
             SigningService::Remote {
                 guardian_urls: urls,
+                cached_pubkey: std::sync::Arc::new(std::sync::Mutex::new(None)),
             }
         }
     }
@@ -48,8 +53,8 @@ impl SigningService {
         match self {
             SigningService::Local => Ok(cream_common::identity::root_sign(message)),
             #[cfg(target_family = "wasm")]
-            SigningService::Remote { guardian_urls } => {
-                wasm_impl::remote_sign(guardian_urls, message).await
+            SigningService::Remote { guardian_urls, cached_pubkey } => {
+                wasm_impl::remote_sign(guardian_urls, message, cached_pubkey).await
             }
             #[cfg(not(target_family = "wasm"))]
             SigningService::Remote { .. } => {
@@ -102,6 +107,7 @@ mod wasm_impl {
     pub async fn remote_sign(
         guardian_urls: &[String],
         message: &[u8],
+        cached_pubkey: &std::sync::Arc<std::sync::Mutex<Option<frost::keys::PublicKeyPackage>>>,
     ) -> Result<ed25519_dalek::Signature, String> {
         let session_id = generate_session_id()?;
         let message_hex = bytes_to_hex(message);
@@ -215,7 +221,18 @@ mod wasm_impl {
 
         // Aggregate signature shares
         let signing_package = frost::SigningPackage::new(commitments_map, message);
-        let (_, pubkey_package) = cream_common::frost::dev_root_frost_keys();
+
+        // Fetch public key from guardian (cached after first call)
+        let pubkey_package = {
+            let existing = cached_pubkey.lock().unwrap().clone();
+            if let Some(pkg) = existing {
+                pkg
+            } else {
+                let pkg = fetch_public_key(&guardian_urls[0]).await?;
+                *cached_pubkey.lock().unwrap() = Some(pkg.clone());
+                pkg
+            }
+        };
 
         let group_signature =
             frost::aggregate(&signing_package, &signature_shares, &pubkey_package)
@@ -229,6 +246,20 @@ mod wasm_impl {
             .try_into()
             .expect("signature is 64 bytes");
         Ok(ed25519_dalek::Signature::from_bytes(&sig_bytes))
+    }
+
+    /// Fetch the PublicKeyPackage from a guardian's /public-key endpoint.
+    async fn fetch_public_key(
+        guardian_url: &str,
+    ) -> Result<frost::keys::PublicKeyPackage, String> {
+        let resp_text =
+            fetch_json(&format!("{}/public-key", guardian_url), "GET", None).await?;
+        serde_json::from_str(&resp_text).map_err(|e| {
+            format!(
+                "Failed to parse public key from {}: {}",
+                guardian_url, e
+            )
+        })
     }
 
     /// Fetch JSON via web_sys (same pattern as rendezvous.rs).

@@ -158,43 +158,115 @@ command = "cargo"
 args = ["build", "-p", "cream-guardian"]
 
 [tasks.start-guardians]
-description = "Start 3 FROST guardian daemons on ports 3010/3011/3012"
+description = "Start 3 FROST guardian daemons with DKG on ports 3010/3011/3012"
 dependencies = ["build-guardian"]
 script = [
     '''
     set -euo pipefail
     PIDS_DIR="${HOME}/.cache/freenet/pids"
     LOGS_DIR="${HOME}/.cache/freenet/logs"
+    KEYS_BASE="${HOME}/.cache/freenet"
     mkdir -p "${PIDS_DIR}" "${LOGS_DIR}"
 
     GUARDIAN_BIN="./target/debug/cream-guardian"
 
+    # Clear previous DKG keys so a fresh ceremony runs
+    rm -rf "${KEYS_BASE}/guardian-1" "${KEYS_BASE}/guardian-2" "${KEYS_BASE}/guardian-3"
+
+    # Peer URLs for each guardian (each gets the other two)
+    PEERS_1="http://localhost:3011,http://localhost:3012"
+    PEERS_2="http://localhost:3010,http://localhost:3012"
+    PEERS_3="http://localhost:3010,http://localhost:3011"
+
     for i in 1 2 3; do
         PORT=$((3009 + i))
-        echo "Starting guardian ${i} on port ${PORT}..."
+        eval "PEERS=\$PEERS_${i}"
+        echo "Starting guardian ${i} on port ${PORT} with peers ${PEERS}..."
         : > "${LOGS_DIR}/guardian-${i}.log"
-        nohup "${GUARDIAN_BIN}" --share-index "${i}" --port "${PORT}" \
+        nohup "${GUARDIAN_BIN}" --share-index "${i}" --port "${PORT}" --peers "${PEERS}" \
             >> "${LOGS_DIR}/guardian-${i}.log" 2>&1 &
         echo $! > "${PIDS_DIR}/guardian-${i}.pid"
     done
 
-    # Wait for all 3 to be ready
+    # Wait for all 3 to be ready (DKG takes a few seconds)
     for i in 1 2 3; do
         PORT=$((3009 + i))
-        for attempt in $(seq 1 10); do
-            if curl -s "http://localhost:${PORT}/health" > /dev/null 2>&1; then
+        for attempt in $(seq 1 30); do
+            HEALTH=$(curl -s "http://localhost:${PORT}/health" 2>/dev/null || echo "")
+            if echo "${HEALTH}" | grep -q '"ready":true'; then
                 echo "Guardian ${i} ready on port ${PORT}"
                 break
             fi
-            if [ "${attempt}" -eq 10 ]; then
-                echo "ERROR: Guardian ${i} failed to start on port ${PORT}"
-                cat "${LOGS_DIR}/guardian-${i}.log" 2>/dev/null | tail -5
+            if [ "${attempt}" -eq 30 ]; then
+                echo "ERROR: Guardian ${i} failed to become ready on port ${PORT}"
+                cat "${LOGS_DIR}/guardian-${i}.log" 2>/dev/null | tail -10
                 exit 1
             fi
             sleep 1
         done
     done
-    echo "All 3 guardians ready"
+
+    # Save the public key for reference
+    curl -s "http://localhost:3010/public-key" > "${KEYS_BASE}/guardian-public-key.json"
+    echo "All 3 guardians ready (DKG complete, public key saved)"
+    '''
+]
+
+[tasks.dkg]
+description = "Run standalone DKG ceremony: start 3 guardians, wait for DKG, save public key, stop"
+dependencies = ["build-guardian"]
+script = [
+    '''
+    set -euo pipefail
+    KEYS_BASE="${HOME}/.cache/freenet"
+    LOGS_DIR="${KEYS_BASE}/logs"
+    mkdir -p "${LOGS_DIR}"
+
+    GUARDIAN_BIN="./target/debug/cream-guardian"
+
+    # Clear previous DKG keys
+    rm -rf "${KEYS_BASE}/guardian-1" "${KEYS_BASE}/guardian-2" "${KEYS_BASE}/guardian-3"
+
+    PEERS_1="http://localhost:3011,http://localhost:3012"
+    PEERS_2="http://localhost:3010,http://localhost:3012"
+    PEERS_3="http://localhost:3010,http://localhost:3011"
+
+    PIDS=""
+    for i in 1 2 3; do
+        PORT=$((3009 + i))
+        eval "PEERS=\$PEERS_${i}"
+        : > "${LOGS_DIR}/guardian-${i}.log"
+        nohup "${GUARDIAN_BIN}" --share-index "${i}" --port "${PORT}" --peers "${PEERS}" \
+            >> "${LOGS_DIR}/guardian-${i}.log" 2>&1 &
+        PIDS="${PIDS} $!"
+    done
+
+    # Wait for DKG to complete on all 3
+    for i in 1 2 3; do
+        PORT=$((3009 + i))
+        for attempt in $(seq 1 30); do
+            HEALTH=$(curl -s "http://localhost:${PORT}/health" 2>/dev/null || echo "")
+            if echo "${HEALTH}" | grep -q '"ready":true'; then
+                echo "Guardian ${i} DKG complete"
+                break
+            fi
+            if [ "${attempt}" -eq 30 ]; then
+                echo "ERROR: Guardian ${i} DKG timed out"
+                cat "${LOGS_DIR}/guardian-${i}.log" 2>/dev/null | tail -10
+                kill ${PIDS} 2>/dev/null || true
+                exit 1
+            fi
+            sleep 1
+        done
+    done
+
+    # Save public key
+    curl -s "http://localhost:3010/public-key" > "${KEYS_BASE}/guardian-public-key.json"
+    echo "DKG ceremony complete. Public key saved to ${KEYS_BASE}/guardian-public-key.json"
+
+    # Stop guardians
+    kill ${PIDS} 2>/dev/null || true
+    echo "Guardians stopped"
     '''
 ]
 

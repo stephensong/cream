@@ -272,7 +272,7 @@ pub async fn wait_for_get(
 
         api.send(ClientRequest::ContractOp(ContractRequest::Get {
             key,
-            return_contract_code: false,
+            return_contract_code: true,
             subscribe: false,
             blocking_subscribe: false,
         }))
