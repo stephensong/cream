@@ -192,9 +192,8 @@ pub fn WalletView() -> Element {
                                             #[cfg(target_family = "wasm")]
                                             {
                                                 if let Some(window) = web_sys::window() {
-                                                    if let Some(clipboard) = window.navigator().clipboard() {
-                                                        let _ = clipboard.write_text(&_bolt11);
-                                                    }
+                                                    let clipboard = window.navigator().clipboard();
+                                                    let _ = clipboard.write_text(&_bolt11);
                                                 }
                                             }
                                         }
