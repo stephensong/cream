@@ -4,6 +4,7 @@
 /ui/package-lock.json
 /ui/assets/tailwind.css
 tests/e2e/node_modules/
+test-results/
 tests/e2e/test-results/
 tests/e2e/playwright-report/
 .claude/
