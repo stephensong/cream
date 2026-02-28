@@ -792,7 +792,48 @@ async fn cumulative_node_tests() {
         use cream_common::user_contract::UserContractState;
         use cream_common::wallet::TransactionKind;
 
-        // GET root contract state from gateway
+        // GET root contract state from gateway — retry until all 5 transfers
+        // have propagated (Freenet eventual consistency means the last UPDATE
+        // may not be visible immediately on a different node).
+        let expected_balance = 1_000_000 - (5 * 10_000);
+        let expected_ledger_len = 6; // genesis credit + 5 debits
+        let mut root_state: UserContractState;
+        let mut converged = false;
+        for attempt in 1..=10 {
+            let mut probe_check = connect_to_node_at(&node_url(3001)).await;
+            let root_bytes = cream_node_integration::wait_for_get(
+                &mut probe_check,
+                *h.root_contract_key.id(),
+                TIMEOUT,
+            )
+            .await
+            .expect("GET root contract");
+            root_state = serde_json::from_slice(&root_bytes).expect("deserialize root contract");
+
+            if root_state.balance_curds == expected_balance
+                && root_state.ledger.len() == expected_ledger_len
+            {
+                converged = true;
+                break;
+            }
+            if attempt < 10 {
+                println!(
+                    "  [RETRY {}/10] balance={} (want {}), ledger={} (want {}) — waiting 2s",
+                    attempt, root_state.balance_curds, expected_balance,
+                    root_state.ledger.len(), expected_ledger_len,
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            } else {
+                panic!(
+                    "9: root balance did not converge after {} attempts: balance={} (want {}), ledger={} (want {})",
+                    attempt, root_state.balance_curds, expected_balance,
+                    root_state.ledger.len(), expected_ledger_len,
+                );
+            }
+        }
+        assert!(converged);
+
+        // Re-fetch the converged state for the cross-check below
         let mut probe = connect_to_node_at(&node_url(3001)).await;
         let root_bytes = cream_node_integration::wait_for_get(
             &mut probe,
@@ -800,25 +841,9 @@ async fn cumulative_node_tests() {
             TIMEOUT,
         )
         .await
-        .expect("GET root contract");
+        .expect("GET root contract (final)");
         let root_state: UserContractState =
             serde_json::from_slice(&root_bytes).expect("deserialize root contract");
-
-        // Root should have 1M - 5*10K = 950,000 CURD (3 suppliers + 2 customers)
-        let expected_balance = 1_000_000 - (5 * 10_000);
-        assert_eq!(
-            root_state.balance_curds, expected_balance,
-            "9: root balance should be {} (1M - 5*10K), got {}",
-            expected_balance, root_state.balance_curds,
-        );
-
-        // Verify root has genesis credit + 5 debits = 6 ledger entries
-        assert_eq!(
-            root_state.ledger.len(),
-            6,
-            "9: root should have 6 ledger entries (genesis + 5 debits), got {}",
-            root_state.ledger.len()
-        );
 
         // Verify each debit has a matching credit on the recipient's user contract
         for debit in root_state.ledger.iter().filter(|t| t.kind == TransactionKind::Debit) {
