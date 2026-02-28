@@ -983,6 +983,7 @@ async fn cumulative_node_tests() {
             receiver: cream_common::identity::ROOT_USER_NAME.to_string(),
             tx_ref: tx_ref.clone(),
             timestamp: now_str.clone(),
+            lightning_payment_hash: None,
         };
 
         let mut probe = connect_to_node_at(&node_url(3001)).await;
@@ -1012,6 +1013,7 @@ async fn cumulative_node_tests() {
             receiver: cream_common::identity::ROOT_USER_NAME.to_string(),
             tx_ref: tx_ref.clone(),
             timestamp: now_str.clone(),
+            lightning_payment_hash: None,
         };
 
         let root_bytes = cream_node_integration::wait_for_get(&mut probe, *h.root_contract_key.id(), TIMEOUT)
@@ -1058,6 +1060,7 @@ async fn cumulative_node_tests() {
             receiver: "Gary".to_string(),
             tx_ref: settle_tx_ref.clone(),
             timestamp: settle_now_str.clone(),
+            lightning_payment_hash: None,
         };
 
         let root_bytes = cream_node_integration::wait_for_get(&mut probe, *h.root_contract_key.id(), TIMEOUT)
@@ -1087,6 +1090,7 @@ async fn cumulative_node_tests() {
             receiver: "Gary".to_string(),
             tx_ref: settle_tx_ref.clone(),
             timestamp: settle_now_str.clone(),
+            lightning_payment_hash: None,
         };
 
         let gary_bytes = cream_node_integration::wait_for_get(&mut probe, *gary_uc_key.id(), TIMEOUT)

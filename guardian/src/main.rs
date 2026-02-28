@@ -11,6 +11,7 @@
 //! to critical contracts (directory, root user) to strengthen replication.
 
 mod contracts;
+mod lightning;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -28,6 +29,8 @@ use frost_ed25519 as frost;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use tower_http::cors::{Any, CorsLayer};
+
+use crate::lightning::{LightningState, LndConfig, LndGateway};
 
 /// TTL for stored nonces (seconds). Expired nonces are cleaned on each round1 call.
 const NONCE_TTL_SECS: u64 = 30;
@@ -80,6 +83,34 @@ struct Cli {
     /// New threshold (for --redeal).
     #[arg(long)]
     new_min_signers: Option<u16>,
+
+    /// Enable Lightning gateway mode (this guardian runs LND).
+    #[arg(long)]
+    lightning_gateway: bool,
+
+    /// LND gRPC host (default: localhost).
+    #[arg(long, default_value = "localhost")]
+    lnd_host: String,
+
+    /// LND gRPC port (default: 10009).
+    #[arg(long, default_value_t = 10009)]
+    lnd_port: u32,
+
+    /// Path to LND TLS certificate (tls.cert).
+    #[arg(long)]
+    lnd_cert: Option<String>,
+
+    /// Path to LND admin macaroon (admin.macaroon).
+    #[arg(long)]
+    lnd_macaroon: Option<String>,
+
+    /// Maximum peg-in amount in sats (default: unlimited).
+    #[arg(long)]
+    pegin_limit_sats: Option<u64>,
+
+    /// Maximum daily peg-out amount in sats (default: unlimited).
+    #[arg(long)]
+    daily_pegout_limit_sats: Option<u64>,
 }
 
 struct AppState {
@@ -94,6 +125,7 @@ struct AppState {
     refresh_state: Mutex<DkgState>,
     refreshing: AtomicBool,
     node_connected: AtomicBool,
+    lightning: Option<Arc<LightningState>>,
 }
 
 impl AppState {
@@ -150,6 +182,8 @@ struct HealthResponse {
     ready: bool,
     refreshing: bool,
     node_connected: bool,
+    lightning_gateway: bool,
+    lnd_connected: bool,
 }
 
 #[derive(Serialize)]
@@ -334,15 +368,390 @@ async fn public_key_handler(
     }
 }
 
+// ─── Lightning Handlers ──────────────────────────────────────────────────────
+
+type LnResult<T> = Result<Json<T>, (axum::http::StatusCode, Json<ErrorResponse>)>;
+
+fn require_lightning(state: &AppState) -> Result<&Arc<LightningState>, (axum::http::StatusCode, Json<ErrorResponse>)> {
+    state.lightning.as_ref().ok_or_else(|| {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "Lightning gateway not enabled on this guardian".to_string(),
+            }),
+        )
+    })
+}
+
+#[derive(Deserialize)]
+struct PegInRequest {
+    amount_sats: u64,
+}
+
+#[derive(Serialize)]
+struct PegInResponse {
+    bolt11: String,
+    payment_hash: String,
+    amount_sats: u64,
+}
+
+async fn pegin_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<PegInRequest>,
+) -> LnResult<PegInResponse> {
+    let ln = require_lightning(&state)?;
+
+    // Check limit
+    {
+        let gw = ln.gateway.lock().await;
+        gw.check_pegin_limit(req.amount_sats).map_err(|e| {
+            (axum::http::StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e }))
+        })?;
+    }
+
+    // Check for replay
+    // (payment hash uniqueness checked after creation since hash is derived from random preimage)
+
+    let (payment_hash, preimage, bolt11) = {
+        let mut gw = ln.gateway.lock().await;
+        gw.create_hold_invoice(req.amount_sats, &format!("CURD peg-in ({} sats)", req.amount_sats))
+            .await
+            .map_err(|e| {
+                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e }))
+            })?
+    };
+
+    // Store pending peg-in
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let mut pending = ln.pending_pegins.write().await;
+        pending.insert(
+            payment_hash.clone(),
+            lightning::PendingPegIn {
+                payment_hash: payment_hash.clone(),
+                bolt11: bolt11.clone(),
+                amount_sats: req.amount_sats,
+                preimage: preimage.clone(),
+                created_at: now,
+                status: lightning::PegInStatus::Waiting,
+            },
+        );
+    }
+
+    ln.record_peg_event("peg-in", &payment_hash, req.amount_sats, "waiting").await;
+
+    Ok(Json(PegInResponse {
+        bolt11,
+        payment_hash,
+        amount_sats: req.amount_sats,
+    }))
+}
+
+#[derive(Deserialize)]
+struct PegInCheckRequest {
+    payment_hash: String,
+}
+
+#[derive(Serialize)]
+struct PegInCheckResponse {
+    status: String,
+    payment_hash: String,
+}
+
+async fn pegin_check_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<PegInCheckRequest>,
+) -> LnResult<PegInCheckResponse> {
+    let ln = require_lightning(&state)?;
+
+    let status = {
+        let mut gw = ln.gateway.lock().await;
+        gw.check_invoice_status(&req.payment_hash).await.map_err(|e| {
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e }))
+        })?
+    };
+
+    // Update pending status
+    {
+        let mut pending = ln.pending_pegins.write().await;
+        if let Some(p) = pending.get_mut(&req.payment_hash) {
+            p.status = status.clone();
+        }
+    }
+
+    let status_str = match status {
+        lightning::PegInStatus::Waiting => "waiting",
+        lightning::PegInStatus::Accepted => "accepted",
+        lightning::PegInStatus::Settled => "settled",
+        lightning::PegInStatus::Cancelled => "cancelled",
+    };
+
+    Ok(Json(PegInCheckResponse {
+        status: status_str.to_string(),
+        payment_hash: req.payment_hash,
+    }))
+}
+
+#[derive(Deserialize)]
+struct PegInSettleRequest {
+    payment_hash: String,
+}
+
+#[derive(Serialize)]
+struct PegInSettleResponse {
+    settled: bool,
+}
+
+async fn pegin_settle_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<PegInSettleRequest>,
+) -> LnResult<PegInSettleResponse> {
+    let ln = require_lightning(&state)?;
+
+    // Check for replay
+    if ln.is_hash_used(&req.payment_hash).await {
+        return Err((
+            axum::http::StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: "Payment hash already used (potential double-mint)".to_string(),
+            }),
+        ));
+    }
+
+    // Get preimage from pending state
+    let preimage = {
+        let pending = ln.pending_pegins.read().await;
+        pending
+            .get(&req.payment_hash)
+            .map(|p| p.preimage.clone())
+            .ok_or_else(|| {
+                (
+                    axum::http::StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: "No pending peg-in with this payment hash".to_string(),
+                    }),
+                )
+            })?
+    };
+
+    // Settle the hold invoice
+    {
+        let mut gw = ln.gateway.lock().await;
+        gw.settle_invoice(&preimage).await.map_err(|e| {
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e }))
+        })?;
+    }
+
+    // Mark hash as used (prevents double-mint)
+    ln.mark_hash_used(&req.payment_hash).await;
+
+    // Update pending state
+    {
+        let mut pending = ln.pending_pegins.write().await;
+        if let Some(p) = pending.get_mut(&req.payment_hash) {
+            p.status = lightning::PegInStatus::Settled;
+        }
+    }
+
+    ln.record_peg_event("peg-in", &req.payment_hash, 0, "settled").await;
+
+    Ok(Json(PegInSettleResponse { settled: true }))
+}
+
+#[derive(Deserialize)]
+struct PegInCancelRequest {
+    payment_hash: String,
+}
+
+#[derive(Serialize)]
+struct PegInCancelResponse {
+    cancelled: bool,
+}
+
+async fn pegin_cancel_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<PegInCancelRequest>,
+) -> LnResult<PegInCancelResponse> {
+    let ln = require_lightning(&state)?;
+
+    {
+        let mut gw = ln.gateway.lock().await;
+        gw.cancel_invoice(&req.payment_hash).await.map_err(|e| {
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e }))
+        })?;
+    }
+
+    // Update pending state
+    {
+        let mut pending = ln.pending_pegins.write().await;
+        if let Some(p) = pending.get_mut(&req.payment_hash) {
+            p.status = lightning::PegInStatus::Cancelled;
+        }
+    }
+
+    ln.record_peg_event("peg-in", &req.payment_hash, 0, "cancelled").await;
+
+    Ok(Json(PegInCancelResponse { cancelled: true }))
+}
+
+#[derive(Deserialize)]
+struct PegOutRequest {
+    bolt11: String,
+    amount_sats: u64,
+}
+
+#[derive(Serialize)]
+struct PegOutResponse {
+    success: bool,
+    preimage: Option<String>,
+    error: Option<String>,
+}
+
+async fn pegout_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<PegOutRequest>,
+) -> LnResult<PegOutResponse> {
+    let ln = require_lightning(&state)?;
+
+    let result = {
+        let mut gw = ln.gateway.lock().await;
+        gw.pay_invoice(&req.bolt11).await.map_err(|e| {
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e }))
+        })?
+    };
+
+    let status = if result.success { "success" } else { "failed" };
+    ln.record_peg_event("peg-out", "", req.amount_sats, status).await;
+
+    Ok(Json(PegOutResponse {
+        success: result.success,
+        preimage: result.preimage,
+        error: result.error,
+    }))
+}
+
+async fn ln_balance_handler(
+    State(state): State<Arc<AppState>>,
+) -> LnResult<serde_json::Value> {
+    let ln = require_lightning(&state)?;
+    let mut gw = ln.gateway.lock().await;
+
+    let wallet = gw.wallet_balance().await.map_err(|e| {
+        (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e }))
+    })?;
+    let channel = gw.channel_balance().await.map_err(|e| {
+        (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e }))
+    })?;
+
+    Ok(Json(serde_json::json!({
+        "wallet": wallet,
+        "channel": channel,
+    })))
+}
+
+async fn ln_channels_handler(
+    State(state): State<Arc<AppState>>,
+) -> LnResult<Vec<lightning::ChannelInfo>> {
+    let ln = require_lightning(&state)?;
+    let mut gw = ln.gateway.lock().await;
+    let channels = gw.list_channels().await.map_err(|e| {
+        (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e }))
+    })?;
+    Ok(Json(channels))
+}
+
+async fn ln_info_handler(
+    State(state): State<Arc<AppState>>,
+) -> LnResult<lightning::LndInfo> {
+    let ln = require_lightning(&state)?;
+    let mut gw = ln.gateway.lock().await;
+    let info = gw.get_info().await.map_err(|e| {
+        (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e }))
+    })?;
+    Ok(Json(info))
+}
+
+#[derive(Deserialize)]
+struct OpenChannelRequest {
+    node_pubkey: String,
+    local_funding_amount: i64,
+}
+
+#[derive(Serialize)]
+struct OpenChannelResponse {
+    channel_point: String,
+}
+
+async fn ln_open_channel_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<OpenChannelRequest>,
+) -> LnResult<OpenChannelResponse> {
+    let ln = require_lightning(&state)?;
+    let mut gw = ln.gateway.lock().await;
+    let channel_point = gw
+        .open_channel(&req.node_pubkey, req.local_funding_amount)
+        .await
+        .map_err(|e| {
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e }))
+        })?;
+    Ok(Json(OpenChannelResponse { channel_point }))
+}
+
+#[derive(Deserialize)]
+struct CloseChannelRequest {
+    channel_point: String,
+    #[serde(default)]
+    force: bool,
+}
+
+#[derive(Serialize)]
+struct CloseChannelResponse {
+    closed: bool,
+}
+
+async fn ln_close_channel_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CloseChannelRequest>,
+) -> LnResult<CloseChannelResponse> {
+    let ln = require_lightning(&state)?;
+    let mut gw = ln.gateway.lock().await;
+    gw.close_channel(&req.channel_point, req.force)
+        .await
+        .map_err(|e| {
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e }))
+        })?;
+    Ok(Json(CloseChannelResponse { closed: true }))
+}
+
+async fn ln_history_handler(
+    State(state): State<Arc<AppState>>,
+) -> LnResult<Vec<lightning::PegTransaction>> {
+    let ln = require_lightning(&state)?;
+    let history = ln.peg_history.read().await;
+    Ok(Json(history.clone()))
+}
+
 // ─── Health ─────────────────────────────────────────────────────────────────
 
 async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
+    let lnd_connected = if let Some(ref lightning) = state.lightning {
+        let mut gw = lightning.gateway.lock().await;
+        gw.get_info().await.is_ok()
+    } else {
+        false
+    };
+
     Json(HealthResponse {
         status: "ok".to_string(),
         identifier: state.identifier,
         ready: state.is_ready(),
         refreshing: state.refreshing.load(Ordering::Relaxed),
         node_connected: state.node_connected.load(Ordering::Relaxed),
+        lightning_gateway: state.lightning.is_some(),
+        lnd_connected,
     })
 }
 
@@ -1086,6 +1495,32 @@ async fn main() {
 
     let port = cli.port.unwrap_or(3009 + cli.share_index);
 
+    // ── Lightning gateway init ──
+    let lightning = if cli.lightning_gateway {
+        let cert = cli.lnd_cert.as_deref().unwrap_or("~/.lnd/tls.cert");
+        let macaroon = cli.lnd_macaroon.as_deref().unwrap_or("~/.lnd/data/chain/bitcoin/mainnet/admin.macaroon");
+        let config = LndConfig {
+            host: cli.lnd_host.clone(),
+            port: cli.lnd_port,
+            cert_path: cert.to_string(),
+            macaroon_path: macaroon.to_string(),
+            pegin_limit_sats: cli.pegin_limit_sats,
+        };
+        match LndGateway::connect(config).await {
+            Ok(gateway) => {
+                println!("Lightning gateway enabled, connected to LND at {}:{}", cli.lnd_host, cli.lnd_port);
+                Some(Arc::new(LightningState::new(gateway, cli.share_index)))
+            }
+            Err(e) => {
+                eprintln!("WARNING: Lightning gateway requested but LND connection failed: {}", e);
+                eprintln!("Guardian will start without Lightning support. Retry by restarting.");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let state = Arc::new(AppState {
         identifier,
         share_index: cli.share_index,
@@ -1098,6 +1533,7 @@ async fn main() {
         refresh_state: Mutex::new(DkgState::default()),
         refreshing: AtomicBool::new(false),
         node_connected: AtomicBool::new(false),
+        lightning,
     });
 
     // ── Key initialization ──
@@ -1147,7 +1583,7 @@ async fn main() {
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(Any);
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/round1", post(round1_handler))
         .route("/round2", post(round2_handler))
         .route("/dkg/round1", post(dkg_round1_handler))
@@ -1158,7 +1594,26 @@ async fn main() {
         .route("/redeal/receive", post(redeal_receive_handler))
         .route("/public-key", get(public_key_handler))
         .route("/config", get(config_handler))
-        .route("/health", get(health_handler))
+        .route("/health", get(health_handler));
+
+    // Lightning routes (conditional on --lightning-gateway)
+    if state.lightning.is_some() {
+        app = app
+            .route("/lightning/peg-in", post(pegin_handler))
+            .route("/lightning/peg-in/check", post(pegin_check_handler))
+            .route("/lightning/peg-in/settle", post(pegin_settle_handler))
+            .route("/lightning/peg-in/cancel", post(pegin_cancel_handler))
+            .route("/lightning/peg-out", post(pegout_handler))
+            .route("/lightning/balance", get(ln_balance_handler))
+            .route("/lightning/channels", get(ln_channels_handler))
+            .route("/lightning/info", get(ln_info_handler))
+            .route("/lightning/channels/open", post(ln_open_channel_handler))
+            .route("/lightning/channels/close", post(ln_close_channel_handler))
+            .route("/lightning/history", get(ln_history_handler));
+        println!("Lightning gateway routes registered");
+    }
+
+    let app = app
         .layer(cors)
         .with_state(state.clone());
 

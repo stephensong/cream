@@ -74,10 +74,18 @@ pub enum NodeAction {
     UpdateUserContract {
         current_supplier: Option<String>,
     },
-    /// Peg-in: deposit BTC via Lightning, receive CURD.
+    /// Peg-in: deposit BTC via Lightning, receive CURD (mock/dev mode).
     PegIn { amount_sats: u64 },
-    /// Peg-out: burn CURD and withdraw BTC via Lightning.
+    /// Peg-in step: CURD allocation after Lightning invoice is accepted.
+    /// Called by the wallet_view polling loop once the hold invoice is paid.
+    PegInAllocate {
+        amount_sats: u64,
+        payment_hash: String,
+    },
+    /// Peg-out: burn CURD and withdraw BTC via Lightning (mock/dev mode).
     PegOut { amount_curd: u64, bolt11: String },
+    /// Peg-out via real Lightning: debit CURD first, then pay via gateway.
+    PegOutViaGateway { amount_curd: u64, bolt11: String },
     /// Faucet: transfer 1000 CURD from root to the current user.
     FaucetTopUp,
     /// Send a message to a supplier's storefront (costs 10 CURD toll).
@@ -565,6 +573,7 @@ mod wasm_impl {
             receiver: receiver_name.clone(),
             tx_ref: tx_ref.clone(),
             timestamp: timestamp.clone(),
+            lightning_payment_hash: None,
         };
 
         // Build credit entry (for receiver's contract)
@@ -577,6 +586,7 @@ mod wasm_impl {
             receiver: receiver_name.clone(),
             tx_ref: tx_ref.clone(),
             timestamp,
+            lightning_payment_hash: None,
         };
 
         // Resolve sender key
@@ -1826,6 +1836,29 @@ mod wasm_impl {
                 }
             }
 
+            NodeAction::PegInAllocate { amount_sats, payment_hash } => {
+                use cream_common::lightning_gateway::CURD_PER_SAT;
+                let curd_amount = amount_sats * CURD_PER_SAT;
+                clog(&format!("[CREAM] PegInAllocate: {} sats → {} CURD (hash: {})", amount_sats, curd_amount, payment_hash));
+
+                let user_name = user_state.read().moniker.clone().unwrap_or_default();
+                wallet.transfer_from_root(
+                    api,
+                    curd_amount,
+                    format!("Lightning peg-in ({} sats)", amount_sats),
+                    user_name,
+                ).await;
+                clog(&format!("[CREAM] PegInAllocate: credited {} CURD, settling invoice", curd_amount));
+
+                // Settle the hold invoice via the gateway
+                if let Some(client) = super::super::lightning_remote::LightningClient::from_env() {
+                    match client.settle_pegin(&payment_hash).await {
+                        Ok(()) => clog("[CREAM] PegInAllocate: invoice settled"),
+                        Err(e) => clog(&format!("[CREAM] ERROR: PegInAllocate settle failed: {}", e)),
+                    }
+                }
+            }
+
             NodeAction::PegOut { amount_curd, bolt11 } => {
                 use cream_common::lightning_gateway::{LightningGateway, PaymentStatus, CURD_PER_SAT};
                 use super::super::lightning_mock::MockLightningGateway;
@@ -1869,6 +1902,67 @@ mod wasm_impl {
                             user_name,
                         ).await;
                     }
+                }
+            }
+
+            NodeAction::PegOutViaGateway { amount_curd, bolt11 } => {
+                use cream_common::lightning_gateway::CURD_PER_SAT;
+                let sats_out = amount_curd / CURD_PER_SAT;
+                clog(&format!("[CREAM] PegOutViaGateway: {} CURD → {} sats", amount_curd, sats_out));
+
+                // Check balance
+                let current_balance = shared.read().user_contract
+                    .as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
+                if current_balance < amount_curd {
+                    clog(&format!(
+                        "[CREAM] ERROR: PegOut insufficient balance: have {}, need {}",
+                        current_balance, amount_curd
+                    ));
+                    return;
+                }
+
+                // Debit CURD from user → root
+                let user_name = user_state.read().moniker.clone().unwrap_or_default();
+                wallet.transfer_to_root(
+                    api,
+                    amount_curd,
+                    format!("Lightning peg-out ({} sats)", sats_out),
+                    user_name.clone(),
+                ).await;
+
+                // Pay via gateway
+                if let Some(client) = super::super::lightning_remote::LightningClient::from_env() {
+                    match client.pay_invoice(&bolt11, sats_out).await {
+                        Ok(resp) if resp.success => {
+                            clog(&format!("[CREAM] PegOutViaGateway: paid {} sats", sats_out));
+                        }
+                        Ok(resp) => {
+                            clog(&format!("[CREAM] ERROR: PegOutViaGateway payment failed: {:?}, refunding", resp.error));
+                            wallet.transfer_from_root(
+                                api,
+                                amount_curd,
+                                "Lightning peg-out refund (payment failed)".to_string(),
+                                user_name,
+                            ).await;
+                        }
+                        Err(e) => {
+                            clog(&format!("[CREAM] ERROR: PegOutViaGateway request failed: {}, refunding", e));
+                            wallet.transfer_from_root(
+                                api,
+                                amount_curd,
+                                "Lightning peg-out refund (gateway error)".to_string(),
+                                user_name,
+                            ).await;
+                        }
+                    }
+                } else {
+                    clog("[CREAM] ERROR: PegOutViaGateway: no gateway configured, refunding");
+                    wallet.transfer_from_root(
+                        api,
+                        amount_curd,
+                        "Lightning peg-out refund (no gateway)".to_string(),
+                        user_name,
+                    ).await;
                 }
             }
 

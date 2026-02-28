@@ -5,6 +5,7 @@ use cream_common::identity::ROOT_USER_NAME;
 use cream_common::lightning_gateway::CURD_PER_SAT;
 use cream_common::wallet::TransactionKind;
 
+use super::lightning_remote::LightningClient;
 use super::node_api::{use_node_action, NodeAction};
 use super::shared_state::use_shared_state;
 use super::user_state::use_user_state;
@@ -16,6 +17,28 @@ fn display_name(name: &str) -> &str {
     } else {
         name
     }
+}
+
+/// State for a pending peg-in operation.
+#[derive(Clone, Debug, PartialEq)]
+enum PegInState {
+    /// No peg-in in progress.
+    Idle,
+    /// Invoice created, waiting for user to pay.
+    WaitingForPayment {
+        bolt11: String,
+        payment_hash: String,
+        amount_sats: u64,
+    },
+    /// HTLC accepted, allocating CURD.
+    Accepted {
+        payment_hash: String,
+        amount_sats: u64,
+    },
+    /// CURD allocated and invoice settled.
+    Complete,
+    /// Something went wrong.
+    Error(String),
 }
 
 #[component]
@@ -64,8 +87,11 @@ pub fn WalletView() -> Element {
     let balance_str = format_amount(displayed_balance);
     let deposits_str = format_amount(incoming_deposits);
 
+    let has_gateway = LightningClient::is_available();
+
     // Peg-in state
     let mut pegin_sats = use_signal(|| String::new());
+    let mut pegin_state = use_signal(|| PegInState::Idle);
     // Peg-out state
     let mut pegout_curd = use_signal(|| String::new());
     let mut pegout_bolt11 = use_signal(|| String::new());
@@ -74,6 +100,65 @@ pub fn WalletView() -> Element {
     let pegin_sats_val: u64 = pegin_sats.read().parse().unwrap_or(0);
     let pegout_curd_val: u64 = pegout_curd.read().parse().unwrap_or(0);
     let pegout_bolt11_empty = pegout_bolt11.read().is_empty();
+    let current_pegin_state = pegin_state.read().clone();
+
+    // Polling coroutine for pending peg-in
+    let _pegin_poll = use_coroutine(move |_rx: UnboundedReceiver<()>| {
+        async move {
+            loop {
+                // Check if we need to poll
+                let state = pegin_state.read().clone();
+                match state {
+                    PegInState::WaitingForPayment { ref payment_hash, amount_sats, .. } => {
+                        let hash = payment_hash.clone();
+                        if let Some(client) = LightningClient::from_env() {
+                            match client.check_pegin_status(&hash).await {
+                                Ok(resp) if resp.status == "accepted" => {
+                                    pegin_state.set(PegInState::Accepted {
+                                        payment_hash: hash.clone(),
+                                        amount_sats,
+                                    });
+                                    // Allocate CURD
+                                    let node = use_node_action();
+                                    node.send(NodeAction::PegInAllocate {
+                                        amount_sats,
+                                        payment_hash: hash,
+                                    });
+                                    pegin_state.set(PegInState::Complete);
+                                    // Auto-clear after a few seconds
+                                    #[cfg(target_family = "wasm")]
+                                    gloo_timers::future::TimeoutFuture::new(3_000).await;
+                                    pegin_state.set(PegInState::Idle);
+                                }
+                                Ok(resp) if resp.status == "settled" => {
+                                    pegin_state.set(PegInState::Complete);
+                                    #[cfg(target_family = "wasm")]
+                                    gloo_timers::future::TimeoutFuture::new(3_000).await;
+                                    pegin_state.set(PegInState::Idle);
+                                }
+                                Ok(resp) if resp.status == "cancelled" => {
+                                    pegin_state.set(PegInState::Error("Invoice cancelled".to_string()));
+                                }
+                                Ok(_) => {
+                                    // Still waiting — poll again
+                                }
+                                Err(e) => {
+                                    pegin_state.set(PegInState::Error(e));
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+
+                // Poll every 3 seconds
+                #[cfg(target_family = "wasm")]
+                gloo_timers::future::TimeoutFuture::new(3_000).await;
+                #[cfg(not(target_family = "wasm"))]
+                std::future::pending::<()>().await; // never runs on native
+            }
+        }
+    });
 
     rsx! {
         div { class: "wallet-view",
@@ -90,33 +175,131 @@ pub fn WalletView() -> Element {
             // ── Peg-In ──
             div { class: "peg-section",
                 h3 { "Deposit (Lightning Peg-In)" }
-                div { class: "form-group",
-                    label { "Amount (sats)" }
-                    input {
-                        r#type: "number",
-                        min: "1",
-                        placeholder: "e.g. 100",
-                        value: "{pegin_sats}",
-                        oninput: move |e| pegin_sats.set(e.value()),
-                    }
-                    if pegin_sats_val > 0 {
-                        {
-                            let curd = pegin_sats_val * CURD_PER_SAT;
-                            rsx! { p { class: "peg-preview", "You will receive {format_amount(curd)}" } }
-                        }
-                    }
-                }
-                button {
-                    disabled: pegin_sats_val == 0,
-                    onclick: move |_| {
-                        let sats: u64 = pegin_sats.read().parse().unwrap_or(0);
-                        if sats > 0 {
-                            let node = use_node_action();
-                            node.send(NodeAction::PegIn { amount_sats: sats });
-                            pegin_sats.set(String::new());
+
+                // Show pending peg-in state
+                match &current_pegin_state {
+                    PegInState::WaitingForPayment { bolt11, amount_sats, .. } => rsx! {
+                        div { class: "pegin-pending",
+                            p { class: "pegin-status", "Waiting for payment..." }
+                            p { "Pay this invoice ({amount_sats} sats) with your Lightning wallet:" }
+                            div { class: "bolt11-display",
+                                code { class: "bolt11-string", "{bolt11}" }
+                                button {
+                                    class: "copy-btn",
+                                    onclick: {
+                                        let _bolt11 = bolt11.clone();
+                                        move |_| {
+                                            #[cfg(target_family = "wasm")]
+                                            {
+                                                if let Some(window) = web_sys::window() {
+                                                    if let Some(clipboard) = window.navigator().clipboard() {
+                                                        let _ = clipboard.write_text(&_bolt11);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
+                                    "Copy"
+                                }
+                            }
+                            button {
+                                class: "cancel-btn",
+                                onclick: move |_| {
+                                    let state = pegin_state.read().clone();
+                                    if let PegInState::WaitingForPayment { ref payment_hash, .. } = state {
+                                        let hash = payment_hash.clone();
+                                        spawn(async move {
+                                            if let Some(client) = LightningClient::from_env() {
+                                                let _ = client.cancel_pegin(&hash).await;
+                                            }
+                                            pegin_state.set(PegInState::Idle);
+                                        });
+                                    }
+                                },
+                                "Cancel"
+                            }
                         }
                     },
-                    "Deposit via Lightning"
+                    PegInState::Accepted { amount_sats, .. } => rsx! {
+                        div { class: "pegin-pending",
+                            p { class: "pegin-status pegin-accepted", "Payment received! Allocating {amount_sats * CURD_PER_SAT} CURD..." }
+                        }
+                    },
+                    PegInState::Complete => rsx! {
+                        div { class: "pegin-pending",
+                            p { class: "pegin-status pegin-complete", "Deposit complete!" }
+                        }
+                    },
+                    PegInState::Error(msg) => rsx! {
+                        div { class: "pegin-pending pegin-error",
+                            p { class: "pegin-status", "Error: {msg}" }
+                            button {
+                                onclick: move |_| pegin_state.set(PegInState::Idle),
+                                "Dismiss"
+                            }
+                        }
+                    },
+                    PegInState::Idle => rsx! {
+                        div { class: "form-group",
+                            label { "Amount (sats)" }
+                            input {
+                                r#type: "number",
+                                min: "1",
+                                placeholder: "e.g. 100",
+                                value: "{pegin_sats}",
+                                oninput: move |e| pegin_sats.set(e.value()),
+                            }
+                            if pegin_sats_val > 0 {
+                                {
+                                    let curd = pegin_sats_val * CURD_PER_SAT;
+                                    rsx! { p { class: "peg-preview", "You will receive {format_amount(curd)}" } }
+                                }
+                            }
+                        }
+                        if has_gateway {
+                            // Real Lightning peg-in
+                            button {
+                                disabled: pegin_sats_val == 0,
+                                onclick: move |_| {
+                                    let sats: u64 = pegin_sats.read().parse().unwrap_or(0);
+                                    if sats > 0 {
+                                        spawn(async move {
+                                            if let Some(client) = LightningClient::from_env() {
+                                                match client.create_pegin_invoice(sats).await {
+                                                    Ok(resp) => {
+                                                        pegin_state.set(PegInState::WaitingForPayment {
+                                                            bolt11: resp.bolt11,
+                                                            payment_hash: resp.payment_hash,
+                                                            amount_sats: resp.amount_sats,
+                                                        });
+                                                        pegin_sats.set(String::new());
+                                                    }
+                                                    Err(e) => {
+                                                        pegin_state.set(PegInState::Error(e));
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    }
+                                },
+                                "Generate Lightning Invoice"
+                            }
+                        } else {
+                            // Mock/dev peg-in (instant)
+                            button {
+                                disabled: pegin_sats_val == 0,
+                                onclick: move |_| {
+                                    let sats: u64 = pegin_sats.read().parse().unwrap_or(0);
+                                    if sats > 0 {
+                                        let node = use_node_action();
+                                        node.send(NodeAction::PegIn { amount_sats: sats });
+                                        pegin_sats.set(String::new());
+                                    }
+                                },
+                                "Deposit via Lightning"
+                            }
+                        }
+                    },
                 }
             }
 
@@ -155,7 +338,11 @@ pub fn WalletView() -> Element {
                         let bolt11 = pegout_bolt11.read().clone();
                         if curd > 0 && !bolt11.is_empty() {
                             let node = use_node_action();
-                            node.send(NodeAction::PegOut { amount_curd: curd, bolt11 });
+                            if has_gateway {
+                                node.send(NodeAction::PegOutViaGateway { amount_curd: curd, bolt11 });
+                            } else {
+                                node.send(NodeAction::PegOut { amount_curd: curd, bolt11 });
+                            }
                             pegout_curd.set(String::new());
                             pegout_bolt11.set(String::new());
                         }

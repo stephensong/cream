@@ -485,6 +485,7 @@ impl TestHarness {
             receiver: cream_common::identity::ROOT_USER_NAME.to_string(),
             tx_ref: "genesis:0:0".to_string(),
             timestamp: chrono::Utc::now().to_rfc3339(),
+            lightning_payment_hash: None,
         };
 
         let mut root_state = UserContractState {
@@ -637,6 +638,7 @@ async fn deploy_supplier_user_contract(
         receiver: supplier.name.clone(),
         tx_ref: tx_ref.clone(),
         timestamp: now_str.clone(),
+        lightning_payment_hash: None,
     };
 
     let uc_state = UserContractState {
@@ -677,6 +679,7 @@ async fn deploy_supplier_user_contract(
         receiver: supplier.name.clone(),
         tx_ref,
         timestamp: now_str,
+        lightning_payment_hash: None,
     };
 
     // GET root state, append debit, Update
@@ -728,6 +731,7 @@ async fn deploy_user_contract(
         receiver: customer.name.clone(),
         tx_ref: tx_ref.clone(),
         timestamp: now_str.clone(),
+        lightning_payment_hash: None,
     };
 
     let uc_state = UserContractState {
@@ -768,6 +772,7 @@ async fn deploy_user_contract(
         receiver: customer.name.clone(),
         tx_ref,
         timestamp: now_str,
+        lightning_payment_hash: None,
     };
 
     // GET root state, append debit, Update

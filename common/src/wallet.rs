@@ -13,6 +13,10 @@ pub struct WalletTransaction {
     /// Format: "{sender}:{timestamp_millis}:{random}"
     pub tx_ref: String,
     pub timestamp: String,
+    /// Lightning payment hash for peg-in/peg-out transactions.
+    /// Used for contract-level deduplication to prevent double-minting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lightning_payment_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

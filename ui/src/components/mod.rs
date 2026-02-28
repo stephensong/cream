@@ -2,6 +2,7 @@ pub mod accordion_md;
 pub mod app;
 pub mod directory_view;
 pub mod faq_view;
+pub mod guardian_admin;
 pub mod iaq_view;
 pub mod key_manager;
 pub mod my_orders;
@@ -19,4 +20,6 @@ pub mod wallet_native;
 pub mod wallet_fedimint;
 pub mod wallet_router;
 pub mod lightning_mock;
+#[allow(dead_code)] // types used in WASM builds only
+pub mod lightning_remote;
 pub mod wallet_view;

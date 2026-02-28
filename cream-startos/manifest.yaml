@@ -65,15 +65,13 @@ dependencies:
   bitcoind:
     version: ">=0.21.1.1 <29.0.0"
     requirement:
-      type: opt-in
-      how: Required for future Lightning peg-in/peg-out support.
-    description: Bitcoin Core provides the base layer for CURD-to-BTC settlement.
+      type: required
+    description: Bitcoin Core provides the base layer for CURD-to-BTC settlement via Lightning.
   lnd:
     version: ">=0.14.0 <1.0.0"
     requirement:
-      type: opt-in
-      how: Required for future Lightning peg-in/peg-out support.
-    description: LND provides Lightning Network channels for fast CURD settlement.
+      type: required
+    description: LND provides Lightning Network channels for CURD peg-in and peg-out settlement.
 backup:
   create:
     type: docker

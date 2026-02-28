@@ -181,11 +181,26 @@ impl UserContractState {
             .iter()
             .map(|tx| (tx.tx_ref.clone(), tx.kind.clone()))
             .collect();
+
+        // Collect existing Lightning payment hashes to prevent double-minting
+        let existing_ln_hashes: HashSet<String> = self
+            .ledger
+            .iter()
+            .filter_map(|tx| tx.lightning_payment_hash.clone())
+            .collect();
+
         for tx in other.ledger {
             let key = (tx.tx_ref.clone(), tx.kind.clone());
-            if !existing_keys.contains(&key) {
-                self.ledger.push(tx);
+            if existing_keys.contains(&key) {
+                continue;
             }
+            // Reject transactions with a lightning_payment_hash already in the ledger
+            if let Some(ref hash) = tx.lightning_payment_hash {
+                if existing_ln_hashes.contains(hash) {
+                    continue;
+                }
+            }
+            self.ledger.push(tx);
         }
         // Sort by timestamp for display consistency
         self.ledger.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
@@ -274,6 +289,7 @@ mod tests {
                 receiver: "Alice".into(),
                 tx_ref: "root:1000:42".into(),
                 timestamp: "2026-01-01T00:00:00.000Z".into(),
+                lightning_payment_hash: None,
             }],
             next_tx_id: 1,
             updated_at,
@@ -332,6 +348,7 @@ mod tests {
             receiver: "__cream_root__".into(),
             tx_ref: "alice:2000:99".into(),
             timestamp: "2026-01-01T00:01:00.000Z".into(),
+            lightning_payment_hash: None,
         });
         state.merge(older);
         // Metadata unchanged (older timestamp)
@@ -365,6 +382,7 @@ mod tests {
             receiver: "Bob".into(),
             tx_ref: "test:1:1".into(),
             timestamp: "2026-01-02T00:00:00.000Z".into(),
+            lightning_payment_hash: None,
         });
         assert_eq!(state.derive_balance(), 9_500);
     }
@@ -383,6 +401,7 @@ mod tests {
             receiver: "Alice".into(),
             tx_ref: "bob:1234:1".into(),
             timestamp: "2026-01-02T00:00:00.000Z".into(),
+            lightning_payment_hash: None,
         });
         update.signature = Signature::from_bytes(&[0u8; 64]); // invalid sig
 
@@ -409,6 +428,7 @@ mod tests {
             receiver: "Eve".into(),
             tx_ref: "eve:1234:1".into(),
             timestamp: "2026-01-02T00:00:00.000Z".into(),
+            lightning_payment_hash: None,
         });
         update.signature = Signature::from_bytes(&[0u8; 64]); // invalid sig
 

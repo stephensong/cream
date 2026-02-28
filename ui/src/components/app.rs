@@ -7,6 +7,7 @@ use cream_common::postcode::{
 
 use super::directory_view::DirectoryView;
 use super::faq_view::FaqView;
+use super::guardian_admin::GuardianAdmin;
 use super::iaq_view::IaqView;
 use super::key_manager::KeyManager;
 use super::my_orders::MyOrders;
@@ -15,6 +16,7 @@ use super::shared_state::{use_shared_state, SharedState};
 use super::storefront_view::StorefrontView;
 use super::supplier_dashboard::SupplierDashboard;
 use super::user_state::{use_user_state, UserState};
+use super::lightning_remote::LightningClient;
 use super::wallet_view::WalletView;
 
 /// Read `?supplier=X` from the browser URL bar. Returns `None` outside WASM.
@@ -59,6 +61,8 @@ pub enum Route {
     Faq {},
     #[route("/iaq")]
     Iaq {},
+    #[route("/guardian")]
+    Guardian {},
     #[redirect("/", || Route::Directory {})]
     #[route("/:..segments")]
     NotFound { segments: Vec<String> },
@@ -138,6 +142,12 @@ fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_su
                 button {
                     onclick: move |_| { nav.push(Route::Wallet {}); },
                     "Wallet ({displayed_balance} CURD)"
+                }
+                if LightningClient::is_available() {
+                    button {
+                        onclick: move |_| { nav.push(Route::Guardian {}); },
+                        "Guardian"
+                    }
                 }
             }
         }
@@ -316,6 +326,12 @@ fn Faq() -> Element {
 #[component]
 fn Iaq() -> Element {
     rsx! { IaqView {} }
+}
+
+/// Route component: renders the guardian admin dashboard.
+#[component]
+fn Guardian() -> Element {
+    rsx! { GuardianAdmin {} }
 }
 
 /// Catch-all for unknown routes — redirects to directory (or storefront in customer mode).

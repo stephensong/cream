@@ -47,6 +47,29 @@ if [ -n "$NODE_URL" ]; then
     ARGS+=(--node-url "$NODE_URL")
 fi
 
+# Lightning gateway configuration
+LIGHTNING_GATEWAY=$(parse_config "lightning-gateway")
+LND_HOST=$(parse_config "lnd-host")
+LND_PORT=$(parse_config "lnd-port")
+LND_CERT=$(parse_config "lnd-cert")
+LND_MACAROON=$(parse_config "lnd-macaroon")
+PEGIN_LIMIT=$(parse_config "pegin-limit-sats")
+
+if [ "$LIGHTNING_GATEWAY" = "true" ]; then
+    ARGS+=(--lightning-gateway)
+    # Default LND host on StartOS is lnd.embassy
+    ARGS+=(--lnd-host "${LND_HOST:-lnd.embassy}")
+    if [ -n "$LND_PORT" ]; then
+        ARGS+=(--lnd-port "$LND_PORT")
+    fi
+    # Default cert/macaroon paths for StartOS LND
+    ARGS+=(--lnd-cert "${LND_CERT:-/mnt/lnd/tls.cert}")
+    ARGS+=(--lnd-macaroon "${LND_MACAROON:-/mnt/lnd/data/chain/bitcoin/mainnet/admin.macaroon}")
+    if [ -n "$PEGIN_LIMIT" ]; then
+        ARGS+=(--pegin-limit-sats "$PEGIN_LIMIT")
+    fi
+fi
+
 # Graceful shutdown on SIGTERM
 trap 'kill -TERM $PID; wait $PID' TERM INT
 
