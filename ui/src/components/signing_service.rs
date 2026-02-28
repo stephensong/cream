@@ -100,8 +100,22 @@ mod wasm_impl {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
 
-    /// Minimum signers for the 2-of-3 threshold.
-    const MIN_SIGNERS: usize = 2;
+    #[derive(Deserialize)]
+    struct ConfigResponse {
+        min_signers: usize,
+        #[allow(dead_code)]
+        max_signers: usize,
+    }
+
+    /// Fetch min_signers from guardian /config endpoint, defaulting to 2 on failure.
+    async fn fetch_min_signers(guardian_url: &str) -> usize {
+        match fetch_json(&format!("{}/config", guardian_url), "GET", None).await {
+            Ok(text) => serde_json::from_str::<ConfigResponse>(&text)
+                .map(|c| c.min_signers)
+                .unwrap_or(2),
+            Err(_) => 2,
+        }
+    }
 
     /// Perform distributed FROST signing via guardian HTTP daemons.
     pub async fn remote_sign(
@@ -111,6 +125,7 @@ mod wasm_impl {
     ) -> Result<ed25519_dalek::Signature, String> {
         let session_id = generate_session_id()?;
         let message_hex = bytes_to_hex(message);
+        let min_signers = fetch_min_signers(&guardian_urls[0]).await;
 
         // Round 1: collect commitments from all guardians concurrently
         let round1_futures: Vec<_> = guardian_urls
@@ -134,7 +149,7 @@ mod wasm_impl {
             })
             .collect();
 
-        // Await all and take the first MIN_SIGNERS successes
+        // Await all and take the first min_signers successes
         let results = futures::future::join_all(round1_futures).await;
         let mut successes: Vec<(String, Round1Response)> = Vec::new();
         let mut errors: Vec<String> = Vec::new();
@@ -146,19 +161,19 @@ mod wasm_impl {
             }
         }
 
-        if successes.len() < MIN_SIGNERS {
+        if successes.len() < min_signers {
             return Err(format!(
                 "Only {} of {} guardians responded to round1 (need {}). Errors: {}",
                 successes.len(),
                 guardian_urls.len(),
-                MIN_SIGNERS,
+                min_signers,
                 errors.join("; ")
             ));
         }
 
-        // Take exactly MIN_SIGNERS participants
+        // Take exactly min_signers participants
         let participants: Vec<(String, Round1Response)> =
-            successes.into_iter().take(MIN_SIGNERS).collect();
+            successes.into_iter().take(min_signers).collect();
         let all_commitments: Vec<Round1Response> =
             participants.iter().map(|(_, r)| r.clone()).collect();
 
@@ -202,12 +217,12 @@ mod wasm_impl {
             }
         }
 
-        if signature_shares.len() < MIN_SIGNERS {
+        if signature_shares.len() < min_signers {
             return Err(format!(
                 "Only {} of {} guardians completed round2 (need {}). Errors: {}",
                 signature_shares.len(),
-                MIN_SIGNERS,
-                MIN_SIGNERS,
+                min_signers,
+                min_signers,
                 round2_errors.join("; ")
             ));
         }

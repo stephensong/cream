@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn frost_sign_verify_roundtrip() {
-        use ed25519_dalek::Verifier;
+
         let (keys, pkg) = dev_root_frost_keys();
         let vk = group_verifying_key(&pkg);
         let msg = b"test message";
@@ -209,5 +209,138 @@ mod tests {
         let sig1 = sign_with_threshold(b"message one", &keys, &pkg, 2);
         let sig2 = sign_with_threshold(b"message two", &keys, &pkg, 2);
         assert_ne!(sig1, sig2);
+    }
+
+    #[test]
+    fn frost_reconstruct_split_preserves_verifying_key() {
+
+        use rand_chacha::rand_core::SeedableRng;
+
+        let (keys, pkg) = dev_root_frost_keys();
+        let original_vk = group_verifying_key(&pkg);
+
+        // Reconstruct from a quorum (2 of 3)
+        let quorum: Vec<frost::keys::KeyPackage> = keys.values().take(2).cloned().collect();
+        let signing_key =
+            frost::keys::reconstruct(&quorum).expect("reconstruct should not fail");
+
+        // Verify reconstructed key matches group key
+        let reconstructed_vk: frost_ed25519::VerifyingKey = signing_key.into();
+        assert_eq!(*pkg.verifying_key(), reconstructed_vk);
+
+        // Re-split into a new 3-of-5 setup
+        let mut rng = rand_chacha::ChaCha20Rng::from_seed([42u8; 32]);
+        let new_ids: Vec<frost::Identifier> = (1..=5)
+            .map(|i| frost::Identifier::try_from(i).unwrap())
+            .collect();
+        let (new_shares, new_pub_pkg) = frost::keys::split(
+            &signing_key,
+            5,
+            3,
+            frost::keys::IdentifierList::Custom(&new_ids),
+            &mut rng,
+        )
+        .expect("split should not fail");
+
+        // Verify group key is preserved
+        assert_eq!(group_verifying_key(&new_pub_pkg), original_vk);
+
+        // Convert shares to key packages and sign
+        let new_keys: BTreeMap<frost::Identifier, frost::keys::KeyPackage> = new_shares
+            .into_iter()
+            .map(|(id, share)| {
+                (
+                    id,
+                    frost::keys::KeyPackage::try_from(share).expect("valid key package"),
+                )
+            })
+            .collect();
+        let sig = sign_with_threshold(b"test after redeal", &new_keys, &new_pub_pkg, 3);
+        assert!(original_vk.verify_strict(b"test after redeal", &sig).is_ok());
+    }
+
+    #[test]
+    fn frost_refresh_preserves_verifying_key() {
+
+        use frost::keys::refresh;
+        use rand_chacha::rand_core::SeedableRng;
+
+        let mut rng = rand_chacha::ChaCha20Rng::from_seed([99u8; 32]);
+        let (keys, pkg) = dev_root_frost_keys();
+        let original_vk = group_verifying_key(&pkg);
+
+        // Simulate distributed refresh among 3 parties
+        let ids: Vec<frost::Identifier> = keys.keys().copied().collect();
+        let max_signers = 3u16;
+        let min_signers = 2u16;
+
+        // Round 1: each participant generates a refresh package
+        let mut round1_secrets = BTreeMap::new();
+        let mut round1_packages = BTreeMap::new();
+        for &id in &ids {
+            let (secret, package) =
+                refresh::refresh_dkg_part1(id, max_signers, min_signers, &mut rng)
+                    .expect("refresh part1 should not fail");
+            round1_secrets.insert(id, secret);
+            round1_packages.insert(id, package);
+        }
+
+        // Round 2: each participant processes round1 packages from others
+        let mut round2_secrets = BTreeMap::new();
+        let mut all_round2_packages: BTreeMap<
+            frost::Identifier,
+            BTreeMap<frost::Identifier, frost::keys::dkg::round2::Package>,
+        > = BTreeMap::new();
+        for &id in &ids {
+            let others: BTreeMap<_, _> = round1_packages
+                .iter()
+                .filter(|(&k, _)| k != id)
+                .map(|(&k, v)| (k, v.clone()))
+                .collect();
+            let (secret, packages) =
+                refresh::refresh_dkg_part2(round1_secrets.remove(&id).unwrap(), &others)
+                    .expect("refresh part2 should not fail");
+            round2_secrets.insert(id, secret);
+            all_round2_packages.insert(id, packages);
+        }
+
+        // Finalize: each participant computes new keys
+        let mut new_keys = BTreeMap::new();
+        let mut new_pub_pkg = None;
+        for &id in &ids {
+            let others_r1: BTreeMap<_, _> = round1_packages
+                .iter()
+                .filter(|(&k, _)| k != id)
+                .map(|(&k, v)| (k, v.clone()))
+                .collect();
+            let others_r2: BTreeMap<_, _> = all_round2_packages
+                .iter()
+                .filter(|(&k, _)| k != id)
+                .map(|(&sender_id, packages)| {
+                    (sender_id, packages.get(&id).cloned().unwrap())
+                })
+                .collect();
+            let (key_package, pub_pkg) = refresh::refresh_dkg_shares(
+                round2_secrets.get(&id).unwrap(),
+                &others_r1,
+                &others_r2,
+                pkg.clone(),
+                keys.get(&id).unwrap().clone(),
+            )
+            .expect("refresh finalize should not fail");
+            new_keys.insert(id, key_package);
+            new_pub_pkg = Some(pub_pkg);
+        }
+
+        let new_pub_pkg = new_pub_pkg.unwrap();
+
+        // Verify group key is preserved
+        assert_eq!(group_verifying_key(&new_pub_pkg), original_vk);
+
+        // Verify signing works with new keys
+        let sig = sign_with_threshold(b"test after refresh", &new_keys, &new_pub_pkg, 2);
+        assert!(original_vk
+            .verify_strict(b"test after refresh", &sig)
+            .is_ok());
     }
 }

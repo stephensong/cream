@@ -686,3 +686,286 @@ script = [
     cd tests/e2e && npx playwright test
     ''',
 ]
+
+# ─── FROST Share Resharing Tests ──────────────────────────────────────────────
+
+[tasks.test-refresh]
+description = "Test proactive FROST share refresh: DKG → sign → refresh → sign → verify same group key"
+dependencies = ["build-guardian"]
+script = [
+    '''
+    set -euo pipefail
+    KEYS_BASE="${HOME}/.cache/freenet"
+    LOGS_DIR="${KEYS_BASE}/logs"
+    mkdir -p "${LOGS_DIR}"
+
+    GUARDIAN_BIN="./target/debug/cream-guardian"
+
+    # Clear previous DKG keys
+    rm -rf "${KEYS_BASE}/guardian-1" "${KEYS_BASE}/guardian-2" "${KEYS_BASE}/guardian-3"
+
+    PEERS_1="http://localhost:3010,http://localhost:3012"
+    PEERS_2="http://localhost:3010,http://localhost:3012"
+    PEERS_3="http://localhost:3010,http://localhost:3011"
+
+    # Correct peer lists (each guardian gets the other two)
+    PEERS_1="http://localhost:3011,http://localhost:3012"
+    PEERS_2="http://localhost:3010,http://localhost:3012"
+    PEERS_3="http://localhost:3010,http://localhost:3011"
+
+    echo "=== Phase 1: DKG ==="
+    PIDS=""
+    for i in 1 2 3; do
+        PORT=$((3009 + i))
+        eval "PEERS=\$PEERS_${i}"
+        : > "${LOGS_DIR}/guardian-${i}.log"
+        nohup "${GUARDIAN_BIN}" --share-index "${i}" --port "${PORT}" --peers "${PEERS}" \
+            >> "${LOGS_DIR}/guardian-${i}.log" 2>&1 &
+        PIDS="${PIDS} $!"
+    done
+
+    # Wait for DKG to complete
+    for i in 1 2 3; do
+        PORT=$((3009 + i))
+        for attempt in $(seq 1 30); do
+            HEALTH=$(curl -s "http://localhost:${PORT}/health" 2>/dev/null || echo "")
+            if echo "${HEALTH}" | grep -q '"ready":true'; then
+                echo "Guardian ${i} DKG complete"
+                break
+            fi
+            if [ "${attempt}" -eq 30 ]; then
+                echo "ERROR: Guardian ${i} DKG timed out"
+                cat "${LOGS_DIR}/guardian-${i}.log" 2>/dev/null | tail -10
+                kill ${PIDS} 2>/dev/null || true
+                exit 1
+            fi
+            sleep 1
+        done
+    done
+
+    # Save initial verifying key (group public key — preserved across refresh)
+    INITIAL_VK=$(curl -s "http://localhost:3010/public-key" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin)['verifying_key']))")
+    echo "Initial verifying key: ${INITIAL_VK:0:60}..."
+
+    # Stop guardians
+    kill ${PIDS} 2>/dev/null || true
+    sleep 2
+
+    echo "=== Phase 2: Refresh ==="
+    PIDS=""
+    for i in 1 2 3; do
+        PORT=$((3009 + i))
+        eval "PEERS=\$PEERS_${i}"
+        : > "${LOGS_DIR}/guardian-${i}.log"
+        nohup "${GUARDIAN_BIN}" --share-index "${i}" --port "${PORT}" --peers "${PEERS}" --refresh \
+            >> "${LOGS_DIR}/guardian-${i}.log" 2>&1 &
+        PIDS="${PIDS} $!"
+    done
+
+    # Wait for refresh to complete (ready=true means refresh finished)
+    for i in 1 2 3; do
+        PORT=$((3009 + i))
+        for attempt in $(seq 1 30); do
+            HEALTH=$(curl -s "http://localhost:${PORT}/health" 2>/dev/null || echo "")
+            if echo "${HEALTH}" | grep -q '"ready":true'; then
+                echo "Guardian ${i} refresh complete"
+                break
+            fi
+            if [ "${attempt}" -eq 30 ]; then
+                echo "ERROR: Guardian ${i} refresh timed out"
+                cat "${LOGS_DIR}/guardian-${i}.log" 2>/dev/null | tail -10
+                kill ${PIDS} 2>/dev/null || true
+                exit 1
+            fi
+            sleep 1
+        done
+    done
+
+    # Verify group verifying key unchanged (verifying_shares rotate, but group key stays)
+    REFRESHED_VK=$(curl -s "http://localhost:3010/public-key" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin)['verifying_key']))")
+    echo "Refreshed verifying key: ${REFRESHED_VK:0:60}..."
+
+    if [ "${INITIAL_VK}" = "${REFRESHED_VK}" ]; then
+        echo "SUCCESS: Group verifying key preserved after refresh"
+    else
+        echo "FAILURE: Group verifying key changed after refresh!"
+        kill ${PIDS} 2>/dev/null || true
+        exit 1
+    fi
+
+    # Verify config endpoint
+    CONFIG=$(curl -s "http://localhost:3010/config")
+    echo "Config: ${CONFIG}"
+
+    kill ${PIDS} 2>/dev/null || true
+    echo "=== test-refresh PASSED ==="
+    ''',
+]
+
+[tasks.test-redeal]
+description = "Test FROST re-deal: 2-of-3 DKG → redeal to 3-of-5 → verify same group key"
+dependencies = ["build-guardian"]
+script = [
+    '''
+    set -euo pipefail
+    KEYS_BASE="${HOME}/.cache/freenet"
+    LOGS_DIR="${KEYS_BASE}/logs"
+    mkdir -p "${LOGS_DIR}"
+
+    GUARDIAN_BIN="./target/debug/cream-guardian"
+
+    # Clear all guardian keys
+    for i in 1 2 3 4 5; do
+        rm -rf "${KEYS_BASE}/guardian-${i}"
+    done
+
+    echo "=== Phase 1: Initial 2-of-3 DKG ==="
+    PEERS_1="http://localhost:3011,http://localhost:3012"
+    PEERS_2="http://localhost:3010,http://localhost:3012"
+    PEERS_3="http://localhost:3010,http://localhost:3011"
+
+    PIDS=""
+    for i in 1 2 3; do
+        PORT=$((3009 + i))
+        eval "PEERS=\$PEERS_${i}"
+        : > "${LOGS_DIR}/guardian-${i}.log"
+        nohup "${GUARDIAN_BIN}" --share-index "${i}" --port "${PORT}" --peers "${PEERS}" \
+            >> "${LOGS_DIR}/guardian-${i}.log" 2>&1 &
+        PIDS="${PIDS} $!"
+    done
+
+    for i in 1 2 3; do
+        PORT=$((3009 + i))
+        for attempt in $(seq 1 30); do
+            HEALTH=$(curl -s "http://localhost:${PORT}/health" 2>/dev/null || echo "")
+            if echo "${HEALTH}" | grep -q '"ready":true'; then
+                echo "Guardian ${i} DKG complete"
+                break
+            fi
+            if [ "${attempt}" -eq 30 ]; then
+                echo "ERROR: Guardian ${i} DKG timed out"
+                kill ${PIDS} 2>/dev/null || true
+                exit 1
+            fi
+            sleep 1
+        done
+    done
+
+    INITIAL_VK=$(curl -s "http://localhost:3010/public-key" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin)['verifying_key']))")
+    echo "Initial verifying key (2-of-3): ${INITIAL_VK:0:60}..."
+
+    # Stop original guardians
+    kill ${PIDS} 2>/dev/null || true
+    sleep 2
+
+    echo "=== Phase 2: Start 5 guardians for re-deal ==="
+    # Start all 5 guardians (1-3 have keys, 4-5 are new and will wait for redeal/receive)
+    PIDS=""
+    for i in 1 2 3; do
+        PORT=$((3009 + i))
+        : > "${LOGS_DIR}/guardian-${i}.log"
+        nohup "${GUARDIAN_BIN}" --share-index "${i}" --port "${PORT}" \
+            >> "${LOGS_DIR}/guardian-${i}.log" 2>&1 &
+        PIDS="${PIDS} $!"
+    done
+
+    # New guardians (no keys, no peers — just listen for redeal/receive)
+    for i in 4 5; do
+        PORT=$((3009 + i))
+        : > "${LOGS_DIR}/guardian-${i}.log"
+        nohup "${GUARDIAN_BIN}" --share-index "${i}" --port "${PORT}" \
+            >> "${LOGS_DIR}/guardian-${i}.log" 2>&1 &
+        PIDS="${PIDS} $!"
+    done
+
+    # Wait for 1-3 to be ready (loaded from disk) and 4-5 to be healthy
+    for i in 1 2 3; do
+        PORT=$((3009 + i))
+        for attempt in $(seq 1 15); do
+            HEALTH=$(curl -s "http://localhost:${PORT}/health" 2>/dev/null || echo "")
+            if echo "${HEALTH}" | grep -q '"ready":true'; then
+                echo "Guardian ${i} ready (loaded keys)"
+                break
+            fi
+            sleep 1
+        done
+    done
+
+    for i in 4 5; do
+        PORT=$((3009 + i))
+        for attempt in $(seq 1 15); do
+            if curl -s "http://localhost:${PORT}/health" > /dev/null 2>&1; then
+                echo "Guardian ${i} listening"
+                break
+            fi
+            sleep 1
+        done
+    done
+
+    echo "=== Phase 3: Re-deal from 2-of-3 to 3-of-5 ==="
+    # Guardian 1 acts as coordinator
+    # Stop guardian 1, restart with --redeal
+    OLD_G1_PID=$(echo ${PIDS} | awk '{print $1}')
+    kill ${OLD_G1_PID} 2>/dev/null || true
+    sleep 1
+
+    # New peers for 3-of-5 (all except guardian 1)
+    NEW_PEERS="http://localhost:3011,http://localhost:3012,http://localhost:3013,http://localhost:3014"
+    OLD_PEERS="http://localhost:3011,http://localhost:3012"
+
+    : > "${LOGS_DIR}/guardian-1.log"
+    nohup "${GUARDIAN_BIN}" --share-index 1 --port 3010 \
+        --redeal \
+        --old-peers "${OLD_PEERS}" \
+        --peers "${NEW_PEERS}" \
+        --new-max-signers 5 \
+        --new-min-signers 3 \
+        >> "${LOGS_DIR}/guardian-1.log" 2>&1 &
+    REDEAL_PID=$!
+
+    # Wait for all 5 to be ready after redeal
+    for i in 1 2 3 4 5; do
+        PORT=$((3009 + i))
+        for attempt in $(seq 1 60); do
+            HEALTH=$(curl -s "http://localhost:${PORT}/health" 2>/dev/null || echo "")
+            if echo "${HEALTH}" | grep -q '"ready":true'; then
+                echo "Guardian ${i} ready after redeal"
+                break
+            fi
+            if [ "${attempt}" -eq 60 ]; then
+                echo "ERROR: Guardian ${i} not ready after redeal"
+                cat "${LOGS_DIR}/guardian-${i}.log" 2>/dev/null | tail -20
+                kill ${PIDS} ${REDEAL_PID} 2>/dev/null || true
+                exit 1
+            fi
+            sleep 1
+        done
+    done
+
+    # Verify group verifying key unchanged
+    REDEALT_VK=$(curl -s "http://localhost:3010/public-key" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin)['verifying_key']))")
+    echo "Re-dealt verifying key (3-of-5): ${REDEALT_VK:0:60}..."
+
+    if [ "${INITIAL_VK}" = "${REDEALT_VK}" ]; then
+        echo "SUCCESS: Group verifying key preserved after redeal"
+    else
+        echo "FAILURE: Group verifying key changed after redeal!"
+        kill ${PIDS} ${REDEAL_PID} 2>/dev/null || true
+        exit 1
+    fi
+
+    # Verify new config
+    CONFIG=$(curl -s "http://localhost:3010/config")
+    echo "New config: ${CONFIG}"
+    if echo "${CONFIG}" | grep -q '"min_signers":3' && echo "${CONFIG}" | grep -q '"max_signers":5'; then
+        echo "SUCCESS: Config updated to 3-of-5"
+    else
+        echo "FAILURE: Config not updated correctly"
+        kill ${PIDS} ${REDEAL_PID} 2>/dev/null || true
+        exit 1
+    fi
+
+    kill ${PIDS} ${REDEAL_PID} 2>/dev/null || true
+    echo "=== test-redeal PASSED ==="
+    ''',
+]

@@ -32,21 +32,24 @@ use tower_http::cors::{Any, CorsLayer};
 /// TTL for stored nonces (seconds). Expired nonces are cleaned on each round1 call.
 const NONCE_TTL_SECS: u64 = 30;
 
-/// Max signers for the default 2-of-3 setup.
-const MAX_SIGNERS: u16 = 3;
-/// Min signers (threshold) for the default 2-of-3 setup.
-const MIN_SIGNERS: u16 = 2;
-
 #[derive(Parser)]
 #[command(name = "cream-guardian", about = "CREAM FROST guardian daemon")]
 struct Cli {
-    /// Guardian share index (1, 2, or 3 for the default 2-of-3 setup).
+    /// Guardian share index (1-based).
     #[arg(long, default_value_t = 1)]
     share_index: u16,
 
     /// HTTP port to listen on (default: 3009 + share_index).
     #[arg(long)]
     port: Option<u16>,
+
+    /// Total guardians for initial DKG (default: 3).
+    #[arg(long, default_value_t = 3)]
+    max_signers: u16,
+
+    /// Signing threshold for initial DKG (default: 2).
+    #[arg(long, default_value_t = 2)]
+    min_signers: u16,
 
     /// Comma-separated peer guardian URLs for DKG
     /// (e.g. "http://localhost:3011,http://localhost:3012").
@@ -57,20 +60,47 @@ struct Cli {
     /// (e.g. "ws://localhost:3005/v1/contract/command?encodingProtocol=native")
     #[arg(long)]
     node_url: Option<String>,
+
+    /// Trigger proactive refresh with existing guardians (requires --peers + keys on disk).
+    #[arg(long)]
+    refresh: bool,
+
+    /// Act as re-deal coordinator (requires --old-peers, --peers, --new-max-signers, --new-min-signers).
+    #[arg(long)]
+    redeal: bool,
+
+    /// Quorum of old guardians to collect shares from (for --redeal).
+    #[arg(long, value_delimiter = ',')]
+    old_peers: Vec<String>,
+
+    /// Total guardians in new set (for --redeal).
+    #[arg(long)]
+    new_max_signers: Option<u16>,
+
+    /// New threshold (for --redeal).
+    #[arg(long)]
+    new_min_signers: Option<u16>,
 }
 
 struct AppState {
     identifier: frost::Identifier,
     share_index: u16,
+    max_signers: std::sync::atomic::AtomicU16,
+    min_signers: std::sync::atomic::AtomicU16,
     key_package: RwLock<Option<frost::keys::KeyPackage>>,
     public_key_package: RwLock<Option<frost::keys::PublicKeyPackage>>,
     nonces: Mutex<BTreeMap<String, (frost::round1::SigningNonces, Instant)>>,
     dkg_state: Mutex<DkgState>,
+    refresh_state: Mutex<DkgState>,
+    refreshing: AtomicBool,
     node_connected: AtomicBool,
 }
 
 impl AppState {
     fn is_ready(&self) -> bool {
+        if self.refreshing.load(Ordering::Relaxed) {
+            return false;
+        }
         // Use try_read to avoid blocking — if locked, not ready yet
         self.key_package
             .try_read()
@@ -118,12 +148,32 @@ struct HealthResponse {
     status: String,
     identifier: frost::Identifier,
     ready: bool,
+    refreshing: bool,
     node_connected: bool,
+}
+
+#[derive(Serialize)]
+struct ConfigResponse {
+    min_signers: u16,
+    max_signers: u16,
 }
 
 #[derive(Serialize)]
 struct ErrorResponse {
     error: String,
+}
+
+// ─── Redeal API types ────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize)]
+struct RedealShareResponse {
+    key_package: frost::keys::KeyPackage,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RedealReceiveRequest {
+    secret_share: frost::keys::SecretShare,
+    public_key_package: frost::keys::PublicKeyPackage,
 }
 
 // ─── DKG API types ───────────────────────────────────────────────────────────
@@ -291,7 +341,15 @@ async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRespon
         status: "ok".to_string(),
         identifier: state.identifier,
         ready: state.is_ready(),
+        refreshing: state.refreshing.load(Ordering::Relaxed),
         node_connected: state.node_connected.load(Ordering::Relaxed),
+    })
+}
+
+async fn config_handler(State(state): State<Arc<AppState>>) -> Json<ConfigResponse> {
+    Json(ConfigResponse {
+        min_signers: state.min_signers.load(Ordering::Relaxed),
+        max_signers: state.max_signers.load(Ordering::Relaxed),
     })
 }
 
@@ -336,11 +394,14 @@ fn save_keys(share_index: u16, keys: &PersistedKeys) -> Result<(), String> {
 async fn run_dkg(state: Arc<AppState>, peers: Vec<String>) {
     use rand::rngs::OsRng;
 
+    let max_signers = state.max_signers.load(Ordering::Relaxed);
+    let min_signers = state.min_signers.load(Ordering::Relaxed);
     let n_peers = peers.len();
     println!(
-        "DKG: starting ceremony with {} peers (total {} guardians)",
+        "DKG: starting ceremony with {} peers (total {} guardians, threshold {})",
         n_peers,
-        n_peers + 1
+        n_peers + 1,
+        min_signers
     );
 
     // Wait for all peers to be healthy
@@ -360,8 +421,8 @@ async fn run_dkg(state: Arc<AppState>, peers: Vec<String>) {
     println!("DKG: executing round 1...");
     let (round1_secret, round1_package) = frost::keys::dkg::part1(
         state.identifier,
-        MAX_SIGNERS,
-        MIN_SIGNERS,
+        max_signers,
+        min_signers,
         &mut OsRng,
     )
     .expect("DKG part1 should not fail");
@@ -411,7 +472,7 @@ async fn run_dkg(state: Arc<AppState>, peers: Vec<String>) {
         // Find the peer URL for this identifier
         // Peers are ordered, identifiers are 1-based: our index is state.share_index,
         // so we need to map identifier → peer URL
-        let peer_url = identifier_to_peer_url(*recipient_id, state.share_index, &peers);
+        let peer_url = identifier_to_peer_url(*recipient_id, state.share_index, max_signers, &peers);
         if let Some(url) = peer_url {
             let req = DkgRound2Request {
                 from: state.identifier,
@@ -462,6 +523,411 @@ async fn run_dkg(state: Arc<AppState>, peers: Vec<String>) {
     *state.public_key_package.write().await = Some(public_key_package);
 
     println!("DKG: ceremony complete — guardian is ready for signing");
+}
+
+// ─── Refresh Handlers ────────────────────────────────────────────────────────
+
+async fn refresh_round1_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<DkgRound1Request>,
+) -> Json<DkgRoundResponse> {
+    let mut refresh = state.refresh_state.lock().await;
+    println!(
+        "  Refresh: received round1 package from {:?}",
+        req.identifier
+    );
+    refresh.round1_packages.insert(req.identifier, req.package);
+    Json(DkgRoundResponse { ok: true })
+}
+
+async fn refresh_round2_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<DkgRound2Request>,
+) -> Json<DkgRoundResponse> {
+    let mut refresh = state.refresh_state.lock().await;
+    println!("  Refresh: received round2 package from {:?}", req.from);
+    refresh.round2_packages.insert(req.from, req.package);
+    Json(DkgRoundResponse { ok: true })
+}
+
+// ─── Redeal Handlers ─────────────────────────────────────────────────────────
+
+async fn redeal_share_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<RedealShareResponse>, (axum::http::StatusCode, Json<ErrorResponse>)> {
+    let key_package_guard = state.key_package.read().await;
+    let key_package = key_package_guard.as_ref().ok_or_else(|| {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "Guardian not ready (no keys)".to_string(),
+            }),
+        )
+    })?;
+    Ok(Json(RedealShareResponse {
+        key_package: key_package.clone(),
+    }))
+}
+
+async fn redeal_receive_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RedealReceiveRequest>,
+) -> Result<Json<DkgRoundResponse>, (axum::http::StatusCode, Json<ErrorResponse>)> {
+    let key_package =
+        frost::keys::KeyPackage::try_from(req.secret_share).map_err(|e| {
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid secret share: {}", e),
+                }),
+            )
+        })?;
+
+    let new_max = req.public_key_package.verifying_shares().len() as u16;
+    let new_min = *key_package.min_signers();
+
+    // Persist new keys
+    let persisted = PersistedKeys {
+        key_package: key_package.clone(),
+        public_key_package: req.public_key_package.clone(),
+    };
+    save_keys(state.share_index, &persisted).map_err(|e| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to save keys: {}", e),
+            }),
+        )
+    })?;
+
+    // Activate new keys
+    *state.key_package.write().await = Some(key_package);
+    *state.public_key_package.write().await = Some(req.public_key_package);
+    state.max_signers.store(new_max, Ordering::Relaxed);
+    state.min_signers.store(new_min, Ordering::Relaxed);
+    state.refreshing.store(false, Ordering::Relaxed);
+
+    println!(
+        "Redeal: received and activated new keys ({}-of-{})",
+        new_min, new_max
+    );
+
+    Ok(Json(DkgRoundResponse { ok: true }))
+}
+
+// ─── Proactive Refresh Ceremony ──────────────────────────────────────────────
+
+async fn run_refresh(state: Arc<AppState>, peers: Vec<String>) {
+    use frost::keys::refresh;
+    use rand::rngs::OsRng;
+
+    state.refreshing.store(true, Ordering::Relaxed);
+
+    let max_signers = state.max_signers.load(Ordering::Relaxed);
+    let min_signers = state.min_signers.load(Ordering::Relaxed);
+
+    let old_key_package = state
+        .key_package
+        .read()
+        .await
+        .clone()
+        .expect("Refresh requires keys on disk");
+    let old_pub_key_package = state
+        .public_key_package
+        .read()
+        .await
+        .clone()
+        .expect("Refresh requires keys on disk");
+
+    println!(
+        "Refresh: starting proactive refresh with {} peers",
+        peers.len()
+    );
+
+    // Wait for all peers to be healthy
+    let client = reqwest::Client::new();
+    for peer in &peers {
+        println!("Refresh: waiting for peer {} ...", peer);
+        loop {
+            match client.get(format!("{}/health", peer)).send().await {
+                Ok(resp) if resp.status().is_success() => break,
+                _ => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+            }
+        }
+        println!("Refresh: peer {} is up", peer);
+    }
+
+    // ── Round 1 ──
+    println!("Refresh: executing round 1...");
+    let (round1_secret, round1_package) =
+        refresh::refresh_dkg_part1(state.identifier, max_signers, min_signers, &mut OsRng)
+            .expect("Refresh part1 should not fail");
+
+    // Send our round1 package to all peers
+    for peer in &peers {
+        let req = DkgRound1Request {
+            identifier: state.identifier,
+            package: round1_package.clone(),
+        };
+        client
+            .post(format!("{}/refresh/round1", peer))
+            .json(&req)
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("Refresh: failed to send round1 to {}: {}", peer, e));
+    }
+
+    // Wait for round1 packages from all peers
+    let expected = peers.len();
+    loop {
+        let count = state.refresh_state.lock().await.round1_packages.len();
+        if count >= expected {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let round1_packages = {
+        let refresh = state.refresh_state.lock().await;
+        refresh.round1_packages.clone()
+    };
+    println!(
+        "Refresh: round 1 complete — received {} peer packages",
+        round1_packages.len()
+    );
+
+    // ── Round 2 ──
+    println!("Refresh: executing round 2...");
+    let (round2_secret, round2_packages) =
+        refresh::refresh_dkg_part2(round1_secret, &round1_packages)
+            .expect("Refresh part2 should not fail");
+
+    // Send per-recipient round2 packages
+    for (recipient_id, package) in &round2_packages {
+        let peer_url =
+            identifier_to_peer_url(*recipient_id, state.share_index, max_signers, &peers);
+        if let Some(url) = peer_url {
+            let req = DkgRound2Request {
+                from: state.identifier,
+                package: package.clone(),
+            };
+            client
+                .post(format!("{}/refresh/round2", url))
+                .json(&req)
+                .send()
+                .await
+                .unwrap_or_else(|e| panic!("Refresh: failed to send round2 to {}: {}", url, e));
+        }
+    }
+
+    // Wait for round2 packages from all peers
+    loop {
+        let count = state.refresh_state.lock().await.round2_packages.len();
+        if count >= expected {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let round2_received = {
+        let refresh = state.refresh_state.lock().await;
+        refresh.round2_packages.clone()
+    };
+    println!(
+        "Refresh: round 2 complete — received {} peer packages",
+        round2_received.len()
+    );
+
+    // ── Finalize ──
+    println!("Refresh: finalizing...");
+    let (key_package, public_key_package) = refresh::refresh_dkg_shares(
+        &round2_secret,
+        &round1_packages,
+        &round2_received,
+        old_pub_key_package,
+        old_key_package,
+    )
+    .expect("Refresh finalize should not fail");
+
+    // Persist new keys
+    let persisted = PersistedKeys {
+        key_package: key_package.clone(),
+        public_key_package: public_key_package.clone(),
+    };
+    save_keys(state.share_index, &persisted).expect("Failed to save refreshed keys");
+
+    // Activate
+    *state.key_package.write().await = Some(key_package);
+    *state.public_key_package.write().await = Some(public_key_package);
+    state.refreshing.store(false, Ordering::Relaxed);
+
+    println!("Refresh: proactive refresh complete — guardian is ready for signing");
+}
+
+// ─── Re-deal Ceremony ────────────────────────────────────────────────────────
+
+async fn run_redeal(
+    state: Arc<AppState>,
+    old_peers: Vec<String>,
+    new_peers: Vec<String>,
+    new_max_signers: u16,
+    new_min_signers: u16,
+) {
+    use rand::rngs::OsRng;
+
+    state.refreshing.store(true, Ordering::Relaxed);
+
+    println!(
+        "Redeal: coordinator starting — collecting shares from {} old peers, splitting to {}-of-{}",
+        old_peers.len(),
+        new_min_signers,
+        new_max_signers
+    );
+
+    let client = reqwest::Client::new();
+
+    // Collect KeyPackages from old peers (including self)
+    let mut key_packages: Vec<frost::keys::KeyPackage> = Vec::new();
+
+    // Add our own key package
+    let own_key = state
+        .key_package
+        .read()
+        .await
+        .clone()
+        .expect("Redeal coordinator must have keys");
+    key_packages.push(own_key);
+
+    let old_pub_key_package = state
+        .public_key_package
+        .read()
+        .await
+        .clone()
+        .expect("Redeal coordinator must have public key");
+
+    // Collect from old peers
+    let min_signers = state.min_signers.load(Ordering::Relaxed);
+    for peer in &old_peers {
+        println!("Redeal: collecting key share from {} ...", peer);
+        let resp = client
+            .post(format!("{}/redeal/share", peer))
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("Redeal: failed to contact {}: {}", peer, e));
+
+        let share_resp: RedealShareResponse = resp
+            .json()
+            .await
+            .unwrap_or_else(|e| panic!("Redeal: failed to parse share from {}: {}", peer, e));
+        key_packages.push(share_resp.key_package);
+
+        // We only need min_signers shares for reconstruction
+        if key_packages.len() >= min_signers as usize {
+            break;
+        }
+    }
+
+    println!(
+        "Redeal: collected {} key packages (need {} for reconstruction)",
+        key_packages.len(),
+        min_signers
+    );
+
+    // Reconstruct the group secret
+    let signing_key = frost::keys::reconstruct(&key_packages)
+        .expect("Reconstruction should not fail with sufficient shares");
+
+    // Verify reconstructed key matches group verifying key
+    let expected_vk = old_pub_key_package.verifying_key();
+    let reconstructed_vk = signing_key.into();
+    assert_eq!(
+        *expected_vk, reconstructed_vk,
+        "Redeal: reconstructed key does not match group verifying key!"
+    );
+    println!("Redeal: reconstruction verified — group key matches");
+
+    // Build identifier list for new set
+    let identifiers: Vec<frost::Identifier> = (1..=new_max_signers)
+        .map(|i| frost::Identifier::try_from(i).expect("valid identifier"))
+        .collect();
+
+    // Split into new shares
+    let (new_shares, new_pub_key_package) = frost::keys::split(
+        &signing_key,
+        new_max_signers,
+        new_min_signers,
+        frost::keys::IdentifierList::Custom(&identifiers),
+        &mut OsRng,
+    )
+    .expect("Split should not fail");
+
+    // Zeroize signing key by dropping it (signing_key consumed above; the binding
+    // `signing_key` is already moved into `split`).
+
+    println!(
+        "Redeal: split complete — distributing {} shares to new guardians",
+        new_shares.len()
+    );
+
+    // Wait for all new peers to be healthy before distributing
+    for peer in &new_peers {
+        println!("Redeal: waiting for new peer {} ...", peer);
+        loop {
+            match client.get(format!("{}/health", peer)).send().await {
+                Ok(resp) if resp.status().is_success() => break,
+                _ => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+            }
+        }
+        println!("Redeal: new peer {} is up", peer);
+    }
+
+    // Distribute shares to new peers
+    // new_peers are all guardians except ourselves in the new set
+    for (id, share) in &new_shares {
+        if *id == state.identifier {
+            // This is our own new share — activate directly
+            let key_package = frost::keys::KeyPackage::try_from(share.clone())
+                .expect("KeyPackage conversion should not fail");
+            let persisted = PersistedKeys {
+                key_package: key_package.clone(),
+                public_key_package: new_pub_key_package.clone(),
+            };
+            save_keys(state.share_index, &persisted).expect("Failed to save re-dealt keys");
+            *state.key_package.write().await = Some(key_package);
+            *state.public_key_package.write().await = Some(new_pub_key_package.clone());
+            state
+                .max_signers
+                .store(new_max_signers, Ordering::Relaxed);
+            state
+                .min_signers
+                .store(new_min_signers, Ordering::Relaxed);
+            println!("Redeal: activated own new share");
+            continue;
+        }
+
+        // Find the peer URL for this identifier
+        let peer_url =
+            identifier_to_peer_url(*id, state.share_index, new_max_signers, &new_peers);
+        if let Some(url) = peer_url {
+            let req = RedealReceiveRequest {
+                secret_share: share.clone(),
+                public_key_package: new_pub_key_package.clone(),
+            };
+            client
+                .post(format!("{}/redeal/receive", url))
+                .json(&req)
+                .send()
+                .await
+                .unwrap_or_else(|e| panic!("Redeal: failed to send share to {}: {}", url, e));
+            println!("Redeal: sent share to {}", url);
+        }
+    }
+
+    state.refreshing.store(false, Ordering::Relaxed);
+    println!(
+        "Redeal: complete — new federation is {}-of-{}",
+        new_min_signers, new_max_signers
+    );
 }
 
 // ─── Contract Monitoring ─────────────────────────────────────────────────────
@@ -591,10 +1057,11 @@ async fn monitor_contracts(state: Arc<AppState>, node_url: String) {
 fn identifier_to_peer_url(
     target: frost::Identifier,
     our_share_index: u16,
+    max_signers: u16,
     peers: &[String],
 ) -> Option<String> {
     // Build the list of peer share indices (all valid indices except ours)
-    let peer_indices: Vec<u16> = (1..=MAX_SIGNERS)
+    let peer_indices: Vec<u16> = (1..=max_signers)
         .filter(|&i| i != our_share_index)
         .collect();
 
@@ -622,45 +1089,57 @@ async fn main() {
     let state = Arc::new(AppState {
         identifier,
         share_index: cli.share_index,
+        max_signers: std::sync::atomic::AtomicU16::new(cli.max_signers),
+        min_signers: std::sync::atomic::AtomicU16::new(cli.min_signers),
         key_package: RwLock::new(None),
         public_key_package: RwLock::new(None),
         nonces: Mutex::new(BTreeMap::new()),
         dkg_state: Mutex::new(DkgState::default()),
+        refresh_state: Mutex::new(DkgState::default()),
+        refreshing: AtomicBool::new(false),
         node_connected: AtomicBool::new(false),
     });
 
     // ── Key initialization ──
     if let Some(persisted) = load_keys(cli.share_index) {
+        // Derive max/min from loaded keys
+        let loaded_min = *persisted.key_package.min_signers();
+        let loaded_max = persisted.public_key_package.verifying_shares().len() as u16;
+        state.max_signers.store(loaded_max, Ordering::Relaxed);
+        state.min_signers.store(loaded_min, Ordering::Relaxed);
+
         // Mode 1: Keys on disk → activate immediately
         *state.key_package.write().await = Some(persisted.key_package);
         *state.public_key_package.write().await = Some(persisted.public_key_package);
-        println!("Guardian {} ready (loaded from disk)", cli.share_index);
-    } else if !cli.peers.is_empty() {
+        println!(
+            "Guardian {} ready (loaded from disk, {}-of-{})",
+            cli.share_index, loaded_min, loaded_max
+        );
+    } else if !cli.peers.is_empty() && !cli.refresh && !cli.redeal {
         // Mode 2: --peers provided → DKG will run after server starts
         println!(
-            "Guardian {} will run DKG with {} peers",
+            "Guardian {} will run DKG with {} peers ({}-of-{})",
             cli.share_index,
-            cli.peers.len()
+            cli.peers.len(),
+            cli.min_signers,
+            cli.max_signers
         );
-    } else {
-        // Mode 3: No peers, no keys → trusted dealer fallback
+    } else if !cli.refresh && !cli.redeal {
+        // Mode 3: No peers, no keys → trusted dealer fallback (or wait if index out of range)
         let (key_packages, pubkey_package) = cream_common::frost::dev_root_frost_keys();
-        let key_package = key_packages
-            .get(&identifier)
-            .unwrap_or_else(|| {
-                panic!(
-                    "No key package for share_index {}. Valid indices: {:?}",
-                    cli.share_index,
-                    key_packages.keys().collect::<Vec<_>>()
-                )
-            })
-            .clone();
-        *state.key_package.write().await = Some(key_package);
-        *state.public_key_package.write().await = Some(pubkey_package);
-        println!(
-            "Guardian {} ready (trusted dealer fallback)",
-            cli.share_index
-        );
+        if let Some(key_package) = key_packages.get(&identifier) {
+            *state.key_package.write().await = Some(key_package.clone());
+            *state.public_key_package.write().await = Some(pubkey_package);
+            println!(
+                "Guardian {} ready (trusted dealer fallback)",
+                cli.share_index
+            );
+        } else {
+            println!(
+                "Guardian {} has no keys — waiting for redeal/receive or DKG",
+                cli.share_index
+            );
+        }
     }
 
     let cors = CorsLayer::new()
@@ -673,7 +1152,12 @@ async fn main() {
         .route("/round2", post(round2_handler))
         .route("/dkg/round1", post(dkg_round1_handler))
         .route("/dkg/round2", post(dkg_round2_handler))
+        .route("/refresh/round1", post(refresh_round1_handler))
+        .route("/refresh/round2", post(refresh_round2_handler))
+        .route("/redeal/share", post(redeal_share_handler))
+        .route("/redeal/receive", post(redeal_receive_handler))
         .route("/public-key", get(public_key_handler))
+        .route("/config", get(config_handler))
         .route("/health", get(health_handler))
         .layer(cors)
         .with_state(state.clone());
@@ -685,8 +1169,42 @@ async fn main() {
         .await
         .expect("Failed to bind");
 
-    // Spawn DKG task if needed (Mode 2)
-    if !cli.peers.is_empty() && !state.is_ready() {
+    // Spawn DKG / refresh / redeal task as appropriate
+    if cli.refresh {
+        // Proactive refresh: requires keys on disk + --peers
+        assert!(
+            state.is_ready(),
+            "--refresh requires keys on disk (run DKG first)"
+        );
+        assert!(
+            !cli.peers.is_empty(),
+            "--refresh requires --peers"
+        );
+        let refresh_state = state.clone();
+        let peers = cli.peers.clone();
+        tokio::spawn(async move {
+            run_refresh(refresh_state, peers).await;
+        });
+    } else if cli.redeal {
+        // Re-deal: coordinator collects shares, reconstructs, and re-splits
+        assert!(
+            state.is_ready(),
+            "--redeal coordinator requires keys on disk"
+        );
+        let new_max = cli
+            .new_max_signers
+            .expect("--redeal requires --new-max-signers");
+        let new_min = cli
+            .new_min_signers
+            .expect("--redeal requires --new-min-signers");
+        let redeal_state = state.clone();
+        let old_peers = cli.old_peers.clone();
+        let new_peers = cli.peers.clone();
+        tokio::spawn(async move {
+            run_redeal(redeal_state, old_peers, new_peers, new_max, new_min).await;
+        });
+    } else if !cli.peers.is_empty() && !state.is_ready() {
+        // DKG: no keys on disk, peers provided
         let dkg_state = state.clone();
         let peers = cli.peers.clone();
         tokio::spawn(async move {

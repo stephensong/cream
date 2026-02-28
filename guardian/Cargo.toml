@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 cream-common = { path = "../common", features = ["dev", "frost"] }
-frost-ed25519 = { version = "2.1", default-features = false, features = ["serde"] }
+frost-ed25519 = { version = "2.2", default-features = false, features = ["serde"] }
 rand_chacha = "0.3"
 rand = "0.8"
 axum = "0.8"
