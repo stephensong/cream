@@ -5,8 +5,15 @@ edition = "2021"
 
 [features]
 node-tests = []
+guardian-tests = []
 
 [dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+frost-ed25519 = { version = "2.2", default-features = false, features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"
+rand = "0.8"
+hex = "0.4"
 cream-common = { path = "../../common", features = ["dev", "frost"] }
 freenet-stdlib = { version = "=0.1.39", features = ["net"] }
 tokio = { version = "1", features = ["full"] }

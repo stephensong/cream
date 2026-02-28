@@ -687,6 +687,14 @@ script = [
     ''',
 ]
 
+# ─── Guardian Stress Tests ────────────────────────────────────────────────────
+
+[tasks.test-guardian-stress]
+description = "Run guardian stress tests (signing, concurrency, refresh, redeal, crash recovery)"
+dependencies = ["build-guardian"]
+command = "cargo"
+args = ["test", "-p", "cream-node-integration", "--features", "guardian-tests", "--", "--nocapture", "--test-threads=1"]
+
 # ─── FROST Share Resharing Tests ──────────────────────────────────────────────
 
 [tasks.test-refresh]
@@ -906,8 +914,14 @@ script = [
     # Guardian 1 acts as coordinator
     # Stop guardian 1, restart with --redeal
     OLD_G1_PID=$(echo ${PIDS} | awk '{print $1}')
-    kill ${OLD_G1_PID} 2>/dev/null || true
-    sleep 1
+    kill -9 ${OLD_G1_PID} 2>/dev/null || true
+    # Wait for port 3010 to be released
+    for attempt in $(seq 1 15); do
+        if ! ss -tlnp 2>/dev/null | grep -q ':3010 '; then
+            break
+        fi
+        sleep 1
+    done
 
     # New peers for 3-of-5 (all except guardian 1)
     NEW_PEERS="http://localhost:3011,http://localhost:3012,http://localhost:3013,http://localhost:3014"
