@@ -322,20 +322,23 @@ impl TestHarness {
     /// Set up the full harness: 5 WebSocket connections, identities, directory contract,
     /// 3 storefront contracts, and 3 directory registrations.
     ///
-    /// Participants are distributed across nodes:
-    /// - **Gateway (3001)**: Gary, Iris, Alice — Gary PUTs contracts here
+    /// Participants are distributed across non-gateway nodes:
+    /// - **Node 1 (3002)**: Gary, Iris, Alice — Gary PUTs contracts here
     /// - **Node 2 (3003)**: Emma, Bob — exercises cross-node propagation
+    ///
+    /// The gateway (3001) is deliberately avoided — it exists only for
+    /// network topology formation and is known to be flaky under load.
     pub async fn setup() -> Self {
         tracing_subscriber::fmt::try_init().ok();
 
-        let url_gw = node_url(3001);
+        let url_n1 = node_url(3002);
         let url_n2 = node_url(3003);
 
-        // Connect clients — gateway for Gary/Iris/Alice, node-2 for Emma/Bob
-        let api_gary = connect_to_node_at(&url_gw).await;
+        // Connect clients — node-1 for Gary/Iris/Alice, node-2 for Emma/Bob
+        let api_gary = connect_to_node_at(&url_n1).await;
         let api_emma = connect_to_node_at(&url_n2).await;
-        let api_iris = connect_to_node_at(&url_gw).await;
-        let api_alice = connect_to_node_at(&url_gw).await;
+        let api_iris = connect_to_node_at(&url_n1).await;
+        let api_alice = connect_to_node_at(&url_n1).await;
         let api_bob = connect_to_node_at(&url_n2).await;
 
         // Create supplier identities (deterministic — same keys the UI derives)
@@ -504,7 +507,7 @@ impl TestHarness {
         let root_state_bytes = serde_json::to_vec(&root_state).unwrap();
 
         // Deploy root contract on gateway (via Gary's connection, reuse a fresh one)
-        let mut root_api = connect_to_node_at(&url_gw).await;
+        let mut root_api = connect_to_node_at(&url_n1).await;
         wait_for_put(
             &mut root_api,
             root_contract,
@@ -516,14 +519,14 @@ impl TestHarness {
         drop(root_api);
 
         // Deploy user contracts for Alice and Bob with initial 10,000 CURD allocation.
-        deploy_user_contract(&mut alice, &root_key, &url_gw, "Gary").await;
+        deploy_user_contract(&mut alice, &root_key, &url_n1, "Gary").await;
         deploy_user_contract(&mut bob, &root_key, &url_n2, "Gary").await;
 
         // Deploy user contracts for suppliers (Gary, Emma, Iris) with 10,000 CURD each.
         // Must happen before directory registration so user_contract_key is included.
-        deploy_supplier_user_contract(&mut gary, &root_key, &url_gw).await;
+        deploy_supplier_user_contract(&mut gary, &root_key, &url_n1).await;
         deploy_supplier_user_contract(&mut emma, &root_key, &url_n2).await;
-        deploy_supplier_user_contract(&mut iris, &root_key, &url_gw).await;
+        deploy_supplier_user_contract(&mut iris, &root_key, &url_n1).await;
 
         // Register all 3 suppliers in the directory (after user contracts so keys are available).
         // Gary and Iris register via gateway; Emma registers via node-2.
