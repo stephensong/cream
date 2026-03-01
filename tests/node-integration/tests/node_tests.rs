@@ -36,7 +36,7 @@ async fn cumulative_node_tests() {
     // ═══════════════════════════════════════════════════════════════════
     println!("── Step 1: directory_subscribe_notifies_on_update ──");
     {
-        let mut client_a = connect_to_node_at(&node_url(3001)).await;
+        let mut client_a = connect_to_node_at(&node_url(3002)).await;
         let mut client_b = connect_to_node_at(&node_url(3003)).await;
 
         let (dir_contract, dir_key) = make_directory_contract();
@@ -122,7 +122,7 @@ async fn cumulative_node_tests() {
     // ═══════════════════════════════════════════════════════════════════
     println!("── Step 2: storefront_subscribe_notifies_on_product_add ──");
     {
-        let mut client_a = connect_to_node_at(&node_url(3001)).await;
+        let mut client_a = connect_to_node_at(&node_url(3002)).await;
         let mut client_b = connect_to_node_at(&node_url(3003)).await;
 
         let (supplier_id, vk) = make_dummy_supplier("Notify Farm");
@@ -213,7 +213,7 @@ async fn cumulative_node_tests() {
     // ═══════════════════════════════════════════════════════════════════
     println!("── Step 3: get_subscribe_flag_vs_explicit_subscribe ──");
     {
-        let mut client_a = connect_to_node_at(&node_url(3001)).await;
+        let mut client_a = connect_to_node_at(&node_url(3002)).await;
         let mut client_b_get = connect_to_node_at(&node_url(3003)).await;
         let mut client_b_sub = connect_to_node_at(&node_url(3003)).await;
 
@@ -330,7 +330,7 @@ async fn cumulative_node_tests() {
     // ═══════════════════════════════════════════════════════════════════
     println!("── Step 4: product_count_increments_for_subscriber ──");
     {
-        let mut supplier = connect_to_node_at(&node_url(3001)).await;
+        let mut supplier = connect_to_node_at(&node_url(3004)).await;
         let mut customer = connect_to_node_at(&node_url(3003)).await;
 
         let (supplier_id, vk) = make_dummy_supplier("Count Farm");
@@ -723,7 +723,7 @@ async fn cumulative_node_tests() {
         use cream_node_integration::make_dummy_customer;
 
         let (zara_id, zara_vk) = make_dummy_customer("Zara");
-        let api_zara = connect_to_node_at(&node_url(3001)).await;
+        let api_zara = connect_to_node_at(&node_url(3004)).await;
 
         let mut zara = Customer {
             name: "Zara".to_string(),

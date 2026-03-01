@@ -130,9 +130,9 @@ async fn cross_node_propagation_all_nodes() {
     tracing_subscriber::fmt::try_init().ok();
     println!("── stress: cross_node_propagation_all_nodes ──");
 
-    // PUT storefront on gateway (port 3001)
+    // PUT storefront on node-1 (port 3002)
     let (_sid, _vk, sf_key, sf_state, _api) =
-        setup_storefront_on_port("PropTest", 3001).await;
+        setup_storefront_on_port("PropTest", 3002).await;
 
     // Concurrently GET from all 3 other nodes
     let mut handles = Vec::new();
@@ -548,9 +548,9 @@ async fn concurrent_order_placement() {
     tracing_subscriber::fmt::try_init().ok();
     println!("── stress: concurrent_order_placement ──");
 
-    // 1 supplier on port 3001 with 1 product (quantity=10)
+    // 1 supplier on node-1 (port 3002) with 1 product (quantity=10)
     let (_supplier_id, _vk, sf_key, mut sf_state, mut supplier_api) =
-        setup_storefront_on_port("OrderFarm", 3001).await;
+        setup_storefront_on_port("OrderFarm", 3002).await;
 
     let product = make_dummy_product("Order Milk");
     let product_id = product.product.id.clone();
@@ -667,11 +667,11 @@ async fn directory_contention() {
     tracing_subscriber::fmt::try_init().ok();
     println!("── stress: directory_contention ──");
 
-    // PUT directory on port 3001
+    // PUT directory on node-1 (port 3002)
     let (dir_contract, dir_key) = make_directory_contract();
     let empty_dir = DirectoryState::default();
     let dir_bytes = serde_json::to_vec(&empty_dir).unwrap();
-    let mut dir_api = connect_to_node_at(&node_url(3001)).await;
+    let mut dir_api = connect_to_node_at(&node_url(3002)).await;
 
     dir_api
         .send(ClientRequest::ContractOp(ContractRequest::Put {
