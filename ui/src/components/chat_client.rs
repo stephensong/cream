@@ -18,7 +18,7 @@ pub enum ServerMessage {
     Nonce { nonce: String },
     AuthOk,
     Error { message: String },
-    Invite { from: String, session_id: String, ecdh_pubkey: String },
+    Invite { from: String, session_id: String, ecdh_pubkey: String, message: String },
     Accept { session_id: String, ecdh_pubkey: String },
     Decline { session_id: String },
     Text { session_id: String, ciphertext: String, nonce: String },
@@ -32,7 +32,7 @@ pub enum ServerMessage {
 #[allow(dead_code)] // used in WASM relay communication
 pub enum ClientMsg {
     Auth { public_key: String, signature: String, nonce: String },
-    Invite { to: String, session_id: String, ecdh_pubkey: String },
+    Invite { to: String, session_id: String, ecdh_pubkey: String, message: String },
     Accept { session_id: String, ecdh_pubkey: String },
     Decline { session_id: String },
     Text { session_id: String, ciphertext: String, nonce: String },
@@ -41,11 +41,21 @@ pub enum ClientMsg {
     Close { session_id: String },
 }
 
+// ---------- Session status ----------
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionStatus {
+    PendingAccept,   // inviter waiting for response
+    InviteReceived,  // invitee sees invite, hasn't accepted yet
+    Active,          // both parties accepted, chat is live
+}
+
 // ---------- Chat session ----------
 
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub sender_is_me: bool,
+    pub sender_name: String,
     pub body: String,
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
@@ -55,9 +65,10 @@ pub struct ChatMessage {
 pub struct ChatSession {
     pub session_id: String,
     pub peer_pubkey: String,
+    pub peer_name: String,
     pub messages: Vec<ChatMessage>,
     pub started_at: chrono::DateTime<chrono::Utc>,
-    pub deposit_paid: u64,
+    pub status: SessionStatus,
     pub has_av: bool,
 }
 
@@ -69,15 +80,8 @@ pub struct ChatState {
     pub connected: bool,
     pub authenticated: bool,
     pub sessions: HashMap<String, ChatSession>,
-    pub pending_invites: Vec<PendingInvite>,
+    pub panel_open: bool,
     pub last_error: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingInvite {
-    pub from: String,
-    pub session_id: String,
-    pub ecdh_pubkey: String,
 }
 
 // ---------- Shared WebSocket handle ----------
@@ -131,9 +135,9 @@ pub mod wasm {
         relay_url: &str,
         pubkey_hex: &str,
         signing_key_bytes: [u8; 32],
-        on_message: impl Fn(ServerMessage) + 'static,
-        on_open: impl Fn() + 'static,
-        on_close: impl Fn() + 'static,
+        on_message: impl FnMut(ServerMessage) + 'static,
+        on_open: impl FnMut() + 'static,
+        on_close: impl FnMut() + 'static,
     ) -> Result<WebSocket, String> {
         let ws = WebSocket::new(relay_url)
             .map_err(|e| format!("WebSocket connect failed: {:?}", e))?;
@@ -144,17 +148,19 @@ pub mod wasm {
 
         // onopen
         let ws_clone = ws.clone();
+        let mut on_open = on_open;
         let on_open_cb = Closure::wrap(Box::new(move |_: JsValue| {
             clog("[CHAT] WebSocket connected, waiting for nonce...");
             let _ = &ws_clone; // keep alive
             on_open();
-        }) as Box<dyn Fn(JsValue)>);
+        }) as Box<dyn FnMut(JsValue)>);
         ws.set_onopen(Some(on_open_cb.as_ref().unchecked_ref()));
         on_open_cb.forget();
 
         // onmessage — handle auth handshake and forward messages
         let ws_clone = ws.clone();
         let pubkey_clone = pubkey.clone();
+        let mut on_message = on_message;
         let on_msg_cb = Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
             let data = match event.data().as_string() {
                 Some(s) => s,
@@ -184,15 +190,16 @@ pub mod wasm {
             }
 
             on_message(msg);
-        }) as Box<dyn Fn(web_sys::MessageEvent)>);
+        }) as Box<dyn FnMut(web_sys::MessageEvent)>);
         ws.set_onmessage(Some(on_msg_cb.as_ref().unchecked_ref()));
         on_msg_cb.forget();
 
         // onclose
+        let mut on_close = on_close;
         let on_close_cb = Closure::wrap(Box::new(move |_: JsValue| {
             clog("[CHAT] WebSocket closed");
             on_close();
-        }) as Box<dyn Fn(JsValue)>);
+        }) as Box<dyn FnMut(JsValue)>);
         ws.set_onclose(Some(on_close_cb.as_ref().unchecked_ref()));
         on_close_cb.forget();
 

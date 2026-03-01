@@ -1,10 +1,11 @@
 use dioxus::prelude::*;
 
-use cream_common::chat::{CHAT_TEXT_DEPOSIT_CURD, CHAT_SESSION_MINUTES};
+use cream_common::chat::CHAT_MESSAGE_COST_CURD;
 
-use super::chat_client::{ChatMessage, ChatSession, ChatState, ChatWsHandle, ClientMsg, PendingInvite};
+use super::chat_client::{ChatMessage, ChatSession, ChatState, ChatWsHandle, ClientMsg, SessionStatus};
 use super::node_api::{use_node_action, NodeAction};
 use super::shared_state::use_shared_state;
+use super::user_state::use_user_state;
 
 fn clog(msg: &str) {
     #[cfg(target_family = "wasm")]
@@ -19,15 +20,11 @@ pub fn use_chat_state() -> Signal<ChatState> {
     use_context::<Signal<ChatState>>()
 }
 
-/// Badge in the app header showing active chat count + incoming invites.
+/// Badge in the app header showing active chat count.
 #[component]
 pub fn ChatBadge() -> Element {
     let chat = use_context::<Signal<ChatState>>();
-    let chat_read = chat.read();
-
-    let session_count = chat_read.sessions.len();
-    let invite_count = chat_read.pending_invites.len();
-    let total = session_count + invite_count;
+    let total = chat.read().sessions.len();
 
     if total == 0 {
         return rsx! {};
@@ -40,49 +37,51 @@ pub fn ChatBadge() -> Element {
     }
 }
 
-/// Toast notification for incoming chat invites.
+/// Prominent banner shown at the top of the app when there are incoming invites.
+/// Visible on every route so the invitee never misses it.
 #[component]
-pub fn ChatInviteToast() -> Element {
+pub fn ChatInviteBanner() -> Element {
     let mut chat = use_context::<Signal<ChatState>>();
-    let ws_handle = use_context::<Signal<ChatWsHandle>>();
 
-    let invites: Vec<PendingInvite> = chat.read().pending_invites.clone();
+    // Collect invite-received sessions
+    let invites: Vec<(String, String, String)> = chat.read().sessions.iter()
+        .filter(|(_, s)| s.status == SessionStatus::InviteReceived)
+        .map(|(sid, s)| {
+            let preview = s.messages.first()
+                .map(|m| {
+                    if m.body.len() > 60 {
+                        format!("{}...", &m.body[..57])
+                    } else {
+                        m.body.clone()
+                    }
+                })
+                .unwrap_or_default();
+            (sid.clone(), s.peer_name.clone(), preview)
+        })
+        .collect();
 
     if invites.is_empty() {
         return rsx! {};
     }
 
     rsx! {
-        div { class: "chat-invite-toasts",
-            for invite in invites.iter() {
+        div { class: "chat-invite-banner",
+            for (sid, peer_name, preview) in invites.iter() {
                 {
-                    let session_id = invite.session_id.clone();
-                    let session_id_decline = invite.session_id.clone();
-                    let ecdh_pubkey = invite.ecdh_pubkey.clone();
-                    let from_short = if invite.from.len() > 16 {
-                        format!("{}...{}", &invite.from[..8], &invite.from[invite.from.len()-8..])
-                    } else {
-                        invite.from.clone()
-                    };
+                    let sid = sid.clone();
                     rsx! {
-                        div { class: "chat-invite-toast",
-                            key: "{invite.session_id}",
-                            p { "Chat invite from {from_short}" }
-                            div { class: "chat-invite-actions",
-                                button {
-                                    class: "chat-accept-btn",
-                                    onclick: move |_| {
-                                        accept_invite(&mut chat, &ws_handle, &session_id, &ecdh_pubkey);
-                                    },
-                                    "Accept"
-                                }
-                                button {
-                                    class: "chat-decline-btn",
-                                    onclick: move |_| {
-                                        decline_invite(&mut chat, &ws_handle, &session_id_decline);
-                                    },
-                                    "Decline"
-                                }
+                        div { class: "chat-invite-banner-item",
+                            key: "{sid}",
+                            span { class: "chat-invite-banner-text",
+                                strong { "{peer_name}" }
+                                ": \"{preview}\""
+                            }
+                            button {
+                                class: "chat-invite-banner-btn",
+                                onclick: move |_| {
+                                    chat.write().panel_open = true;
+                                },
+                                "Open Chat"
                             }
                         }
                     }
@@ -92,45 +91,36 @@ pub fn ChatInviteToast() -> Element {
     }
 }
 
-fn accept_invite(chat: &mut Signal<ChatState>, ws_handle: &Signal<ChatWsHandle>, session_id: &str, _ecdh_pubkey: &str) {
-    let mut state = chat.write();
-    // Remove from pending
-    let invite = state.pending_invites.iter()
-        .find(|i| i.session_id == session_id)
-        .cloned();
+fn send_chat_message(
+    chat: &mut Signal<ChatState>,
+    ws_handle: &Signal<ChatWsHandle>,
+    node: &Coroutine<NodeAction>,
+    session_id: &str,
+    my_name: &str,
+    msg_input: &mut Signal<String>,
+) {
+    let body = msg_input.read().trim().to_string();
+    if body.is_empty() { return; }
 
-    if let Some(invite) = invite {
-        state.pending_invites.retain(|i| i.session_id != session_id);
+    // Charge per-message toll
+    node.send(NodeAction::ChatMessageToll);
 
-        // Create session
-        let session = ChatSession {
-            session_id: session_id.to_string(),
-            peer_pubkey: invite.from.clone(),
-            messages: Vec::new(),
-            started_at: chrono::Utc::now(),
-            deposit_paid: 0, // Acceptor doesn't pay deposit in this version
-            has_av: false,
-        };
-        state.sessions.insert(session_id.to_string(), session);
+    let msg = ChatMessage {
+        sender_is_me: true,
+        sender_name: my_name.to_string(),
+        body: body.clone(),
+        timestamp: chrono::Utc::now(),
+    };
+    if let Some(s) = chat.write().sessions.get_mut(session_id) {
+        s.messages.push(msg);
     }
-    drop(state);
 
-    // Send accept to relay
-    ws_handle.read().send(&ClientMsg::Accept {
+    ws_handle.read().send(&ClientMsg::Text {
         session_id: session_id.to_string(),
-        ecdh_pubkey: String::new(), // E2E encryption is a later phase
+        ciphertext: body,
+        nonce: String::new(),
     });
-    clog(&format!("[CHAT] Accepted invite for session {}", session_id));
-}
-
-fn decline_invite(chat: &mut Signal<ChatState>, ws_handle: &Signal<ChatWsHandle>, session_id: &str) {
-    chat.write().pending_invites.retain(|i| i.session_id != session_id);
-
-    // Send decline to relay
-    ws_handle.read().send(&ClientMsg::Decline {
-        session_id: session_id.to_string(),
-    });
-    clog(&format!("[CHAT] Declined invite for session {}", session_id));
+    msg_input.set(String::new());
 }
 
 /// Floating chat panel — slide-in from right side.
@@ -138,20 +128,19 @@ fn decline_invite(chat: &mut Signal<ChatState>, ws_handle: &Signal<ChatWsHandle>
 pub fn ChatPanel() -> Element {
     let mut chat = use_context::<Signal<ChatState>>();
     let ws_handle = use_context::<Signal<ChatWsHandle>>();
-    let mut panel_open = use_signal(|| false);
     let mut active_session = use_signal(|| None::<String>);
     let mut msg_input = use_signal(String::new);
-    let _shared = use_shared_state();
     let node = use_node_action();
+    let user_state = use_user_state();
+    let my_name = user_state.read().moniker.clone().unwrap_or_default();
 
     let chat_read = chat.read();
     let has_sessions = !chat_read.sessions.is_empty();
-    let has_invites = !chat_read.pending_invites.is_empty();
-    let is_open = *panel_open.read();
+    let is_open = chat_read.panel_open;
     drop(chat_read);
 
     // Toggle button (always visible when there are sessions)
-    if !is_open && !has_sessions && !has_invites {
+    if !is_open && !has_sessions {
         return rsx! {};
     }
 
@@ -159,10 +148,10 @@ pub fn ChatPanel() -> Element {
         return rsx! {
             button {
                 class: "chat-toggle-btn",
-                onclick: move |_| panel_open.set(true),
+                onclick: move |_| { chat.write().panel_open = true; },
                 "Chat"
                 {
-                    let total = chat.read().sessions.len() + chat.read().pending_invites.len();
+                    let total = chat.read().sessions.len();
                     if total > 0 {
                         rsx! { span { class: "chat-count", " ({total})" } }
                     } else {
@@ -181,14 +170,7 @@ pub fn ChatPanel() -> Element {
         .and_then(|sid| chat.read().sessions.get(sid).cloned());
 
     let sessions_list: Vec<(String, String)> = chat.read().sessions.iter()
-        .map(|(sid, s)| {
-            let peer_short = if s.peer_pubkey.len() > 16 {
-                format!("{}..{}", &s.peer_pubkey[..8], &s.peer_pubkey[s.peer_pubkey.len()-8..])
-            } else {
-                s.peer_pubkey.clone()
-            };
-            (sid.clone(), peer_short)
-        })
+        .map(|(sid, s)| (sid.clone(), s.peer_name.clone()))
         .collect();
 
     rsx! {
@@ -197,7 +179,7 @@ pub fn ChatPanel() -> Element {
                 h3 { "Chat" }
                 button {
                     class: "chat-close-btn",
-                    onclick: move |_| panel_open.set(false),
+                    onclick: move |_| { chat.write().panel_open = false; },
                     "X"
                 }
             }
@@ -224,18 +206,6 @@ pub fn ChatPanel() -> Element {
             // Active chat thread
             if let Some(session) = session_data {
                 div { class: "chat-thread",
-                    // Timer
-                    div { class: "chat-timer",
-                        {
-                            let elapsed = (chrono::Utc::now() - session.started_at).num_seconds().max(0) as u64;
-                            let total_secs = CHAT_SESSION_MINUTES * 60;
-                            let remaining = total_secs.saturating_sub(elapsed);
-                            let mins = remaining / 60;
-                            let secs = remaining % 60;
-                            rsx! { span { class: "timer-text", "{mins}:{secs:02}" } }
-                        }
-                    }
-
                     // Messages
                     div { class: "chat-messages",
                         for msg in session.messages.iter() {
@@ -248,83 +218,77 @@ pub fn ChatPanel() -> Element {
                                 let time_str = msg.timestamp.format("%H:%M").to_string();
                                 rsx! {
                                     div { class: "{bubble_class}",
+                                        div { class: "chat-sender-line",
+                                            span { class: "chat-sender", "{msg.sender_name}" }
+                                            span { class: "chat-time", "{time_str}" }
+                                        }
                                         p { "{msg.body}" }
-                                        span { class: "chat-time", "{time_str}" }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Pending accept notice (inviter side)
+                        if session.status == SessionStatus::PendingAccept {
+                            p { class: "chat-pending-notice", "Waiting for response..." }
+                        }
+
+                        // Invite received: Accept button (invitee side)
+                        if session.status == SessionStatus::InviteReceived {
+                            {
+                                let sid = session.session_id.clone();
+                                rsx! {
+                                    button {
+                                        class: "chat-invite-accept",
+                                        onclick: move |_| {
+                                            // Send accept to relay
+                                            ws_handle.read().send(&ClientMsg::Accept {
+                                                session_id: sid.clone(),
+                                                ecdh_pubkey: String::new(),
+                                            });
+                                            // Update session status
+                                            if let Some(s) = chat.write().sessions.get_mut(&sid) {
+                                                s.status = SessionStatus::Active;
+                                            }
+                                            clog(&format!("[CHAT] Accepted invite for session {}", sid));
+                                        },
+                                        "Accept"
                                     }
                                 }
                             }
                         }
                     }
 
-                    // Input
-                    div { class: "chat-input",
-                        input {
-                            r#type: "text",
-                            placeholder: "Type a message...",
-                            value: "{msg_input}",
-                            oninput: move |evt| msg_input.set(evt.value()),
-                            onkeypress: {
-                                let session_id = session.session_id.clone();
-                                move |evt: KeyboardEvent| {
-                                    if evt.key() == Key::Enter {
-                                        let body = msg_input.read().trim().to_string();
-                                        if body.is_empty() { return; }
-
-                                        // Add to local messages
-                                        let msg = ChatMessage {
-                                            sender_is_me: true,
-                                            body: body.clone(),
-                                            timestamp: chrono::Utc::now(),
-                                        };
-                                        if let Some(s) = chat.write().sessions.get_mut(&session_id) {
-                                            s.messages.push(msg);
+                    // Input + Send button (only when active)
+                    if session.status == SessionStatus::Active {
+                        div { class: "chat-input",
+                            input {
+                                r#type: "text",
+                                placeholder: "Type a message...",
+                                value: "{msg_input}",
+                                oninput: move |evt| msg_input.set(evt.value()),
+                                onkeypress: {
+                                    let session_id = session.session_id.clone();
+                                    let my_name = my_name.clone();
+                                    move |evt: KeyboardEvent| {
+                                        if evt.key() == Key::Enter {
+                                            send_chat_message(&mut chat, &ws_handle, &node, &session_id, &my_name, &mut msg_input);
                                         }
-
-                                        // Send via WebSocket (plaintext for now, E2E encryption later)
-                                        ws_handle.read().send(&ClientMsg::Text {
-                                            session_id: session_id.clone(),
-                                            ciphertext: body,
-                                            nonce: String::new(),
-                                        });
-                                        msg_input.set(String::new());
                                     }
-                                }
-                            },
-                        }
-                    }
-
-                    // End chat button
-                    div { class: "chat-actions",
-                        button {
-                            class: "chat-end-btn",
-                            onclick: {
-                                let session_id = session.session_id.clone();
-                                let deposit = session.deposit_paid;
-                                let started = session.started_at;
-                                move |_| {
-                                    let elapsed = (chrono::Utc::now() - started).num_seconds().max(0) as u64;
-
-                                    // Issue refund for unused time
-                                    if deposit > 0 {
-                                        node.send(NodeAction::ChatRefund {
-                                            elapsed_secs: elapsed,
-                                            deposit,
-                                            session_minutes: CHAT_SESSION_MINUTES,
-                                        });
+                                },
+                            }
+                            button {
+                                class: "chat-send-btn",
+                                disabled: msg_input.read().trim().is_empty(),
+                                onclick: {
+                                    let session_id = session.session_id.clone();
+                                    let my_name = my_name.clone();
+                                    move |_| {
+                                        send_chat_message(&mut chat, &ws_handle, &node, &session_id, &my_name, &mut msg_input);
                                     }
-
-                                    // Send close to relay
-                                    ws_handle.read().send(&ClientMsg::Close {
-                                        session_id: session_id.clone(),
-                                    });
-
-                                    // Remove session
-                                    chat.write().sessions.remove(&session_id);
-                                    active_session.set(None);
-                                    clog(&format!("[CHAT] Ended session {}", session_id));
-                                }
-                            },
-                            "End Chat"
+                                },
+                                "Send"
+                            }
                         }
                     }
                 }
@@ -337,17 +301,20 @@ pub fn ChatPanel() -> Element {
     }
 }
 
-/// "Chat with Supplier" button for the storefront view.
+/// Invite input + "Send Invite" button for the storefront view.
 #[component]
 pub fn ChatWithSupplierButton(supplier_name: String) -> Element {
     let shared = use_shared_state();
     let mut chat = use_context::<Signal<ChatState>>();
     let ws_handle = use_context::<Signal<ChatWsHandle>>();
     let node = use_node_action();
+    let user_state = use_user_state();
+    let my_name = user_state.read().moniker.clone().unwrap_or_default();
+    let mut invite_msg = use_signal(String::new);
 
     let balance = shared.read().user_contract.as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
-    let deposit = CHAT_TEXT_DEPOSIT_CURD;
-    let can_afford = balance >= deposit;
+    let cost = CHAT_MESSAGE_COST_CURD;
+    let can_afford = balance >= cost;
 
     // Find supplier's public key from directory
     let supplier_pubkey: Option<String> = {
@@ -360,48 +327,88 @@ pub fn ChatWithSupplierButton(supplier_name: String) -> Element {
             })
     };
 
+    let msg_empty = invite_msg.read().trim().is_empty();
+    let connected = chat.read().connected;
+
     rsx! {
-        button {
-            class: "chat-start-btn",
-            disabled: !can_afford || supplier_pubkey.is_none() || !chat.read().connected,
-            title: if !can_afford {
-                format!("Need {} CURD", deposit)
-            } else if !chat.read().connected {
-                "Not connected to chat relay".to_string()
-            } else {
-                format!("Start private chat ({} CURD deposit)", deposit)
-            },
-            onclick: {
-                let supplier_name = supplier_name.clone();
-                move |_| {
-                    if let Some(ref pubkey) = supplier_pubkey {
-                        // Pay deposit
-                        node.send(NodeAction::ChatDeposit { amount: deposit });
+        div { class: "chat-invite-input",
+            input {
+                r#type: "text",
+                placeholder: "Message to {supplier_name}...",
+                value: "{invite_msg}",
+                oninput: move |evt| invite_msg.set(evt.value()),
+            }
+            button {
+                class: "chat-start-btn",
+                disabled: msg_empty || !can_afford || supplier_pubkey.is_none() || !connected,
+                title: if !can_afford {
+                    format!("Need {} CURD", cost)
+                } else if !connected {
+                    "Not connected to chat relay".to_string()
+                } else if msg_empty {
+                    "Type a message first".to_string()
+                } else {
+                    format!("Send invite ({} CURD per message)", cost)
+                },
+                onclick: {
+                    let supplier_name = supplier_name.clone();
+                    let my_name = my_name.clone();
+                    move |_| {
+                        let body = invite_msg.read().trim().to_string();
+                        if body.is_empty() { return; }
 
-                        // Create session
-                        let session_id = format!("chat-{}", chrono::Utc::now().timestamp_millis());
-                        let peer = pubkey.clone();
-                        let session = ChatSession {
-                            session_id: session_id.clone(),
-                            peer_pubkey: peer.clone(),
-                            messages: Vec::new(),
-                            started_at: chrono::Utc::now(),
-                            deposit_paid: deposit,
-                            has_av: false,
-                        };
-                        chat.write().sessions.insert(session_id.clone(), session);
+                        if let Some(ref pubkey) = supplier_pubkey {
+                            // Charge one message toll for the invite message
+                            node.send(NodeAction::ChatMessageToll);
 
-                        // Send invite via WebSocket
-                        ws_handle.read().send(&ClientMsg::Invite {
-                            to: peer,
-                            session_id,
-                            ecdh_pubkey: String::new(), // E2E encryption is a later phase
-                        });
-                        clog(&format!("[CHAT] Started chat with {}", supplier_name));
+                            // Also persist the invite as an inbox message so the
+                            // recipient sees it even if they're offline.
+                            let session_id = format!("chat-{}", chrono::Utc::now().timestamp_millis());
+                            node.send(NodeAction::SendInboxMessage {
+                                recipient_name: supplier_name.clone(),
+                                body: body.clone(),
+                                kind: cream_common::inbox::MessageKind::ChatInvite {
+                                    session_id: session_id.clone(),
+                                },
+                            });
+
+                            // Create session with PendingAccept status
+                            let peer = pubkey.clone();
+                            let invite_message = ChatMessage {
+                                sender_is_me: true,
+                                sender_name: my_name.clone(),
+                                body: body.clone(),
+                                timestamp: chrono::Utc::now(),
+                            };
+                            let session = ChatSession {
+                                session_id: session_id.clone(),
+                                peer_pubkey: peer.clone(),
+                                peer_name: supplier_name.clone(),
+                                messages: vec![invite_message],
+                                started_at: chrono::Utc::now(),
+                                status: SessionStatus::PendingAccept,
+                                has_av: false,
+                            };
+                            {
+                                let mut state = chat.write();
+                                state.sessions.insert(session_id.clone(), session);
+                                state.panel_open = true;
+                            }
+
+                            // Send invite via WebSocket with message
+                            ws_handle.read().send(&ClientMsg::Invite {
+                                to: peer,
+                                session_id,
+                                ecdh_pubkey: String::new(),
+                                message: body,
+                            });
+                            invite_msg.set(String::new());
+                            clog(&format!("[CHAT] Sent invite to {}", supplier_name));
+                        }
                     }
-                }
-            },
-            "Chat with {supplier_name} ({deposit} CURD)"
+                },
+                "Send Invite"
+            }
         }
     }
 }

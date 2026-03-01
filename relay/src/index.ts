@@ -139,6 +139,7 @@ export function createRelay(port: number = DEFAULT_PORT): Promise<RelayServer> {
               from: client.pubkey,
               session_id: msg.session_id,
               ecdh_pubkey: msg.ecdh_pubkey,
+              message: msg.message,
             });
 
             if (!delivered) {

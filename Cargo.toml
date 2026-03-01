@@ -5,6 +5,7 @@ members = [
     "contracts/directory-contract",
     "contracts/storefront-contract",
     "contracts/user-contract",
+    "contracts/inbox-contract",
     "delegates/cream-delegate",
     "guardian",
     "tests/node-integration",

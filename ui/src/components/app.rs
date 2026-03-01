@@ -13,13 +13,15 @@ use super::key_manager::KeyManager;
 use super::my_orders::MyOrders;
 use super::node_api::{use_node_action, use_node_coroutine, NodeAction};
 use super::shared_state::{use_shared_state, SharedState};
+use super::messages_view::MessagesView;
 use super::storefront_view::StorefrontView;
 use super::supplier_dashboard::SupplierDashboard;
 use super::user_state::{use_user_state, UserState};
 use super::lightning_remote::LightningClient;
 use super::wallet_view::WalletView;
-use super::chat_client::{ChatState, ChatWsHandle};
-use super::chat_view::{ChatPanel, ChatInviteToast};
+#[allow(unused_imports)] // SessionStatus used in WASM cfg block
+use super::chat_client::{ChatState, ChatWsHandle, SessionStatus};
+use super::chat_view::{ChatPanel, ChatInviteBanner};
 
 /// Read `?supplier=X` from the browser URL bar. Returns `None` outside WASM.
 fn get_supplier_query_param() -> Option<String> {
@@ -55,6 +57,8 @@ pub enum Route {
     Supplier { name: String },
     #[route("/orders")]
     Orders {},
+    #[route("/messages")]
+    Messages {},
     #[route("/my_storefront")]
     Dashboard {},
     #[route("/wallet")]
@@ -101,7 +105,7 @@ pub fn App() -> Element {
 }
 
 /// Render the navigation buttons for the app header.
-fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_supplier: bool, connected_supplier: Option<String>) -> Element {
+fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_supplier: bool, connected_supplier: Option<String>, inbox_count: usize) -> Element {
     if let Some(supplier) = connected_supplier {
         // Customer mode: single-storefront nav
         rsx! {
@@ -120,6 +124,10 @@ fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_su
                     "My Orders ({order_count})"
                 }
                 button {
+                    onclick: move |_| { nav.push(Route::Messages {}); },
+                    if inbox_count > 0 { "Messages ({inbox_count})" } else { "Messages" }
+                }
+                button {
                     onclick: move |_| { nav.push(Route::Wallet {}); },
                     "Wallet ({displayed_balance} CURD)"
                 }
@@ -136,6 +144,10 @@ fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_su
                 button {
                     onclick: move |_| { nav.push(Route::Orders {}); },
                     "My Orders ({order_count})"
+                }
+                button {
+                    onclick: move |_| { nav.push(Route::Messages {}); },
+                    if inbox_count > 0 { "Messages ({inbox_count})" } else { "Messages" }
                 }
                 if is_supplier {
                     button {
@@ -197,8 +209,10 @@ fn use_chat_connection() {
 
         #[cfg(target_family = "wasm")]
         {
-            use super::chat_client::{ServerMessage, ChatSession, PendingInvite, ChatMessage};
+            use super::chat_client::{ServerMessage, ChatMessage, ChatSession};
+            use super::shared_state::SharedState;
 
+            let shared_for_msg: Signal<SharedState> = use_context();
             let mut chat_for_msg = chat_state;
             let mut chat_for_open = chat_state;
             let mut chat_for_close = chat_state;
@@ -213,20 +227,59 @@ fn use_chat_connection() {
                         ServerMessage::AuthOk => {
                             chat_for_msg.write().authenticated = true;
                         }
-                        ServerMessage::Error { message } => {
-                            chat_for_msg.write().last_error = Some(message);
+                        ServerMessage::Error { ref message } => {
+                            // If peer not connected, remove any PendingAccept session
+                            if message.contains("Peer not connected") {
+                                let mut state = chat_for_msg.write();
+                                state.sessions.retain(|_, s| s.status != SessionStatus::PendingAccept);
+                                state.last_error = Some(message.clone());
+                            } else {
+                                chat_for_msg.write().last_error = Some(message.clone());
+                            }
                         }
-                        ServerMessage::Invite { from, session_id, ecdh_pubkey } => {
-                            chat_for_msg.write().pending_invites.push(PendingInvite {
-                                from,
-                                session_id,
-                                ecdh_pubkey,
-                            });
+                        ServerMessage::Invite { from, session_id, message, .. } => {
+                            // Resolve peer name from directory
+                            let peer_name = {
+                                let shared_read = shared_for_msg.read();
+                                let mut name = None;
+                                for entry in shared_read.directory.entries.values() {
+                                    let bytes = entry.supplier.0.to_bytes();
+                                    let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                                    if hex == from {
+                                        name = Some(entry.name.clone());
+                                        break;
+                                    }
+                                }
+                                name.unwrap_or_else(|| {
+                                    if from.len() > 16 {
+                                        format!("{}...{}", &from[..8], &from[from.len()-8..])
+                                    } else {
+                                        from.clone()
+                                    }
+                                })
+                            };
+                            let invite_msg = ChatMessage {
+                                sender_is_me: false,
+                                sender_name: peer_name.clone(),
+                                body: message,
+                                timestamp: chrono::Utc::now(),
+                            };
+                            let session = ChatSession {
+                                session_id: session_id.clone(),
+                                peer_pubkey: from,
+                                peer_name,
+                                messages: vec![invite_msg],
+                                started_at: chrono::Utc::now(),
+                                status: SessionStatus::InviteReceived,
+                                has_av: false,
+                            };
+                            chat_for_msg.write().sessions.insert(session_id, session);
                         }
                         ServerMessage::Accept { session_id, .. } => {
-                            // Peer accepted our invite — session is now active
-                            // Session was already created when we sent the invite
-                            let _ = session_id;
+                            // Peer accepted our invite — set session to Active
+                            if let Some(s) = chat_for_msg.write().sessions.get_mut(&session_id) {
+                                s.status = SessionStatus::Active;
+                            }
                         }
                         ServerMessage::Decline { session_id } => {
                             // Peer declined — remove the session we created
@@ -234,12 +287,17 @@ fn use_chat_connection() {
                         }
                         ServerMessage::Text { session_id, ciphertext, .. } => {
                             // For now, treat ciphertext as plaintext (E2E encryption is a later phase)
+                            let mut state = chat_for_msg.write();
+                            let peer_name = state.sessions.get(&session_id)
+                                .map(|s| s.peer_name.clone())
+                                .unwrap_or_default();
                             let msg = ChatMessage {
                                 sender_is_me: false,
+                                sender_name: peer_name,
                                 body: ciphertext,
                                 timestamp: chrono::Utc::now(),
                             };
-                            if let Some(session) = chat_for_msg.write().sessions.get_mut(&session_id) {
+                            if let Some(session) = state.sessions.get_mut(&session_id) {
                                 session.messages.push(msg);
                             }
                         }
@@ -367,12 +425,15 @@ fn AppLayout() -> Element {
                     }
                 }
                 p { "The decentralized, private 24/7 farmer's market" }
-                {nav_buttons(nav.clone(), order_count, displayed_balance, is_supplier, connected_supplier.clone())}
+                {
+                    let inbox_count = shared.read().inbox.as_ref().map(|i| i.messages.len()).unwrap_or(0);
+                    nav_buttons(nav.clone(), order_count, displayed_balance, is_supplier, connected_supplier.clone(), inbox_count)
+                }
             }
+            ChatInviteBanner {}
             main {
                 Outlet::<Route> {}
             }
-            ChatInviteToast {}
             ChatPanel {}
         }
     }
@@ -402,6 +463,12 @@ fn Supplier(name: String) -> Element {
 #[component]
 fn Orders() -> Element {
     rsx! { MyOrders {} }
+}
+
+/// Route component: renders the messages/inbox view.
+#[component]
+fn Messages() -> Element {
+    rsx! { MessagesView {} }
 }
 
 /// Route component: renders the supplier dashboard.

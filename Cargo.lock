@@ -1441,6 +1441,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cream-inbox-contract"
+version = "0.1.0"
+dependencies = [
+ "cream-common",
+ "ed25519-dalek",
+ "freenet-stdlib",
+ "serde_json",
+]
+
+[[package]]
 name = "cream-node-integration"
 version = "0.1.0"
 dependencies = [

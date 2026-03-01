@@ -25,3 +25,4 @@ pub mod lightning_remote;
 pub mod wallet_view;
 pub mod chat_client;
 pub mod chat_view;
+pub mod messages_view;

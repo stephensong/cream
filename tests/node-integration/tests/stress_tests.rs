@@ -104,7 +104,6 @@ async fn setup_storefront_on_port(
         },
         products: BTreeMap::new(),
         orders: BTreeMap::new(),
-        messages: BTreeMap::new(),
     };
 
     let state_bytes = serde_json::to_vec(&sf_state).unwrap();

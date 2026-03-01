@@ -3,7 +3,7 @@ export type ServerMessage =
   | { type: 'nonce'; nonce: string }
   | { type: 'auth_ok' }
   | { type: 'error'; message: string }
-  | { type: 'invite'; from: string; session_id: string; ecdh_pubkey: string }
+  | { type: 'invite'; from: string; session_id: string; ecdh_pubkey: string; message: string }
   | { type: 'accept'; session_id: string; ecdh_pubkey: string }
   | { type: 'decline'; session_id: string }
   | { type: 'text'; session_id: string; ciphertext: string; nonce: string }
@@ -14,7 +14,7 @@ export type ServerMessage =
 /** Messages sent by clients to the server */
 export type ClientMessage =
   | { type: 'auth'; public_key: string; signature: string; nonce: string }
-  | { type: 'invite'; to: string; session_id: string; ecdh_pubkey: string }
+  | { type: 'invite'; to: string; session_id: string; ecdh_pubkey: string; message: string }
   | { type: 'accept'; session_id: string; ecdh_pubkey: string }
   | { type: 'decline'; session_id: string }
   | { type: 'text'; session_id: string; ciphertext: string; nonce: string }

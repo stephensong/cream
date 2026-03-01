@@ -147,7 +147,10 @@ for (const vp of MOBILE_VIEWPORTS) {
       const satsInput = pegInSection.locator('input[type="number"]');
       await expect(satsInput).toBeVisible();
       await satsInput.fill('100');
-      await expect(pegInSection.locator('button:has-text("Deposit via Lightning")')).toBeEnabled();
+      // Button text depends on whether a Lightning gateway is configured:
+      // "Generate Lightning Invoice" (with gateway) or "Deposit via Lightning" (without)
+      const pegInBtn = pegInSection.locator('button:has-text("Lightning")');
+      await expect(pegInBtn).toBeEnabled();
 
       // Peg-out section visible
       const pegOutSection = page.locator('.peg-section').last();

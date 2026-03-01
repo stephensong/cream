@@ -564,7 +564,6 @@ fn make_initial_storefront(
         },
         products: BTreeMap::new(),
         orders: BTreeMap::new(),
-        messages: BTreeMap::new(),
     }
 }
 

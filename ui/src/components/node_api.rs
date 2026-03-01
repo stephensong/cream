@@ -88,20 +88,14 @@ pub enum NodeAction {
     PegOutViaGateway { amount_curd: u64, bolt11: String },
     /// Faucet: transfer 1000 CURD from root to the current user.
     FaucetTopUp,
-    /// Send a message to a supplier's storefront (costs 10 CURD toll).
-    SendMessage {
-        supplier_name: String,
+    /// Send a message to a user's inbox contract (costs 10 CURD toll).
+    SendInboxMessage {
+        recipient_name: String,
         body: String,
-        reply_to: Option<u64>,
+        kind: cream_common::inbox::MessageKind,
     },
-    /// Pay a deposit to start a private chat session.
-    ChatDeposit { amount: u64 },
-    /// Refund unused chat session time proportionally.
-    ChatRefund {
-        elapsed_secs: u64,
-        deposit: u64,
-        session_minutes: u64,
-    },
+    /// Charge per chat message sent (CHAT_MESSAGE_COST_CURD each).
+    ChatMessageToll,
 }
 
 /// Get a handle to send actions to the node communication coroutine.
@@ -193,6 +187,11 @@ mod wasm_impl {
     /// Embedded user contract WASM (built with `cargo make build-contracts-dev`).
     const USER_CONTRACT_WASM: &[u8] = include_bytes!(
         "../../../target/wasm32-unknown-unknown/release/cream_user_contract.wasm"
+    );
+
+    /// Embedded inbox contract WASM (built with `cargo make build-contracts-dev`).
+    const INBOX_CONTRACT_WASM: &[u8] = include_bytes!(
+        "../../../target/wasm32-unknown-unknown/release/cream_inbox_contract.wasm"
     );
 
     /// Build a ContractContainer from raw WASM bytes and parameters.
@@ -357,6 +356,10 @@ mod wasm_impl {
         let mut user_contract_instance_id: Option<ContractInstanceId> = None;
         // Track the user contract key for updates.
         let mut user_contract_key: Option<ContractKey> = None;
+        // Track the user's inbox contract instance ID for response routing.
+        let mut inbox_contract_instance_id: Option<ContractInstanceId> = None;
+        // Track the inbox contract key for updates.
+        let mut inbox_contract_key: Option<ContractKey> = None;
 
         // On startup, if we have a saved user contract key, GET + subscribe to it.
         {
@@ -381,6 +384,43 @@ mod wasm_impl {
                     if let Err(e) = api.send(sub_req).await {
                         clog(&format!("[CREAM] ERROR: Failed to subscribe to user contract: {:?}", e));
                     }
+                }
+            }
+        }
+
+        // On startup, derive and subscribe to our inbox contract.
+        // The inbox key is deterministic from WASM + InboxParameters { owner }.
+        {
+            let km = key_manager_signal.read().clone();
+            if let Some(ref km) = km {
+                let owner_key = km.customer_verifying_key();
+                let inbox_params = cream_common::inbox::InboxParameters { owner: owner_key };
+                let params_bytes = serde_json::to_vec(&inbox_params).unwrap();
+                let inbox_container = make_contract(INBOX_CONTRACT_WASM, Parameters::from(params_bytes));
+                let ib_key = inbox_container.key();
+                let ib_instance_id = *ib_key.id();
+
+                clog(&format!("[CREAM] Inbox contract key: {}", ib_key));
+                inbox_contract_instance_id = Some(ib_instance_id);
+                inbox_contract_key = Some(ib_key);
+                shared.write().inbox_contract_key = Some(format!("{}", ib_key));
+
+                // GET + subscribe to inbox
+                let get_inbox = ClientRequest::ContractOp(ContractRequest::Get {
+                    key: ib_instance_id,
+                    return_contract_code: false,
+                    subscribe: false,
+                    blocking_subscribe: false,
+                });
+                if let Err(e) = api.send(get_inbox).await {
+                    clog(&format!("[CREAM] WARNING: Failed to GET inbox contract (may not exist yet): {:?}", e));
+                }
+                let sub_inbox = ClientRequest::ContractOp(ContractRequest::Subscribe {
+                    key: ib_instance_id,
+                    summary: None,
+                });
+                if let Err(e) = api.send(sub_inbox).await {
+                    clog(&format!("[CREAM] WARNING: Failed to subscribe to inbox contract: {:?}", e));
                 }
             }
         }
@@ -448,6 +488,8 @@ mod wasm_impl {
                         &mut user_contract_key,
                         &root_contract_full_key,
                         &signing_service,
+                        &mut inbox_contract_instance_id,
+                        &mut inbox_contract_key,
                     ).await;
                 }
 
@@ -464,6 +506,7 @@ mod wasm_impl {
                                 csn.as_deref(),
                                 user_contract_instance_id,
                                 root_contract_instance_id,
+                                inbox_contract_instance_id,
                             );
                             for follow_up in follow_ups {
                                 if let Err(e) = api.send(follow_up).await {
@@ -730,6 +773,8 @@ mod wasm_impl {
         user_contract_key_ref: &mut Option<ContractKey>,
         root_contract_key: &ContractKey,
         signing_service: &crate::components::signing_service::SigningService,
+        inbox_contract_instance_id: &mut Option<ContractInstanceId>,
+        inbox_contract_key_ref: &mut Option<ContractKey>,
     ) {
         // Construct wallet backend for this action dispatch
         let mut wallet = CreamNativeWallet::new(
@@ -841,7 +886,6 @@ mod wasm_impl {
                     },
                     products: BTreeMap::new(),
                     orders: BTreeMap::new(),
-                    messages: BTreeMap::new(),
                 };
                 let sf_state_bytes = serde_json::to_vec(&sf_state).unwrap();
 
@@ -1025,14 +1069,8 @@ mod wasm_impl {
                             if let Some(mut sf) = sf_opt {
                                 let now = chrono::Utc::now();
                                 let orders_changed = sf.expire_orders(now);
-                                let messages_changed = sf.prune_old_messages(now);
-                                if orders_changed || messages_changed {
-                                    if orders_changed {
-                                        clog(&format!("[CREAM] Expired orders for '{}'", expiry_supplier));
-                                    }
-                                    if messages_changed {
-                                        clog(&format!("[CREAM] Pruned old messages for '{}'", expiry_supplier));
-                                    }
+                                if orders_changed {
+                                    clog(&format!("[CREAM] Expired orders for '{}'", expiry_supplier));
                                     expiry_shared.write().storefronts
                                         .insert(expiry_supplier.clone(), sf.clone());
                                     // Push to network via the internal request channel
@@ -1771,6 +1809,42 @@ mod wasm_impl {
                     name.clone(),
                     format!("genesis:{}", name),
                 ).await;
+
+                // Deploy inbox contract for this user
+                let inbox_params = cream_common::inbox::InboxParameters {
+                    owner: key_manager.customer_verifying_key(),
+                };
+                let inbox_params_bytes = serde_json::to_vec(&inbox_params).unwrap();
+                let inbox_contract = make_contract(
+                    INBOX_CONTRACT_WASM,
+                    Parameters::from(inbox_params_bytes),
+                );
+                let ib_key = inbox_contract.key();
+                let ib_state = cream_common::inbox::InboxState {
+                    owner: key_manager.customer_id(),
+                    messages: std::collections::BTreeMap::new(),
+                    updated_at: now,
+                };
+                let ib_state_bytes = serde_json::to_vec(&ib_state).unwrap();
+                let put_inbox = ClientRequest::ContractOp(ContractRequest::Put {
+                    contract: inbox_contract,
+                    state: WrappedState::new(ib_state_bytes),
+                    related_contracts: RelatedContracts::default(),
+                    subscribe: true,
+                    blocking_subscribe: false,
+                });
+
+                clog(&format!("[CREAM] Deploying inbox contract for {}: {:?}", name, ib_key));
+                if let Err(e) = api.send(put_inbox).await {
+                    clog(&format!("[CREAM] ERROR: Failed to deploy inbox contract: {:?}", e));
+                }
+                *inbox_contract_instance_id = Some(*ib_key.id());
+                *inbox_contract_key_ref = Some(ib_key);
+                {
+                    let mut state = shared.write();
+                    state.inbox = Some(ib_state);
+                    state.inbox_contract_key = Some(format!("{}", ib_key));
+                }
             }
 
             NodeAction::UpdateUserContract {
@@ -1985,120 +2059,106 @@ mod wasm_impl {
                 ).await;
             }
 
-            NodeAction::SendMessage {
-                supplier_name,
+            NodeAction::SendInboxMessage {
+                recipient_name,
                 body,
-                reply_to,
+                kind,
             } => {
-                clog(&format!("[CREAM] SendMessage to {}: {} chars", supplier_name, body.len()));
+                clog(&format!("[CREAM] SendInboxMessage to {}: {} chars", recipient_name, body.len()));
+
+                let cost = cream_common::inbox::INBOX_MESSAGE_COST_CURD;
 
                 // Check balance from on-network user contract
                 let current_balance = shared.read().user_contract
                     .as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
-                if current_balance < 10 {
-                    clog("[CREAM] ERROR: Insufficient balance for message toll (10 CURD)");
+                if current_balance < cost {
+                    clog("[CREAM] ERROR: Insufficient balance for inbox message toll");
                     return;
                 }
 
-                // Debit 10 CURD toll via double-entry transfer (user → root)
+                // Debit toll via double-entry transfer (user → root)
                 let sender_name = user_state.read().moniker.clone().unwrap_or_default();
                 wallet.transfer_to_root(
                     api,
-                    10,
-                    "Message toll".to_string(),
-                    sender_name,
+                    cost,
+                    "Inbox message toll".to_string(),
+                    sender_name.clone(),
                 ).await;
 
-                // Find the storefront's contract key
-                let sf_key = sf_contract_keys.get(&supplier_name).copied()
-                    .or_else(|| {
-                        let state = shared.read();
-                        state.directory.entries.values()
-                            .find(|e| e.name == supplier_name)
-                            .map(|e| e.storefront_key)
-                    });
+                // Derive recipient's inbox contract key from their pubkey
+                let recipient_pubkey = {
+                    let state = shared.read();
+                    state.directory.entries.values()
+                        .find(|e| e.name == recipient_name)
+                        .map(|e| e.supplier.0)
+                };
 
-                let Some(sf_key) = sf_key else {
-                    clog(&format!("[CREAM] ERROR: No storefront key found for {}", supplier_name));
+                let Some(recipient_vk) = recipient_pubkey else {
+                    clog(&format!("[CREAM] ERROR: Recipient {} not found in directory", recipient_name));
                     return;
                 };
 
-                let existing_sf = shared.read().storefronts.get(&supplier_name).cloned();
-                let Some(mut sf) = existing_sf else {
-                    clog(&format!("[CREAM] ERROR: Storefront state not found for {}", supplier_name));
-                    return;
-                };
+                let inbox_params = cream_common::inbox::InboxParameters { owner: recipient_vk };
+                let params_bytes = serde_json::to_vec(&inbox_params).unwrap();
+                let recipient_inbox = make_contract(INBOX_CONTRACT_WASM, Parameters::from(params_bytes));
+                let recipient_inbox_key = recipient_inbox.key();
 
                 let now = chrono::Utc::now();
                 let msg_id: u64 = (now.timestamp_millis() as u64)
                     .wrapping_mul(1000)
                     .wrapping_add(rand_u32() as u64);
 
-                let sender_name = user_state.read().moniker.clone().unwrap_or_default();
                 let sender_key = user_state.read().user_contract_key.clone();
 
-                let message = cream_common::message::Message {
+                let message = cream_common::inbox::InboxMessage {
                     id: msg_id,
-                    sender_name,
-                    sender_key,
+                    kind,
+                    from_name: sender_name,
+                    from_key: sender_key,
                     body,
-                    toll_paid: 10,
+                    toll_paid: cost,
                     created_at: now,
-                    reply_to,
                 };
 
-                sf.messages.insert(msg_id, message);
+                // Build an update state with just this new message
+                let update_state = cream_common::inbox::InboxState {
+                    owner: cream_common::identity::CustomerId(recipient_vk),
+                    messages: std::iter::once((msg_id, message)).collect(),
+                    updated_at: now,
+                };
 
-                let sf_bytes = serde_json::to_vec(&sf).unwrap();
+                let update_bytes = serde_json::to_vec(&update_state).unwrap();
                 let update = ClientRequest::ContractOp(ContractRequest::Update {
-                    key: sf_key,
-                    data: UpdateData::State(State::from(sf_bytes)),
+                    key: recipient_inbox_key,
+                    data: UpdateData::State(State::from(update_bytes)),
                 });
 
-                shared.write().storefronts.insert(supplier_name.clone(), sf);
-
                 if let Err(e) = api.send(update).await {
-                    clog(&format!("[CREAM] ERROR: Failed to send message: {:?}", e));
+                    clog(&format!("[CREAM] ERROR: Failed to send inbox message: {:?}", e));
                 } else {
-                    clog("[CREAM] SendMessage: sent successfully");
+                    clog("[CREAM] SendInboxMessage: sent successfully");
                 }
             }
 
-            NodeAction::ChatDeposit { amount } => {
-                clog(&format!("[CREAM] ChatDeposit: paying {} CURD for chat session", amount));
+            NodeAction::ChatMessageToll => {
+                let cost = cream_common::chat::CHAT_MESSAGE_COST_CURD;
+                clog(&format!("[CREAM] ChatMessageToll: charging {} CURD", cost));
 
                 let current_balance = shared.read().user_contract
                     .as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
-                if current_balance < amount {
-                    clog("[CREAM] ERROR: Insufficient balance for chat deposit");
+                if current_balance < cost {
+                    clog("[CREAM] ERROR: Insufficient balance for chat message toll");
                     return;
                 }
 
                 let user_name = user_state.read().moniker.clone().unwrap_or_default();
                 wallet.transfer_to_root(
                     api,
-                    amount,
-                    "Chat session deposit".to_string(),
+                    cost,
+                    "Chat message toll".to_string(),
                     user_name,
                 ).await;
-                clog(&format!("[CREAM] ChatDeposit: paid {} CURD", amount));
-            }
-
-            NodeAction::ChatRefund { elapsed_secs, deposit, session_minutes } => {
-                let refund = cream_common::chat::calculate_refund(elapsed_secs, deposit, session_minutes);
-                if refund == 0 {
-                    clog("[CREAM] ChatRefund: no refund (full session used)");
-                    return;
-                }
-
-                clog(&format!("[CREAM] ChatRefund: refunding {} CURD ({} secs of {} min session)", refund, elapsed_secs, session_minutes));
-                let user_name = user_state.read().moniker.clone().unwrap_or_default();
-                wallet.transfer_from_root(
-                    api,
-                    refund,
-                    format!("Chat session refund ({} secs unused)", session_minutes * 60 - elapsed_secs),
-                    user_name,
-                ).await;
+                clog(&format!("[CREAM] ChatMessageToll: paid {} CURD", cost));
             }
 
             NodeAction::SubscribeCustomerStorefront { storefront_key } => {
@@ -2145,6 +2205,7 @@ mod wasm_impl {
         customer_supplier_name: Option<&str>,
         user_contract_instance_id: Option<ContractInstanceId>,
         root_contract_instance_id: Option<ContractInstanceId>,
+        inbox_contract_instance_id: Option<ContractInstanceId>,
     ) -> Vec<ClientRequest<'static>> {
         match response {
             ContractResponse::GetResponse { key, state, .. } => {
@@ -2159,9 +2220,23 @@ mod wasm_impl {
                 let is_root_contract = root_contract_instance_id
                     .map(|id| *key.id() == id)
                     .unwrap_or(false);
-                clog(&format!("[CREAM] GetResponse: is_directory={}, is_user_contract={}, is_root={}, bytes_len={}",
-                    is_directory, is_user_contract, is_root_contract, bytes.len()));
-                if is_root_contract {
+                let is_inbox = inbox_contract_instance_id
+                    .map(|id| *key.id() == id)
+                    .unwrap_or(false);
+                clog(&format!("[CREAM] GetResponse: is_directory={}, is_user_contract={}, is_root={}, is_inbox={}, bytes_len={}",
+                    is_directory, is_user_contract, is_root_contract, is_inbox, bytes.len()));
+                if is_inbox {
+                    match serde_json::from_slice::<cream_common::inbox::InboxState>(bytes) {
+                        Ok(inbox_state) => {
+                            clog(&format!("[CREAM] Inbox contract GET: {} messages",
+                                inbox_state.messages.len()));
+                            shared.write().inbox = Some(inbox_state);
+                        }
+                        Err(e) => {
+                            clog(&format!("[CREAM] ERROR: Failed to parse inbox GetResponse: {e}"));
+                        }
+                    }
+                } else if is_root_contract {
                     match serde_json::from_slice::<UserContractState>(bytes) {
                         Ok(uc_state) => {
                             clog(&format!("[CREAM] Root contract GET: balance={}, ledger_len={}",
@@ -2247,9 +2322,28 @@ mod wasm_impl {
                 let is_root_contract = root_contract_instance_id
                     .map(|id| *key.id() == id)
                     .unwrap_or(false);
-                clog(&format!("[CREAM] UpdateNotification: is_directory={}, is_user_contract={}, is_root={}, bytes_len={}",
-                    is_directory, is_user_contract, is_root_contract, bytes.len()));
-                if is_root_contract {
+                let is_inbox = inbox_contract_instance_id
+                    .map(|id| *key.id() == id)
+                    .unwrap_or(false);
+                clog(&format!("[CREAM] UpdateNotification: is_directory={}, is_user_contract={}, is_root={}, is_inbox={}, bytes_len={}",
+                    is_directory, is_user_contract, is_root_contract, is_inbox, bytes.len()));
+                if is_inbox {
+                    match serde_json::from_slice::<cream_common::inbox::InboxState>(bytes) {
+                        Ok(inbox_update) => {
+                            clog(&format!("[CREAM] Inbox notification: {} messages",
+                                inbox_update.messages.len()));
+                            let mut state = shared.write();
+                            if let Some(existing) = state.inbox.as_mut() {
+                                existing.merge(inbox_update);
+                            } else {
+                                state.inbox = Some(inbox_update);
+                            }
+                        }
+                        Err(e) => {
+                            clog(&format!("[CREAM] ERROR: Failed to parse inbox notification: {e}"));
+                        }
+                    }
+                } else if is_root_contract {
                     match serde_json::from_slice::<UserContractState>(bytes) {
                         Ok(uc_update) => {
                             clog(&format!("[CREAM] Root contract notification: balance={}, ledger_len={}",

@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::identity::SupplierId;
 use crate::location::GeoLocation;
-use crate::message::{Message, MessageId};
 use crate::order::{Order, OrderId};
 use crate::product::{Product, ProductId};
 
@@ -251,8 +250,6 @@ pub struct StorefrontState {
     pub info: StorefrontInfo,
     pub products: BTreeMap<ProductId, SignedProduct>,
     pub orders: BTreeMap<OrderId, Order>,
-    #[serde(default)]
-    pub messages: BTreeMap<MessageId, Message>,
 }
 
 impl StorefrontState {
@@ -294,15 +291,6 @@ impl StorefrontState {
         changed
     }
 
-    /// Remove messages older than 30 days.
-    /// Returns `true` if any messages were removed.
-    pub fn prune_old_messages(&mut self, now: DateTime<Utc>) -> bool {
-        let cutoff = now - chrono::Duration::days(30);
-        let before = self.messages.len();
-        self.messages.retain(|_, msg| msg.created_at >= cutoff);
-        self.messages.len() != before
-    }
-
     /// Merge another storefront state into this one.
     ///
     /// - Products: LWW by `updated_at`
@@ -334,11 +322,6 @@ impl StorefrontState {
                     self.orders.insert(id, order);
                 }
             }
-        }
-
-        // Merge messages (union — messages are append-only)
-        for (id, message) in other.messages {
-            self.messages.entry(id).or_insert(message);
         }
     }
 
@@ -408,8 +391,6 @@ struct SignableOrder<'a> {
 pub struct StorefrontSummary {
     pub product_timestamps: BTreeMap<ProductId, DateTime<Utc>>,
     pub order_timestamps: BTreeMap<OrderId, (DateTime<Utc>, u8)>, // (created_at, status_ordinal)
-    #[serde(default)]
-    pub message_ids: std::collections::BTreeSet<MessageId>,
 }
 
 impl StorefrontState {
@@ -425,7 +406,6 @@ impl StorefrontState {
                 .iter()
                 .map(|(id, o)| (id.clone(), (o.created_at, o.status.ordinal())))
                 .collect(),
-            message_ids: self.messages.keys().cloned().collect(),
         }
     }
 
@@ -455,18 +435,10 @@ impl StorefrontState {
             .map(|(id, o)| (id.clone(), o.clone()))
             .collect();
 
-        let messages = self
-            .messages
-            .iter()
-            .filter(|(id, _)| !summary.message_ids.contains(id))
-            .map(|(id, m)| (*id, m.clone()))
-            .collect();
-
         StorefrontState {
             info: self.info.clone(),
             products,
             orders,
-            messages,
         }
     }
 }
@@ -496,7 +468,6 @@ mod tests {
             },
             products: BTreeMap::new(),
             orders: BTreeMap::new(),
-            messages: BTreeMap::new(),
         }
     }
 

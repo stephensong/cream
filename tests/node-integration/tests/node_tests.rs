@@ -142,7 +142,6 @@ async fn cumulative_node_tests() {
             },
             products: BTreeMap::new(),
             orders: BTreeMap::new(),
-            messages: BTreeMap::new(),
         };
         let state_bytes = serde_json::to_vec(&initial_sf).unwrap();
 
@@ -235,7 +234,6 @@ async fn cumulative_node_tests() {
             },
             products: BTreeMap::new(),
             orders: BTreeMap::new(),
-            messages: BTreeMap::new(),
         };
         let state_bytes = serde_json::to_vec(&initial_sf).unwrap();
 
@@ -352,7 +350,6 @@ async fn cumulative_node_tests() {
             },
             products: BTreeMap::new(),
             orders: BTreeMap::new(),
-            messages: BTreeMap::new(),
         };
         let state_bytes = serde_json::to_vec(&initial_sf).unwrap();
 

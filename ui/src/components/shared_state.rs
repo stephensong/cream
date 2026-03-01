@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use dioxus::prelude::*;
 
 use cream_common::directory::{DirectoryEntry, DirectoryState};
+use cream_common::inbox::InboxState;
 use cream_common::storefront::StorefrontState;
 use cream_common::user_contract::UserContractState;
 
@@ -41,6 +42,12 @@ pub struct SharedState {
     /// The supplier's own user contract key (Base58), when in supplier mode.
     #[allow(dead_code)] // used in WASM builds only
     pub supplier_user_contract_key: Option<String>,
+    /// The current user's inbox contract state from the network.
+    #[allow(dead_code)] // populated in WASM builds
+    pub inbox: Option<InboxState>,
+    /// The inbox contract key (Base58).
+    #[allow(dead_code)] // used in WASM builds only
+    pub inbox_contract_key: Option<String>,
 }
 
 impl SharedState {
