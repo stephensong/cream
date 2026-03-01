@@ -138,6 +138,8 @@ script = [
     set -euo pipefail
     pkill -f "dx serve" 2>/dev/null || true
     pkill -f "cream-guardian" 2>/dev/null || true
+    kill $(cat /tmp/cream-relay.pid 2>/dev/null) 2>/dev/null || true
+    rm -f /tmp/cream-relay.pid
     # Kill stale cargo-make fixture processes but not the current one ($$=shell, PPID chain)
     CURRENT_CARGO_MAKE=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
     for pid in $(pgrep -f "cargo-make make fixture" 2>/dev/null); do
@@ -297,13 +299,14 @@ script = [
 
 [tasks.fixture]
 description = "Full manual-testing fixture: build contracts, start network, run tests, start guardians, start rendezvous, launch UI dev server"
-dependencies = ["kill-stale", "test-node", "start-guardians", "restart-rendezvous", "tailwind-install", "tailwind-build"]
+dependencies = ["kill-stale", "test-node", "start-guardians", "restart-rendezvous", "start-relay", "tailwind-install", "tailwind-build"]
 cwd = "ui"
 command = "dx"
 args = ["serve"]
 [tasks.fixture.env]
 CREAM_RENDEZVOUS_URL = "http://localhost:8787"
 CREAM_GUARDIAN_URLS = "http://localhost:3010,http://localhost:3011,http://localhost:3012"
+CREAM_RELAY_URL = "ws://localhost:3020"
 
 [tasks.restart-rendezvous]
 description = "Kill any stale wrangler and start fresh rendezvous service on port 8787"
@@ -329,6 +332,29 @@ script = [
     done
     echo "Timed out waiting for rendezvous service"
     exit 1
+    ''',
+]
+
+[tasks.relay-install]
+description = "Install chat relay dependencies"
+cwd = "relay"
+command = "npm"
+args = ["install", "--silent"]
+
+[tasks.start-relay]
+description = "Start chat relay on port 3020"
+dependencies = ["relay-install"]
+script = [
+    '''
+    set -euo pipefail
+    kill $(cat /tmp/cream-relay.pid 2>/dev/null) 2>/dev/null || true
+    rm -f /tmp/cream-relay.pid
+
+    cd relay
+    nohup npx tsx src/index.ts --port=3020 > /tmp/cream-relay.log 2>&1 &
+    echo $! > /tmp/cream-relay.pid
+    sleep 1
+    echo "Chat relay ready on port 3020"
     ''',
 ]
 

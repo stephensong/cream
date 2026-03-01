@@ -12,6 +12,7 @@ pub mod user_contract;
 pub mod wallet;
 pub mod wallet_backend;
 pub mod lightning_gateway;
+pub mod chat;
 
 #[cfg(feature = "frost")]
 pub mod frost;

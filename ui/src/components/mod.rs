@@ -23,3 +23,5 @@ pub mod lightning_mock;
 #[allow(dead_code)] // types used in WASM builds only
 pub mod lightning_remote;
 pub mod wallet_view;
+pub mod chat_client;
+pub mod chat_view;

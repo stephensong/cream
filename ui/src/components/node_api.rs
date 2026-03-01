@@ -94,6 +94,14 @@ pub enum NodeAction {
         body: String,
         reply_to: Option<u64>,
     },
+    /// Pay a deposit to start a private chat session.
+    ChatDeposit { amount: u64 },
+    /// Refund unused chat session time proportionally.
+    ChatRefund {
+        elapsed_secs: u64,
+        deposit: u64,
+        session_minutes: u64,
+    },
 }
 
 /// Get a handle to send actions to the node communication coroutine.
@@ -2054,6 +2062,43 @@ mod wasm_impl {
                 } else {
                     clog("[CREAM] SendMessage: sent successfully");
                 }
+            }
+
+            NodeAction::ChatDeposit { amount } => {
+                clog(&format!("[CREAM] ChatDeposit: paying {} CURD for chat session", amount));
+
+                let current_balance = shared.read().user_contract
+                    .as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
+                if current_balance < amount {
+                    clog("[CREAM] ERROR: Insufficient balance for chat deposit");
+                    return;
+                }
+
+                let user_name = user_state.read().moniker.clone().unwrap_or_default();
+                wallet.transfer_to_root(
+                    api,
+                    amount,
+                    "Chat session deposit".to_string(),
+                    user_name,
+                ).await;
+                clog(&format!("[CREAM] ChatDeposit: paid {} CURD", amount));
+            }
+
+            NodeAction::ChatRefund { elapsed_secs, deposit, session_minutes } => {
+                let refund = cream_common::chat::calculate_refund(elapsed_secs, deposit, session_minutes);
+                if refund == 0 {
+                    clog("[CREAM] ChatRefund: no refund (full session used)");
+                    return;
+                }
+
+                clog(&format!("[CREAM] ChatRefund: refunding {} CURD ({} secs of {} min session)", refund, elapsed_secs, session_minutes));
+                let user_name = user_state.read().moniker.clone().unwrap_or_default();
+                wallet.transfer_from_root(
+                    api,
+                    refund,
+                    format!("Chat session refund ({} secs unused)", session_minutes * 60 - elapsed_secs),
+                    user_name,
+                ).await;
             }
 
             NodeAction::SubscribeCustomerStorefront { storefront_key } => {

@@ -18,6 +18,8 @@ use super::supplier_dashboard::SupplierDashboard;
 use super::user_state::{use_user_state, UserState};
 use super::lightning_remote::LightningClient;
 use super::wallet_view::WalletView;
+use super::chat_client::ChatState;
+use super::chat_view::{ChatPanel, ChatInviteToast};
 
 /// Read `?supplier=X` from the browser URL bar. Returns `None` outside WASM.
 fn get_supplier_query_param() -> Option<String> {
@@ -77,6 +79,7 @@ pub fn App() -> Element {
         let km = auto_derive_key_manager();
         Signal::new(km)
     });
+    use_context_provider(|| Signal::new(ChatState::default()));
     use_node_coroutine();
 
     let key_manager: Signal<Option<KeyManager>> = use_context();
@@ -260,6 +263,8 @@ fn AppLayout() -> Element {
             main {
                 Outlet::<Route> {}
             }
+            ChatInviteToast {}
+            ChatPanel {}
         }
     }
 }

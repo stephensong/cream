@@ -4,6 +4,7 @@ use cream_common::currency::format_amount;
 use cream_common::message::Message;
 use cream_common::storefront::WeeklySchedule;
 
+use super::chat_view::ChatWithSupplierButton;
 use super::node_api::{use_node_action, NodeAction};
 use super::order_form::OrderForm;
 use super::schedule_editor::ScheduleSummary;
@@ -121,6 +122,7 @@ pub fn StorefrontView(supplier_name: String) -> Element {
                 }
             }
             if is_registered && !is_own {
+                ChatWithSupplierButton { supplier_name: supplier_name.clone() }
                 MessageSection { supplier_name: supplier_name.clone() }
             }
             div { class: "product-list",
