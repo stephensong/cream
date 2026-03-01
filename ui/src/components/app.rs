@@ -562,19 +562,29 @@ fn SetupScreen() -> Element {
     let mut supplier_lookup_result =
         use_signal(|| None::<super::rendezvous::RendezvousEntry>);
 
-    // Auto-trigger lookup when ?supplier= param is present
+    // Auto-trigger lookup when ?supplier= param is present (with retry for
+    // transient network failures — wrangler dev server or Cloudflare cold starts).
     use_effect(move || {
         if let Some(name) = url_supplier.read().clone() {
             supplier_lookup_loading.set(true);
             spawn(async move {
-                match super::rendezvous::lookup_supplier(&name).await {
-                    Ok(entry) => {
-                        supplier_lookup_result.set(Some(entry));
+                let mut last_err = String::new();
+                for attempt in 0..3u32 {
+                    if attempt > 0 {
+                        gloo_timers::future::TimeoutFuture::new(1_000).await;
                     }
-                    Err(e) => {
-                        supplier_lookup_error.set(Some(e));
+                    match super::rendezvous::lookup_supplier(&name).await {
+                        Ok(entry) => {
+                            supplier_lookup_result.set(Some(entry));
+                            supplier_lookup_loading.set(false);
+                            return;
+                        }
+                        Err(e) => {
+                            last_err = e;
+                        }
                     }
                 }
+                supplier_lookup_error.set(Some(last_err));
                 supplier_lookup_loading.set(false);
             });
         }
