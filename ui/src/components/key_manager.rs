@@ -90,6 +90,17 @@ impl KeyManager {
         self.supplier_signing_key.sign(message).to_bytes()
     }
 
+    /// Returns the 32-byte supplier signing key bytes (for chat relay auth).
+    pub fn supplier_signing_key_bytes(&self) -> [u8; 32] {
+        self.supplier_signing_key.to_bytes()
+    }
+
+    /// Returns the supplier public key as a hex string (for chat relay identity).
+    pub fn supplier_pubkey_hex(&self) -> String {
+        let vk = self.supplier_verifying_key();
+        vk.as_bytes().iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
     /// Sign a user contract state update (customer key).
     pub fn sign_user_contract(&self, message: &[u8]) -> Signature {
         self.customer_signing_key.sign(message)

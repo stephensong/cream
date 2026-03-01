@@ -18,7 +18,7 @@ use super::supplier_dashboard::SupplierDashboard;
 use super::user_state::{use_user_state, UserState};
 use super::lightning_remote::LightningClient;
 use super::wallet_view::WalletView;
-use super::chat_client::ChatState;
+use super::chat_client::{ChatState, ChatWsHandle};
 use super::chat_view::{ChatPanel, ChatInviteToast};
 
 /// Read `?supplier=X` from the browser URL bar. Returns `None` outside WASM.
@@ -80,6 +80,7 @@ pub fn App() -> Element {
         Signal::new(km)
     });
     use_context_provider(|| Signal::new(ChatState::default()));
+    use_context_provider(|| Signal::new(ChatWsHandle::default()));
     use_node_coroutine();
 
     let key_manager: Signal<Option<KeyManager>> = use_context();
@@ -166,6 +167,111 @@ fn auto_derive_key_manager() -> Option<KeyManager> {
     KeyManager::from_credentials(moniker, &password).ok()
 }
 
+/// Manages the WebSocket connection to the chat relay.
+/// Connects when KeyManager is available, routes incoming messages to ChatState.
+fn use_chat_connection() {
+    let key_manager: Signal<Option<KeyManager>> = use_context();
+    #[allow(unused_variables, unused_mut)] // used in WASM cfg block
+    let mut chat_state: Signal<ChatState> = use_context();
+    #[allow(unused_mut)] // mutated in WASM cfg block
+    let mut ws_handle: Signal<ChatWsHandle> = use_context();
+
+    use_effect(move || {
+        // Only connect if we have keys and aren't already connected
+        #[allow(unused_variables)] // used in WASM cfg block
+        let km = match key_manager.read().as_ref() {
+            Some(km) => km.clone(),
+            None => return,
+        };
+
+        if ws_handle.read().is_connected() {
+            return;
+        }
+
+        #[cfg(target_family = "wasm")]
+        let pubkey_hex = km.supplier_pubkey_hex();
+        #[cfg(target_family = "wasm")]
+        let signing_key_bytes = km.supplier_signing_key_bytes();
+        #[cfg(target_family = "wasm")]
+        let relay = super::chat_client::relay_url();
+
+        #[cfg(target_family = "wasm")]
+        {
+            use super::chat_client::{ServerMessage, ChatSession, PendingInvite, ChatMessage};
+
+            let mut chat_for_msg = chat_state;
+            let mut chat_for_open = chat_state;
+            let mut chat_for_close = chat_state;
+            let mut ws_for_close = ws_handle;
+
+            match super::chat_client::wasm::connect(
+                &relay,
+                &pubkey_hex,
+                signing_key_bytes,
+                move |msg| {
+                    match msg {
+                        ServerMessage::AuthOk => {
+                            chat_for_msg.write().authenticated = true;
+                        }
+                        ServerMessage::Error { message } => {
+                            chat_for_msg.write().last_error = Some(message);
+                        }
+                        ServerMessage::Invite { from, session_id, ecdh_pubkey } => {
+                            chat_for_msg.write().pending_invites.push(PendingInvite {
+                                from,
+                                session_id,
+                                ecdh_pubkey,
+                            });
+                        }
+                        ServerMessage::Accept { session_id, .. } => {
+                            // Peer accepted our invite — session is now active
+                            // Session was already created when we sent the invite
+                            let _ = session_id;
+                        }
+                        ServerMessage::Decline { session_id } => {
+                            // Peer declined — remove the session we created
+                            chat_for_msg.write().sessions.remove(&session_id);
+                        }
+                        ServerMessage::Text { session_id, ciphertext, .. } => {
+                            // For now, treat ciphertext as plaintext (E2E encryption is a later phase)
+                            let msg = ChatMessage {
+                                sender_is_me: false,
+                                body: ciphertext,
+                                timestamp: chrono::Utc::now(),
+                            };
+                            if let Some(session) = chat_for_msg.write().sessions.get_mut(&session_id) {
+                                session.messages.push(msg);
+                            }
+                        }
+                        ServerMessage::Close { session_id, reason } => {
+                            chat_for_msg.write().sessions.remove(&session_id);
+                            web_sys::console::log_1(&format!("[CHAT] Session {} closed: {}", session_id, reason).into());
+                        }
+                        // SDP/ICE handled in WebRTC phase
+                        ServerMessage::Sdp { .. } | ServerMessage::Ice { .. } | ServerMessage::Nonce { .. } => {}
+                    }
+                },
+                move || {
+                    chat_for_open.write().connected = true;
+                },
+                move || {
+                    let mut state = chat_for_close.write();
+                    state.connected = false;
+                    state.authenticated = false;
+                    ws_for_close.write().ws = None;
+                },
+            ) {
+                Ok(ws) => {
+                    ws_handle.write().ws = Some(ws);
+                }
+                Err(e) => {
+                    chat_state.write().last_error = Some(e);
+                }
+            }
+        }
+    });
+}
+
 #[component]
 fn AppLayout() -> Element {
     let mut user_state = use_user_state();
@@ -226,6 +332,9 @@ fn AppLayout() -> Element {
     };
     drop(shared_read);
     let displayed_balance = balance + incoming_deposits;
+
+    // Connect to chat relay when KeyManager is available
+    use_chat_connection();
 
     rsx! {
         div { class: "cream-app",

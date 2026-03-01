@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 
 use cream_common::chat::{CHAT_TEXT_DEPOSIT_CURD, CHAT_SESSION_MINUTES};
 
-use super::chat_client::{ChatMessage, ChatSession, ChatState, PendingInvite};
+use super::chat_client::{ChatMessage, ChatSession, ChatState, ChatWsHandle, ClientMsg, PendingInvite};
 use super::node_api::{use_node_action, NodeAction};
 use super::shared_state::use_shared_state;
 
@@ -44,6 +44,7 @@ pub fn ChatBadge() -> Element {
 #[component]
 pub fn ChatInviteToast() -> Element {
     let mut chat = use_context::<Signal<ChatState>>();
+    let ws_handle = use_context::<Signal<ChatWsHandle>>();
 
     let invites: Vec<PendingInvite> = chat.read().pending_invites.clone();
 
@@ -71,14 +72,14 @@ pub fn ChatInviteToast() -> Element {
                                 button {
                                     class: "chat-accept-btn",
                                     onclick: move |_| {
-                                        accept_invite(&mut chat, &session_id, &ecdh_pubkey);
+                                        accept_invite(&mut chat, &ws_handle, &session_id, &ecdh_pubkey);
                                     },
                                     "Accept"
                                 }
                                 button {
                                     class: "chat-decline-btn",
                                     onclick: move |_| {
-                                        decline_invite(&mut chat, &session_id_decline);
+                                        decline_invite(&mut chat, &ws_handle, &session_id_decline);
                                     },
                                     "Decline"
                                 }
@@ -91,7 +92,7 @@ pub fn ChatInviteToast() -> Element {
     }
 }
 
-fn accept_invite(chat: &mut Signal<ChatState>, session_id: &str, _ecdh_pubkey: &str) {
+fn accept_invite(chat: &mut Signal<ChatState>, ws_handle: &Signal<ChatWsHandle>, session_id: &str, _ecdh_pubkey: &str) {
     let mut state = chat.write();
     // Remove from pending
     let invite = state.pending_invites.iter()
@@ -112,13 +113,23 @@ fn accept_invite(chat: &mut Signal<ChatState>, session_id: &str, _ecdh_pubkey: &
         };
         state.sessions.insert(session_id.to_string(), session);
     }
+    drop(state);
 
-    // Send accept via WebSocket (handled in the chat connection loop)
+    // Send accept to relay
+    ws_handle.read().send(&ClientMsg::Accept {
+        session_id: session_id.to_string(),
+        ecdh_pubkey: String::new(), // E2E encryption is a later phase
+    });
     clog(&format!("[CHAT] Accepted invite for session {}", session_id));
 }
 
-fn decline_invite(chat: &mut Signal<ChatState>, session_id: &str) {
+fn decline_invite(chat: &mut Signal<ChatState>, ws_handle: &Signal<ChatWsHandle>, session_id: &str) {
     chat.write().pending_invites.retain(|i| i.session_id != session_id);
+
+    // Send decline to relay
+    ws_handle.read().send(&ClientMsg::Decline {
+        session_id: session_id.to_string(),
+    });
     clog(&format!("[CHAT] Declined invite for session {}", session_id));
 }
 
@@ -126,6 +137,7 @@ fn decline_invite(chat: &mut Signal<ChatState>, session_id: &str) {
 #[component]
 pub fn ChatPanel() -> Element {
     let mut chat = use_context::<Signal<ChatState>>();
+    let ws_handle = use_context::<Signal<ChatWsHandle>>();
     let mut panel_open = use_signal(|| false);
     let mut active_session = use_signal(|| None::<String>);
     let mut msg_input = use_signal(String::new);
@@ -268,8 +280,12 @@ pub fn ChatPanel() -> Element {
                                             s.messages.push(msg);
                                         }
 
-                                        // TODO: Send via WebSocket (encrypted)
-                                        clog(&format!("[CHAT] Send text: {}", body));
+                                        // Send via WebSocket (plaintext for now, E2E encryption later)
+                                        ws_handle.read().send(&ClientMsg::Text {
+                                            session_id: session_id.clone(),
+                                            ciphertext: body,
+                                            nonce: String::new(),
+                                        });
                                         msg_input.set(String::new());
                                     }
                                 }
@@ -297,6 +313,11 @@ pub fn ChatPanel() -> Element {
                                         });
                                     }
 
+                                    // Send close to relay
+                                    ws_handle.read().send(&ClientMsg::Close {
+                                        session_id: session_id.clone(),
+                                    });
+
                                     // Remove session
                                     chat.write().sessions.remove(&session_id);
                                     active_session.set(None);
@@ -321,6 +342,7 @@ pub fn ChatPanel() -> Element {
 pub fn ChatWithSupplierButton(supplier_name: String) -> Element {
     let shared = use_shared_state();
     let mut chat = use_context::<Signal<ChatState>>();
+    let ws_handle = use_context::<Signal<ChatWsHandle>>();
     let node = use_node_action();
 
     let balance = shared.read().user_contract.as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
@@ -361,7 +383,7 @@ pub fn ChatWithSupplierButton(supplier_name: String) -> Element {
                         let peer = pubkey.clone();
                         let session = ChatSession {
                             session_id: session_id.clone(),
-                            peer_pubkey: peer,
+                            peer_pubkey: peer.clone(),
                             messages: Vec::new(),
                             started_at: chrono::Utc::now(),
                             deposit_paid: deposit,
@@ -369,8 +391,13 @@ pub fn ChatWithSupplierButton(supplier_name: String) -> Element {
                         };
                         chat.write().sessions.insert(session_id.clone(), session);
 
-                        // TODO: Send invite via WebSocket
-                        clog(&format!("[CHAT] Started chat with {} (session {})", supplier_name, session_id));
+                        // Send invite via WebSocket
+                        ws_handle.read().send(&ClientMsg::Invite {
+                            to: peer,
+                            session_id,
+                            ecdh_pubkey: String::new(), // E2E encryption is a later phase
+                        });
+                        clog(&format!("[CHAT] Started chat with {}", supplier_name));
                     }
                 }
             },

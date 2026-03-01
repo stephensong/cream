@@ -80,6 +80,37 @@ pub struct PendingInvite {
     pub ecdh_pubkey: String,
 }
 
+// ---------- Shared WebSocket handle ----------
+
+/// Wraps a WebSocket connection for sharing via Dioxus context.
+/// On WASM, holds a `web_sys::WebSocket`. On native, a unit stub.
+#[derive(Clone, Default)]
+pub struct ChatWsHandle {
+    #[cfg(target_family = "wasm")]
+    pub ws: Option<web_sys::WebSocket>,
+    #[cfg(not(target_family = "wasm"))]
+    pub ws: Option<()>,
+}
+
+#[allow(dead_code)]
+impl ChatWsHandle {
+    pub fn is_connected(&self) -> bool {
+        self.ws.is_some()
+    }
+
+    /// Send a client message. No-op if not connected.
+    pub fn send(&self, msg: &ClientMsg) {
+        if let Some(ref ws) = self.ws {
+            if let Err(e) = wasm::send_msg(ws, msg) {
+                #[cfg(target_family = "wasm")]
+                web_sys::console::log_1(&format!("[CHAT] Send error: {}", e).into());
+                #[cfg(not(target_family = "wasm"))]
+                let _ = e;
+            }
+        }
+    }
+}
+
 // ---------- WASM WebSocket client ----------
 
 #[cfg(target_family = "wasm")]
@@ -94,11 +125,12 @@ pub mod wasm {
         web_sys::console::log_1(&msg.into());
     }
 
-    /// Connect to the relay, authenticate, and return the WebSocket.
-    /// Incoming messages are dispatched to `on_message`.
+    /// Connect to the relay, authenticate with the provided signing key, and return the WebSocket.
+    /// `signing_key_bytes` is the 32-byte ed25519 secret key used to sign the auth nonce.
     pub fn connect(
         relay_url: &str,
         pubkey_hex: &str,
+        signing_key_bytes: [u8; 32],
         on_message: impl Fn(ServerMessage) + 'static,
         on_open: impl Fn() + 'static,
         on_close: impl Fn() + 'static,
@@ -108,7 +140,6 @@ pub mod wasm {
 
         ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
-        // Store pubkey for auth handshake
         let pubkey = pubkey_hex.to_string();
 
         // onopen
@@ -138,28 +169,17 @@ pub mod wasm {
                 }
             };
 
-            // Auto-handle nonce → sign and authenticate
+            // Auto-handle nonce -> sign and authenticate
             if let ServerMessage::Nonce { ref nonce } = msg {
                 clog(&format!("[CHAT] Got nonce, signing with key {}..{}", &pubkey_clone[..8], &pubkey_clone[pubkey_clone.len()-8..]));
-                let nonce = nonce.clone();
-                let pubkey = pubkey_clone.clone();
-                let ws = ws_clone.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    match sign_nonce_with_delegate(&nonce).await {
-                        Ok(signature) => {
-                            let auth = ClientMsg::Auth {
-                                public_key: pubkey,
-                                signature,
-                                nonce,
-                            };
-                            let json = serde_json::to_string(&auth).unwrap();
-                            let _ = ws.send_with_str(&json);
-                        }
-                        Err(e) => {
-                            clog(&format!("[CHAT] Auth signing failed: {}", e));
-                        }
-                    }
-                });
+                let signature = sign_nonce(&signing_key_bytes, nonce);
+                let auth = ClientMsg::Auth {
+                    public_key: pubkey_clone.clone(),
+                    signature,
+                    nonce: nonce.clone(),
+                };
+                let json = serde_json::to_string(&auth).unwrap();
+                let _ = ws_clone.send_with_str(&json);
                 return;
             }
 
@@ -192,39 +212,13 @@ pub mod wasm {
         ws.send_with_str(&json).map_err(|e| format!("Send error: {:?}", e))
     }
 
-    /// Sign a nonce using the delegate's private key from localStorage.
-    /// This mirrors how the signing_service signs messages.
-    async fn sign_nonce_with_delegate(nonce: &str) -> Result<String, String> {
+    /// Sign a nonce synchronously using the provided ed25519 signing key bytes.
+    fn sign_nonce(key_bytes: &[u8; 32], nonce: &str) -> String {
         use ed25519_dalek::{Signer, SigningKey};
 
-        let window = web_sys::window().ok_or("No window")?;
-        let storage = window
-            .local_storage()
-            .map_err(|_| "No localStorage")?
-            .ok_or("localStorage unavailable")?;
-
-        let key_hex = storage
-            .get_item("cream_private_key")
-            .map_err(|_| "Failed to read key")?
-            .ok_or("No private key in localStorage")?;
-
-        let key_bytes = hex_to_bytes(&key_hex)?;
-        let signing_key = SigningKey::from_bytes(
-            &key_bytes.try_into().map_err(|_| "Invalid key length")?,
-        );
-
+        let signing_key = SigningKey::from_bytes(key_bytes);
         let signature = signing_key.sign(nonce.as_bytes());
-        Ok(bytes_to_hex(&signature.to_bytes()))
-    }
-
-    fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
-        (0..hex.len())
-            .step_by(2)
-            .map(|i| {
-                u8::from_str_radix(&hex[i..i + 2], 16)
-                    .map_err(|e| format!("Invalid hex: {}", e))
-            })
-            .collect()
+        bytes_to_hex(&signature.to_bytes())
     }
 
     fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -262,6 +256,7 @@ pub mod wasm {
     pub fn connect(
         _relay_url: &str,
         _pubkey_hex: &str,
+        _signing_key_bytes: [u8; 32],
         _on_message: impl Fn(ServerMessage) + 'static,
         _on_open: impl Fn() + 'static,
         _on_close: impl Fn() + 'static,
