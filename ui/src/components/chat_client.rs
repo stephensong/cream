@@ -13,6 +13,7 @@ pub fn relay_url() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(dead_code)] // used in WASM relay communication
 pub enum ServerMessage {
     Nonce { nonce: String },
     AuthOk,
@@ -28,6 +29,7 @@ pub enum ServerMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(dead_code)] // used in WASM relay communication
 pub enum ClientMsg {
     Auth { public_key: String, signature: String, nonce: String },
     Invite { to: String, session_id: String, ecdh_pubkey: String },
@@ -81,6 +83,7 @@ pub struct PendingInvite {
 // ---------- WASM WebSocket client ----------
 
 #[cfg(target_family = "wasm")]
+#[allow(dead_code)] // functions available for chat_view integration
 pub mod wasm {
     use super::*;
     use wasm_bindgen::prelude::*;

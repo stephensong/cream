@@ -21,6 +21,7 @@ pulldown-cmark = "0.12"
 tracing = "0.1"
 
 [target.'cfg(target_family = "wasm")'.dependencies]
+js-sys = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 freenet-stdlib = { version = "=0.1.39", features = ["net"] }
