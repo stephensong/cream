@@ -139,7 +139,7 @@ args = ["test", "--workspace"]
 description = "Build contracts, reset multi-node network, and run integration tests"
 dependencies = ["build-contracts-dev", "reset-network"]
 command = "cargo"
-args = ["test", "-p", "cream-node-integration", "--features", "node-tests", "--", "--nocapture"]
+args = ["test", "-p", "cream-node-integration", "--features", "node-tests", "--test", "node_tests", "--", "--nocapture"]
 
 [tasks.kill-stale]
 description = "Kill stale dx serve, freenet, guardian, and cargo-make processes from previous fixture runs"
