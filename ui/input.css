@@ -478,6 +478,10 @@
     margin-bottom: 0.25rem;
   }
 
+  .messages-item-sent {
+    border-left: 3px solid #2563eb;
+  }
+
   .messages-item-offline {
     font-size: 0.8rem;
     color: #64748b;
@@ -938,22 +942,37 @@
 
   .chat-invite-input {
     display: flex;
+    flex-direction: column;
     gap: 0.5rem;
-    align-items: center;
     margin: 0.5rem 0;
   }
-  .chat-invite-input input {
-    flex: 1;
+  .chat-invite-input textarea {
+    width: 100%;
+    min-height: 2.5rem;
+    max-height: 10rem;
+    resize: vertical;
     background: #1e293b;
     border: 1px solid #334155;
     border-radius: 0.5rem;
     padding: 0.5rem 0.75rem;
     color: #e2e8f0;
     font-size: 0.9rem;
+    font-family: inherit;
   }
-  .chat-invite-input input:focus {
+  .chat-invite-input textarea:focus {
     outline: none;
     border-color: #2563eb;
+  }
+  .message-send-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  .request-chat-btn {
+    background: #1e40af;
+  }
+  .request-chat-btn:hover:not(:disabled) {
+    background: #1d4ed8;
   }
 
   .chat-badge {

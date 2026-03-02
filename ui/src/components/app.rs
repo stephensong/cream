@@ -201,9 +201,9 @@ fn use_chat_connection() {
         }
 
         #[cfg(target_family = "wasm")]
-        let pubkey_hex = km.supplier_pubkey_hex();
+        let pubkey_hex = km.pubkey_hex();
         #[cfg(target_family = "wasm")]
-        let signing_key_bytes = km.supplier_signing_key_bytes();
+        let signing_key_bytes = km.signing_key_bytes();
         #[cfg(target_family = "wasm")]
         let relay = super::chat_client::relay_url();
 

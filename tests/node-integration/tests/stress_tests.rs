@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use cream_common::directory::DirectoryState;
-use cream_common::identity::SupplierId;
+use cream_common::identity::UserId;
 use cream_common::location::GeoLocation;
 use cream_common::order::DepositTier;
 use cream_common::storefront::{StorefrontInfo, StorefrontState};
@@ -19,8 +19,8 @@ use freenet_stdlib::prelude::*;
 use cream_node_integration::{
     connect_to_node_at, extract_notification_bytes,
     is_put_response, is_subscribe_success, is_update_notification, is_update_response,
-    make_directory_contract, make_directory_entry, make_dummy_customer, make_dummy_order,
-    make_dummy_product, make_dummy_supplier, make_storefront_contract, node_url, recv_matching,
+    make_directory_contract, make_directory_entry, make_dummy_order,
+    make_dummy_product, make_dummy_user, make_storefront_contract, node_url, recv_matching,
     timed_recv_matching, timed_wait_for_get, wait_for_get, wait_for_put,
 };
 
@@ -86,8 +86,8 @@ fn log_latency(test: &str, operation: &str, port: u16, duration: Duration) {
 async fn setup_storefront_on_port(
     name: &str,
     port: u16,
-) -> (SupplierId, VerifyingKey, ContractKey, StorefrontState, WebApi) {
-    let (supplier_id, vk) = make_dummy_supplier(name);
+) -> (UserId, VerifyingKey, ContractKey, StorefrontState, WebApi) {
+    let (supplier_id, vk) = make_dummy_user(name);
     let (sf_contract, sf_key) = make_storefront_contract(&vk);
 
     let sf_state = StorefrontState {
@@ -593,7 +593,7 @@ async fn concurrent_order_placement() {
         let port = ALL_PORTS[i];
         let pid = product_id.clone();
         let key = sf_key;
-        let (cust_id, _) = make_dummy_customer(&name);
+        let (cust_id, _) = make_dummy_user(&name);
         let order = make_dummy_order(
             &pid,
             &cust_id,
@@ -720,7 +720,7 @@ async fn directory_contention() {
         let name = name.to_string();
 
         reg_handles.push(tokio::spawn(async move {
-            let (supplier_id, vk) = make_dummy_supplier(&name);
+            let (supplier_id, vk) = make_dummy_user(&name);
             let (_, sf_key) = make_storefront_contract(&vk);
 
             let entry = make_directory_entry(
@@ -731,6 +731,7 @@ async fn directory_contention() {
                 "Sydney",
                 GeoLocation::new(-33.87 + (i as f64 * 0.01), 151.21),
                 sf_key,
+                None,
                 None,
             );
 

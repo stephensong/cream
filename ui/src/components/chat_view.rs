@@ -233,28 +233,18 @@ pub fn ChatPanel() -> Element {
                             p { class: "chat-pending-notice", "Waiting for response..." }
                         }
 
-                        // Invite received: Accept button (invitee side)
+                        // Auto-accept incoming chat invites
                         if session.status == SessionStatus::InviteReceived {
                             {
                                 let sid = session.session_id.clone();
-                                rsx! {
-                                    button {
-                                        class: "chat-invite-accept",
-                                        onclick: move |_| {
-                                            // Send accept to relay
-                                            ws_handle.read().send(&ClientMsg::Accept {
-                                                session_id: sid.clone(),
-                                                ecdh_pubkey: String::new(),
-                                            });
-                                            // Update session status
-                                            if let Some(s) = chat.write().sessions.get_mut(&sid) {
-                                                s.status = SessionStatus::Active;
-                                            }
-                                            clog(&format!("[CHAT] Accepted invite for session {}", sid));
-                                        },
-                                        "Accept"
-                                    }
+                                ws_handle.read().send(&ClientMsg::Accept {
+                                    session_id: sid.clone(),
+                                    ecdh_pubkey: String::new(),
+                                });
+                                if let Some(s) = chat.write().sessions.get_mut(&sid) {
+                                    s.status = SessionStatus::Active;
                                 }
+                                clog(&format!("[CHAT] Auto-accepted invite for session {}", sid));
                             }
                         }
                     }
@@ -301,7 +291,8 @@ pub fn ChatPanel() -> Element {
     }
 }
 
-/// Invite input + "Send Invite" button for the storefront view.
+/// Message compose widget for the storefront view: textarea with Send (DM)
+/// and Request Chat buttons.
 #[component]
 pub fn ChatWithSupplierButton(supplier_name: String) -> Element {
     let shared = use_shared_state();
@@ -329,85 +320,91 @@ pub fn ChatWithSupplierButton(supplier_name: String) -> Element {
 
     let msg_empty = invite_msg.read().trim().is_empty();
     let connected = chat.read().connected;
+    let send_disabled = msg_empty || !can_afford;
+    let chat_disabled = send_disabled || supplier_pubkey.is_none() || !connected;
 
     rsx! {
         div { class: "chat-invite-input",
-            input {
-                r#type: "text",
+            textarea {
+                class: "message-textarea",
                 placeholder: "Message to {supplier_name}...",
                 value: "{invite_msg}",
                 oninput: move |evt| invite_msg.set(evt.value()),
             }
-            button {
-                class: "chat-start-btn",
-                disabled: msg_empty || !can_afford || supplier_pubkey.is_none() || !connected,
-                title: if !can_afford {
-                    format!("Need {} CURD", cost)
-                } else if !connected {
-                    "Not connected to chat relay".to_string()
-                } else if msg_empty {
-                    "Type a message first".to_string()
-                } else {
-                    format!("Send invite ({} CURD per message)", cost)
-                },
-                onclick: {
-                    let supplier_name = supplier_name.clone();
-                    let my_name = my_name.clone();
-                    move |_| {
-                        let body = invite_msg.read().trim().to_string();
-                        if body.is_empty() { return; }
-
-                        if let Some(ref pubkey) = supplier_pubkey {
-                            // Charge one message toll for the invite message
-                            node.send(NodeAction::ChatMessageToll);
-
-                            // Also persist the invite as an inbox message so the
-                            // recipient sees it even if they're offline.
-                            let session_id = format!("chat-{}", chrono::Utc::now().timestamp_millis());
+            div { class: "message-send-controls",
+                button {
+                    class: "chat-start-btn",
+                    disabled: send_disabled,
+                    onclick: {
+                        let supplier_name = supplier_name.clone();
+                        move |_| {
+                            let body = invite_msg.read().trim().to_string();
+                            if body.is_empty() { return; }
                             node.send(NodeAction::SendInboxMessage {
                                 recipient_name: supplier_name.clone(),
-                                body: body.clone(),
-                                kind: cream_common::inbox::MessageKind::ChatInvite {
-                                    session_id: session_id.clone(),
-                                },
-                            });
-
-                            // Create session with PendingAccept status
-                            let peer = pubkey.clone();
-                            let invite_message = ChatMessage {
-                                sender_is_me: true,
-                                sender_name: my_name.clone(),
-                                body: body.clone(),
-                                timestamp: chrono::Utc::now(),
-                            };
-                            let session = ChatSession {
-                                session_id: session_id.clone(),
-                                peer_pubkey: peer.clone(),
-                                peer_name: supplier_name.clone(),
-                                messages: vec![invite_message],
-                                started_at: chrono::Utc::now(),
-                                status: SessionStatus::PendingAccept,
-                                has_av: false,
-                            };
-                            {
-                                let mut state = chat.write();
-                                state.sessions.insert(session_id.clone(), session);
-                                state.panel_open = true;
-                            }
-
-                            // Send invite via WebSocket with message
-                            ws_handle.read().send(&ClientMsg::Invite {
-                                to: peer,
-                                session_id,
-                                ecdh_pubkey: String::new(),
-                                message: body,
+                                body,
+                                kind: cream_common::inbox::MessageKind::DirectMessage,
                             });
                             invite_msg.set(String::new());
-                            clog(&format!("[CHAT] Sent invite to {}", supplier_name));
                         }
-                    }
-                },
-                "Send Invite"
+                    },
+                    "Send Message"
+                }
+                button {
+                    class: "chat-start-btn request-chat-btn",
+                    disabled: chat_disabled,
+                    onclick: {
+                        let supplier_name = supplier_name.clone();
+                        let my_name = my_name.clone();
+                        move |_| {
+                            let body = invite_msg.read().trim().to_string();
+                            if body.is_empty() { return; }
+
+                            if let Some(ref pubkey) = supplier_pubkey {
+                                node.send(NodeAction::ChatMessageToll);
+
+                                let session_id = format!("chat-{}", chrono::Utc::now().timestamp_millis());
+                                node.send(NodeAction::SendInboxMessage {
+                                    recipient_name: supplier_name.clone(),
+                                    body: body.clone(),
+                                    kind: cream_common::inbox::MessageKind::ChatInvite {
+                                        session_id: session_id.clone(),
+                                    },
+                                });
+
+                                let session = ChatSession {
+                                    session_id: session_id.clone(),
+                                    peer_pubkey: pubkey.clone(),
+                                    peer_name: supplier_name.clone(),
+                                    messages: vec![ChatMessage {
+                                        sender_is_me: true,
+                                        sender_name: my_name.clone(),
+                                        body: body.clone(),
+                                        timestamp: chrono::Utc::now(),
+                                    }],
+                                    started_at: chrono::Utc::now(),
+                                    status: SessionStatus::PendingAccept,
+                                    has_av: false,
+                                };
+                                {
+                                    let mut state = chat.write();
+                                    state.sessions.insert(session_id.clone(), session);
+                                    state.panel_open = true;
+                                }
+
+                                ws_handle.read().send(&ClientMsg::Invite {
+                                    to: pubkey.clone(),
+                                    session_id,
+                                    ecdh_pubkey: String::new(),
+                                    message: body,
+                                });
+                                invite_msg.set(String::new());
+                                clog(&format!("[CHAT] Sent invite to {}", supplier_name));
+                            }
+                        }
+                    },
+                    "Request Chat"
+                }
             }
         }
     }

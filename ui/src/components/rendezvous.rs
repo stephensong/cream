@@ -15,6 +15,10 @@ pub struct RendezvousEntry {
     pub name: String,
     pub address: String,
     pub storefront_key: String,
+    #[serde(default)]
+    pub user_contract_key: Option<String>,
+    #[serde(default)]
+    pub inbox_contract_key: Option<String>,
 }
 
 /// Error response from the rendezvous service.
@@ -95,15 +99,23 @@ mod wasm_impl {
         storefront_key: &str,
         public_key_hex: &str,
         signature_hex: &str,
+        user_contract_key: Option<&str>,
+        inbox_contract_key: Option<&str>,
     ) -> Result<(), String> {
         let url = format!("{}/register", rendezvous_url());
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "name": name,
             "address": address,
             "storefront_key": storefront_key,
             "public_key": public_key_hex,
             "signature": signature_hex,
         });
+        if let Some(uck) = user_contract_key {
+            body["user_contract_key"] = serde_json::Value::String(uck.to_string());
+        }
+        if let Some(ick) = inbox_contract_key {
+            body["inbox_contract_key"] = serde_json::Value::String(ick.to_string());
+        }
         fetch_json(&url, "POST", Some(body.to_string())).await?;
         Ok(())
     }
@@ -163,15 +175,17 @@ pub async fn register_supplier(
     storefront_key: &str,
     public_key_hex: &str,
     signature_hex: &str,
+    user_contract_key: Option<&str>,
+    inbox_contract_key: Option<&str>,
 ) -> Result<(), String> {
     #[cfg(target_family = "wasm")]
     {
-        wasm_impl::register_supplier(name, address, storefront_key, public_key_hex, signature_hex)
+        wasm_impl::register_supplier(name, address, storefront_key, public_key_hex, signature_hex, user_contract_key, inbox_contract_key)
             .await
     }
     #[cfg(not(target_family = "wasm"))]
     {
-        let _ = (name, address, storefront_key, public_key_hex, signature_hex);
+        let _ = (name, address, storefront_key, public_key_hex, signature_hex, user_contract_key, inbox_contract_key);
         Err("Rendezvous client only available in WASM".into())
     }
 }

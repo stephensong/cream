@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use dioxus::prelude::*;
 
 use cream_common::directory::{DirectoryEntry, DirectoryState};
-use cream_common::inbox::InboxState;
+use cream_common::inbox::{InboxMessage, InboxState};
 use cream_common::storefront::StorefrontState;
 use cream_common::user_contract::UserContractState;
 
@@ -48,6 +48,15 @@ pub struct SharedState {
     /// The inbox contract key (Base58).
     #[allow(dead_code)] // used in WASM builds only
     pub inbox_contract_key: Option<String>,
+    /// Locally-tracked sent messages (not stored on-chain, for UI display).
+    pub sent_messages: Vec<SentMessage>,
+}
+
+/// A message the current user sent, tracked locally for display in the Messages view.
+#[derive(Clone, Debug)]
+pub struct SentMessage {
+    pub to_name: String,
+    pub message: InboxMessage,
 }
 
 impl SharedState {

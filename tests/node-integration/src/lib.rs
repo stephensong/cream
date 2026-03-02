@@ -8,7 +8,7 @@ use freenet_stdlib::prelude::*;
 use tokio::time::Instant;
 
 use cream_common::directory::DirectoryEntry;
-use cream_common::identity::{CustomerId, SupplierId};
+use cream_common::identity::UserId;
 use cream_common::location::GeoLocation;
 use cream_common::order::{DepositTier, Order, OrderId, OrderStatus};
 use cream_common::product::{Product, ProductCategory, ProductId};
@@ -43,6 +43,8 @@ const STOREFRONT_WASM: &[u8] =
     include_bytes!("../../../target/wasm32-unknown-unknown/release/cream_storefront_contract.wasm");
 const USER_CONTRACT_WASM: &[u8] =
     include_bytes!("../../../target/wasm32-unknown-unknown/release/cream_user_contract.wasm");
+const INBOX_CONTRACT_WASM: &[u8] =
+    include_bytes!("../../../target/wasm32-unknown-unknown/release/cream_inbox_contract.wasm");
 
 /// Create a directory contract container + its key.
 pub fn make_directory_contract() -> (ContractContainer, ContractKey) {
@@ -73,29 +75,32 @@ pub fn make_user_contract(
     (contract, key)
 }
 
-/// Create a deterministic supplier identity from a name.
-///
-/// Uses `derive_signing_key(name, password)` with `password = name.to_lowercase()`
-/// so that the test harness produces the same keys as the UI when a user logs
-/// in with their name as the password.
-pub fn make_dummy_supplier(name: &str) -> (SupplierId, ed25519_dalek::VerifyingKey) {
-    let password = name.to_lowercase();
-    let signing_key = cream_common::identity::derive_supplier_signing_key(name, &password);
-    let verifying_key = ed25519_dalek::VerifyingKey::from(&signing_key);
-    (SupplierId(verifying_key), verifying_key)
+/// Create an inbox contract container + its key for a given owner.
+pub fn make_inbox_contract(
+    owner: &ed25519_dalek::VerifyingKey,
+) -> (ContractContainer, ContractKey) {
+    let params = cream_common::inbox::InboxParameters { owner: *owner };
+    let params_bytes = serde_json::to_vec(&params).unwrap();
+    let contract = make_contract(INBOX_CONTRACT_WASM, Parameters::from(params_bytes));
+    let key = contract.key();
+    (contract, key)
 }
 
-/// Create a deterministic customer identity from a name.
-pub fn make_dummy_customer(name: &str) -> (CustomerId, ed25519_dalek::VerifyingKey) {
+/// Create a deterministic user identity from a name.
+///
+/// Uses `derive_user_signing_key(name, password)` with `password = name.to_lowercase()`
+/// so that the test harness produces the same keys as the UI when a user logs
+/// in with their name as the password.
+pub fn make_dummy_user(name: &str) -> (UserId, ed25519_dalek::VerifyingKey) {
     let password = name.to_lowercase();
-    let signing_key = cream_common::identity::derive_customer_signing_key(name, &password);
+    let signing_key = cream_common::identity::derive_user_signing_key(name, &password);
     let verifying_key = ed25519_dalek::VerifyingKey::from(&signing_key);
-    (CustomerId(verifying_key), verifying_key)
+    (UserId(verifying_key), verifying_key)
 }
 
 /// Create a dummy directory entry for a supplier.
 pub fn make_directory_entry(
-    supplier_id: &SupplierId,
+    user_id: &UserId,
     name: &str,
     description: &str,
     postcode: &str,
@@ -103,9 +108,10 @@ pub fn make_directory_entry(
     location: GeoLocation,
     storefront_key: ContractKey,
     user_contract_key: Option<ContractKey>,
+    inbox_contract_key: Option<ContractKey>,
 ) -> DirectoryEntry {
     DirectoryEntry {
-        supplier: supplier_id.clone(),
+        supplier: user_id.clone(),
         name: name.to_string(),
         description: description.to_string(),
         location,
@@ -114,6 +120,7 @@ pub fn make_directory_entry(
         categories: vec![],
         storefront_key,
         user_contract_key,
+        inbox_contract_key,
         updated_at: chrono::Utc::now(),
         signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
     }
@@ -144,7 +151,7 @@ pub fn make_dummy_product(name: &str) -> SignedProduct {
 /// has already expired relative to "now", enabling expiry tests without real waits.
 pub fn make_dummy_order(
     product_id: &ProductId,
-    customer_id: &CustomerId,
+    user_id: &UserId,
     tier: DepositTier,
     quantity: u32,
     price_per_unit: u64,
@@ -161,7 +168,7 @@ pub fn make_dummy_order(
     Order {
         id: order_id,
         product_id: product_id.clone(),
-        customer: customer_id.clone(),
+        customer: user_id.clone(),
         quantity,
         deposit_tier: tier,
         deposit_amount,

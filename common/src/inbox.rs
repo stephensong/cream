@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
 
-use crate::identity::CustomerId;
+use crate::identity::UserId;
 
 /// Unique identifier for an inbox message (random u64).
 pub type MessageId = u64;
@@ -37,7 +37,7 @@ pub struct InboxMessage {
 /// The full inbox state stored in a per-user Freenet contract.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboxState {
-    pub owner: CustomerId,
+    pub owner: UserId,
     pub messages: BTreeMap<MessageId, InboxMessage>,
     pub updated_at: DateTime<Utc>,
 }

@@ -16,6 +16,8 @@ interface SupplierRecord {
   address: string;
   storefront_key: string;
   public_key: string;
+  user_contract_key?: string;
+  inbox_contract_key?: string;
 }
 
 interface RegisterBody {
@@ -24,6 +26,8 @@ interface RegisterBody {
   storefront_key: string;
   public_key: string;
   signature: string;
+  user_contract_key?: string;
+  inbox_contract_key?: string;
 }
 
 interface HeartbeatBody {
@@ -77,15 +81,15 @@ async function handleRegister(request: Request, env: Env): Promise<Response> {
     return errorResponse('Invalid JSON', 400);
   }
 
-  const { name, address, storefront_key, public_key, signature } = body;
+  const { name, address, storefront_key, public_key, signature, user_contract_key, inbox_contract_key } = body;
   if (!name || !address || !storefront_key || !public_key || !signature) {
     return errorResponse('Missing required fields', 400);
   }
 
   const normalizedName = name.toLowerCase();
 
-  // Verify signature over "name|address|storefront_key"
-  const message = `${normalizedName}|${address}|${storefront_key}`;
+  // Verify signature over "name|address|storefront_key|user_contract_key|inbox_contract_key"
+  const message = `${normalizedName}|${address}|${storefront_key}|${user_contract_key || ''}|${inbox_contract_key || ''}`;
   const valid = await verifySignature(message, signature, public_key);
   if (!valid) {
     return errorResponse('Invalid signature', 400);
@@ -102,6 +106,8 @@ async function handleRegister(request: Request, env: Env): Promise<Response> {
     address,
     storefront_key,
     public_key,
+    ...(user_contract_key ? { user_contract_key } : {}),
+    ...(inbox_contract_key ? { inbox_contract_key } : {}),
   };
 
   await env.SUPPLIERS.put(normalizedName, JSON.stringify(record), {
@@ -167,6 +173,8 @@ async function handleLookup(name: string, env: Env): Promise<Response> {
     name: record.name,
     address: record.address,
     storefront_key: record.storefront_key,
+    ...(record.user_contract_key ? { user_contract_key: record.user_contract_key } : {}),
+    ...(record.inbox_contract_key ? { inbox_contract_key: record.inbox_contract_key } : {}),
   });
 }
 

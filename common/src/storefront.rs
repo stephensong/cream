@@ -6,7 +6,7 @@ use ed25519_dalek::Verifier;
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-use crate::identity::SupplierId;
+use crate::identity::UserId;
 use crate::location::GeoLocation;
 use crate::order::{Order, OrderId};
 use crate::product::{Product, ProductId};
@@ -222,7 +222,7 @@ impl Default for WeeklySchedule {
 /// Basic information about a storefront.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorefrontInfo {
-    pub owner: SupplierId,
+    pub owner: UserId,
     pub name: String,
     pub description: String,
     pub location: GeoLocation,
@@ -379,7 +379,7 @@ pub fn order_signable_bytes(order: &Order) -> Vec<u8> {
 struct SignableOrder<'a> {
     id: &'a OrderId,
     product_id: &'a ProductId,
-    customer: &'a crate::identity::CustomerId,
+    customer: &'a crate::identity::UserId,
     quantity: u32,
     deposit_tier: &'a crate::order::DepositTier,
     total_price: u64,
@@ -446,7 +446,7 @@ impl StorefrontState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::{CustomerId, SupplierId};
+    use crate::identity::UserId;
     use crate::order::{DepositTier, Order, OrderId};
     use crate::product::ProductId;
     use chrono::{Duration, Utc};
@@ -456,7 +456,7 @@ mod tests {
         let key = SigningKey::from_bytes(&[1u8; 32]);
         StorefrontState {
             info: StorefrontInfo {
-                owner: SupplierId(key.verifying_key()),
+                owner: UserId(key.verifying_key()),
                 name: "Test Farm".into(),
                 description: "".into(),
                 location: GeoLocation::new(0.0, 0.0),
@@ -476,7 +476,7 @@ mod tests {
         Order {
             id: OrderId(id.into()),
             product_id: ProductId("p-1".into()),
-            customer: CustomerId(key.verifying_key()),
+            customer: UserId(key.verifying_key()),
             quantity: 1,
             deposit_tier: DepositTier::Reserve2Days,
             deposit_amount: 10,
@@ -651,7 +651,7 @@ mod tests {
         // Old JSON without schedule/timezone fields should deserialize fine
         let key = SigningKey::from_bytes(&[1u8; 32]);
         let info_old = StorefrontInfo {
-            owner: SupplierId(key.verifying_key()),
+            owner: UserId(key.verifying_key()),
             name: "Test".into(),
             description: "desc".into(),
             location: GeoLocation::new(0.0, 0.0),

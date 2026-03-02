@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-use crate::identity::CustomerId;
+use crate::identity::UserId;
 use crate::wallet::{TransactionKind, WalletTransaction};
 
 /// State for a user's contract on the Freenet network.
@@ -15,7 +15,7 @@ use crate::wallet::{TransactionKind, WalletTransaction};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserContractState {
     /// The user's ed25519 public key (owner identity).
-    pub owner: CustomerId,
+    pub owner: UserId,
     /// Display name / moniker.
     pub name: String,
     /// Supplier who onboarded this user (immutable after first set).
@@ -79,7 +79,7 @@ impl UserContractState {
             // placeholders, so bypass those.
             #[cfg(feature = "frost")]
             {
-                if self.owner == crate::identity::root_customer_id() {
+                if self.owner == crate::identity::root_user_id() {
                     let msg = self.signable_bytes();
                     return owner.verify(&msg, &self.signature).is_ok();
                 }
@@ -105,7 +105,7 @@ impl UserContractState {
             // Non-root contracts still bypass (zero-signature placeholders).
             #[cfg(feature = "frost")]
             {
-                if self.owner == crate::identity::root_customer_id() {
+                if self.owner == crate::identity::root_user_id() {
                     // Fall through to the production validation logic below
                     return self.validate_update_inner(update, owner);
                 }
@@ -256,7 +256,7 @@ impl UserContractState {
 
 #[derive(Serialize)]
 struct SignableUserContract<'a> {
-    owner: &'a CustomerId,
+    owner: &'a UserId,
     name: &'a str,
     origin_supplier: &'a str,
     current_supplier: &'a str,
@@ -274,7 +274,7 @@ mod tests {
     fn dummy_state(updated_at: DateTime<Utc>) -> UserContractState {
         let key = SigningKey::from_bytes(&[3u8; 32]);
         UserContractState {
-            owner: CustomerId(key.verifying_key()),
+            owner: UserId(key.verifying_key()),
             name: "Alice".into(),
             origin_supplier: "Gary".into(),
             current_supplier: "Gary".into(),

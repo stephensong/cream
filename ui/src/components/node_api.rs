@@ -388,12 +388,13 @@ mod wasm_impl {
             }
         }
 
-        // On startup, derive and subscribe to our inbox contract.
-        // The inbox key is deterministic from WASM + InboxParameters { owner }.
+        // On startup, deploy (PUT) our inbox contract if it doesn't exist,
+        // then subscribe to it. PUT is idempotent — if the contract already
+        // exists, Freenet merges the empty state harmlessly.
         {
             let km = key_manager_signal.read().clone();
             if let Some(ref km) = km {
-                let owner_key = km.customer_verifying_key();
+                let owner_key = km.verifying_key();
                 let inbox_params = cream_common::inbox::InboxParameters { owner: owner_key };
                 let params_bytes = serde_json::to_vec(&inbox_params).unwrap();
                 let inbox_container = make_contract(INBOX_CONTRACT_WASM, Parameters::from(params_bytes));
@@ -403,31 +404,37 @@ mod wasm_impl {
                 clog(&format!("[CREAM] Inbox contract key: {}", ib_key));
                 inbox_contract_instance_id = Some(ib_instance_id);
                 inbox_contract_key = Some(ib_key);
-                shared.write().inbox_contract_key = Some(format!("{}", ib_key));
 
-                // GET + subscribe to inbox
-                let get_inbox = ClientRequest::ContractOp(ContractRequest::Get {
-                    key: ib_instance_id,
-                    return_contract_code: false,
-                    subscribe: false,
+                let ib_state = cream_common::inbox::InboxState {
+                    owner: km.user_id(),
+                    messages: std::collections::BTreeMap::new(),
+                    updated_at: chrono::Utc::now(),
+                };
+                let ib_state_bytes = serde_json::to_vec(&ib_state).unwrap();
+
+                // PUT with subscribe=true ensures the contract exists AND we're subscribed
+                let put_inbox = ClientRequest::ContractOp(ContractRequest::Put {
+                    contract: inbox_container,
+                    state: WrappedState::new(ib_state_bytes.clone()),
+                    related_contracts: RelatedContracts::default(),
+                    subscribe: true,
                     blocking_subscribe: false,
                 });
-                if let Err(e) = api.send(get_inbox).await {
-                    clog(&format!("[CREAM] WARNING: Failed to GET inbox contract (may not exist yet): {:?}", e));
+                if let Err(e) = api.send(put_inbox).await {
+                    clog(&format!("[CREAM] WARNING: Failed to PUT inbox contract: {:?}", e));
                 }
-                let sub_inbox = ClientRequest::ContractOp(ContractRequest::Subscribe {
-                    key: ib_instance_id,
-                    summary: None,
-                });
-                if let Err(e) = api.send(sub_inbox).await {
-                    clog(&format!("[CREAM] WARNING: Failed to subscribe to inbox contract: {:?}", e));
+
+                {
+                    let mut state = shared.write();
+                    state.inbox = Some(ib_state);
+                    state.inbox_contract_key = Some(format!("{}", ib_key));
                 }
             }
         }
 
         // ── Subscribe to root user contract ─────────────────────────────
         // Root's identity is deterministic, so we can derive its contract key.
-        let root_vk = cream_common::identity::root_customer_id().0;
+        let root_vk = cream_common::identity::root_user_id().0;
         let root_params = UserContractParameters { owner: root_vk };
         let root_params_bytes = serde_json::to_vec(&root_params).unwrap();
         let root_contract_container = make_contract(USER_CONTRACT_WASM, Parameters::from(root_params_bytes));
@@ -685,7 +692,7 @@ mod wasm_impl {
             // are accepted without signature verification
             let dummy_key = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
             let minimal_state = UserContractState {
-                owner: cream_common::identity::CustomerId(dummy_key.verifying_key()),
+                owner: cream_common::identity::UserId(dummy_key.verifying_key()),
                 name: String::new(),
                 origin_supplier: String::new(),
                 current_supplier: String::new(),
@@ -791,8 +798,8 @@ mod wasm_impl {
                 locality,
                 description,
             } => {
-                let supplier_id = key_manager.supplier_id();
-                let owner_key = key_manager.supplier_verifying_key();
+                let supplier_id = key_manager.user_id();
+                let owner_key = key_manager.verifying_key();
 
                 // Check if this supplier already exists in the directory
                 // (e.g. pre-populated by the test harness). If so, just
@@ -825,14 +832,52 @@ mod wasm_impl {
                         clog(&format!("[CREAM] ERROR: Failed to subscribe to own storefront: {:?}", e));
                     }
 
+                    // Deploy inbox contract if it doesn't exist yet.
+                    // (The test harness pre-populates directory/storefront/user
+                    // contracts but NOT inbox contracts, so for harness-created
+                    // users the inbox must be created on first UI login.)
+                    if inbox_contract_instance_id.is_none() {
+                        let owner_key = key_manager.verifying_key();
+                        let inbox_params = cream_common::inbox::InboxParameters { owner: owner_key };
+                        let params_bytes = serde_json::to_vec(&inbox_params).unwrap();
+                        let inbox_contract = make_contract(INBOX_CONTRACT_WASM, Parameters::from(params_bytes));
+                        let ib_key = inbox_contract.key();
+                        let ib_state = cream_common::inbox::InboxState {
+                            owner: key_manager.user_id(),
+                            messages: std::collections::BTreeMap::new(),
+                            updated_at: chrono::Utc::now(),
+                        };
+                        let ib_state_bytes = serde_json::to_vec(&ib_state).unwrap();
+                        let put_inbox = ClientRequest::ContractOp(ContractRequest::Put {
+                            contract: inbox_contract,
+                            state: WrappedState::new(ib_state_bytes),
+                            related_contracts: RelatedContracts::default(),
+                            subscribe: true,
+                            blocking_subscribe: false,
+                        });
+                        clog(&format!("[CREAM] Deploying inbox contract for existing user {}: {:?}", name, ib_key));
+                        if let Err(e) = api.send(put_inbox).await {
+                            clog(&format!("[CREAM] ERROR: Failed to deploy inbox contract: {:?}", e));
+                        }
+                        *inbox_contract_instance_id = Some(*ib_key.id());
+                        *inbox_contract_key_ref = Some(ib_key);
+                        {
+                            let mut state = shared.write();
+                            state.inbox = Some(ib_state);
+                            state.inbox_contract_key = Some(format!("{}", ib_key));
+                        }
+                    }
+
                     // Still register with rendezvous service so customers can discover us
                     if !is_customer {
                         let rendezvous_name = name.to_lowercase().replace(' ', "-");
                         let node_address = node_url.to_string();
                         let sf_key_str = format!("{}", sf_key);
-                        let pub_key_bytes = key_manager.supplier_verifying_key().as_bytes().to_vec();
+                        let uc_key_str = entry.user_contract_key.as_ref().map(|k| format!("{}", k));
+                        let ib_key_str = inbox_contract_key_ref.as_ref().map(|k| format!("{}", k));
+                        let pub_key_bytes = key_manager.verifying_key().as_bytes().to_vec();
                         let pub_key_hex: String = pub_key_bytes.iter().map(|b| format!("{:02x}", b)).collect();
-                        let sign_msg = format!("{}|{}|{}", rendezvous_name, node_address, sf_key_str);
+                        let sign_msg = format!("{}|{}|{}|{}|{}", rendezvous_name, node_address, sf_key_str, uc_key_str.as_deref().unwrap_or(""), ib_key_str.as_deref().unwrap_or(""));
                         let sig_bytes = key_manager.sign_raw(sign_msg.as_bytes());
                         let sig_hex: String = sig_bytes.iter().map(|b| format!("{:02x}", b)).collect();
 
@@ -842,6 +887,7 @@ mod wasm_impl {
                         wasm_bindgen_futures::spawn_local(async move {
                             match crate::components::rendezvous::register_supplier(
                                 &rname, &raddr, &sf_key_str, &reg_pub_hex, &sig_hex,
+                                uc_key_str.as_deref(), ib_key_str.as_deref(),
                             ).await {
                                 Ok(()) => clog(&format!("[CREAM] Registered with rendezvous as '{}'", rname)),
                                 Err(e) => clog(&format!("[CREAM] WARNING: Rendezvous registration failed: {}", e)),
@@ -924,7 +970,7 @@ mod wasm_impl {
                 let supplier_uc_key = supplier_uc_contract.key();
 
                 let supplier_uc_state = UserContractState {
-                    owner: cream_common::identity::CustomerId(owner_key),
+                    owner: cream_common::identity::UserId(owner_key),
                     name: name.clone(),
                     origin_supplier: name.clone(),
                     current_supplier: name.clone(),
@@ -976,6 +1022,7 @@ mod wasm_impl {
                     categories: vec![],
                     storefront_key: sf_key,
                     user_contract_key: Some(supplier_uc_key),
+                    inbox_contract_key: inbox_contract_key_ref.clone(),
                     updated_at: chrono::Utc::now(),
                     signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
                 };
@@ -1009,9 +1056,11 @@ mod wasm_impl {
                     let rendezvous_name = name.to_lowercase().replace(' ', "-");
                     let node_address = node_url.to_string();
                     let sf_key_str = format!("{}", sf_key);
-                    let pub_key_bytes = key_manager.supplier_verifying_key().as_bytes().to_vec();
+                    let uc_key_str = Some(format!("{}", supplier_uc_key));
+                    let ib_key_str = inbox_contract_key_ref.as_ref().map(|k| format!("{}", k));
+                    let pub_key_bytes = key_manager.verifying_key().as_bytes().to_vec();
                     let pub_key_hex: String = pub_key_bytes.iter().map(|b| format!("{:02x}", b)).collect();
-                    let sign_msg = format!("{}|{}|{}", rendezvous_name, node_address, sf_key_str);
+                    let sign_msg = format!("{}|{}|{}|{}|{}", rendezvous_name, node_address, sf_key_str, uc_key_str.as_deref().unwrap_or(""), ib_key_str.as_deref().unwrap_or(""));
                     let sig_bytes = key_manager.sign_raw(sign_msg.as_bytes());
                     let sig_hex: String = sig_bytes.iter().map(|b| format!("{:02x}", b)).collect();
 
@@ -1021,6 +1070,7 @@ mod wasm_impl {
                     wasm_bindgen_futures::spawn_local(async move {
                         match crate::components::rendezvous::register_supplier(
                             &rname, &raddr, &sf_key_str, &reg_pub_hex, &sig_hex,
+                            uc_key_str.as_deref(), ib_key_str.as_deref(),
                         ).await {
                             Ok(()) => clog(&format!("[CREAM] Registered with rendezvous as '{}'", rname)),
                             Err(e) => clog(&format!("[CREAM] WARNING: Rendezvous registration failed: {}", e)),
@@ -1107,10 +1157,10 @@ mod wasm_impl {
                 price_curd,
                 quantity_total,
             } => {
-                // Find this user's storefront key from the directory using their SupplierId.
+                // Find this user's storefront key from the directory using their UserId.
                 // This works whether the storefront was deployed by this tab (RegisterSupplier)
                 // or pre-populated by the test harness / another session.
-                let my_supplier_id = key_manager.supplier_id();
+                let my_supplier_id = key_manager.user_id();
                 clog(&format!("[CREAM] AddProduct: looking up storefront for supplier {:?}", my_supplier_id));
                 let (supplier_name, sf_key) = {
                     let state = shared.read();
@@ -1266,7 +1316,7 @@ mod wasm_impl {
                 let mut order = Order {
                     id: order_id.clone(),
                     product_id: ProductId(product_id),
-                    customer: key_manager.customer_id(),
+                    customer: key_manager.user_id(),
                     quantity,
                     deposit_tier: tier,
                     deposit_amount,
@@ -1349,7 +1399,7 @@ mod wasm_impl {
 
             NodeAction::UpdateSchedule { schedule } => {
                 clog("[CREAM] UpdateSchedule: updating opening hours");
-                let my_supplier_id = key_manager.supplier_id();
+                let my_supplier_id = key_manager.user_id();
                 let (supplier_name, sf_key) = {
                     let state = shared.read();
                     // Look up by our supplier ID in the directory (most reliable —
@@ -1414,7 +1464,7 @@ mod wasm_impl {
 
             NodeAction::CancelOrder { order_id } => {
                 clog(&format!("[CREAM] CancelOrder: {}", order_id));
-                let my_supplier_id = key_manager.supplier_id();
+                let my_supplier_id = key_manager.user_id();
                 let (supplier_name, sf_key) = {
                     let state = shared.read();
                     state
@@ -1512,7 +1562,7 @@ mod wasm_impl {
 
             NodeAction::FulfillOrder { order_id } => {
                 clog(&format!("[CREAM] FulfillOrder: {}", order_id));
-                let my_supplier_id = key_manager.supplier_id();
+                let my_supplier_id = key_manager.user_id();
                 let (supplier_name, sf_key) = {
                     let state = shared.read();
                     state
@@ -1610,7 +1660,7 @@ mod wasm_impl {
                     "[CREAM] UpdateProduct: {} price={} qty={}",
                     product_id, price_curd, quantity_total
                 ));
-                let my_supplier_id = key_manager.supplier_id();
+                let my_supplier_id = key_manager.user_id();
                 let (supplier_name, sf_key) = {
                     let state = shared.read();
                     state
@@ -1680,7 +1730,7 @@ mod wasm_impl {
                 address,
             } => {
                 clog("[CREAM] UpdateContactDetails: updating contact info");
-                let my_supplier_id = key_manager.supplier_id();
+                let my_supplier_id = key_manager.user_id();
                 let (supplier_name, sf_key) = {
                     let state = shared.read();
                     state
@@ -1743,7 +1793,7 @@ mod wasm_impl {
                 clog(&format!("[CREAM] RegisterUser: {} (origin={}, current={}, invited_by={})",
                     name, origin_supplier, current_supplier, invited_by));
 
-                let owner_key = key_manager.customer_verifying_key();
+                let owner_key = key_manager.verifying_key();
                 let uc_params = UserContractParameters { owner: owner_key };
                 let params_bytes = serde_json::to_vec(&uc_params).unwrap();
                 let uc_contract = make_contract(
@@ -1754,7 +1804,7 @@ mod wasm_impl {
 
                 let now = chrono::Utc::now();
                 let uc_state = UserContractState {
-                    owner: key_manager.customer_id(),
+                    owner: key_manager.user_id(),
                     name: name.clone(),
                     origin_supplier,
                     current_supplier,
@@ -1812,7 +1862,7 @@ mod wasm_impl {
 
                 // Deploy inbox contract for this user
                 let inbox_params = cream_common::inbox::InboxParameters {
-                    owner: key_manager.customer_verifying_key(),
+                    owner: key_manager.verifying_key(),
                 };
                 let inbox_params_bytes = serde_json::to_vec(&inbox_params).unwrap();
                 let inbox_contract = make_contract(
@@ -1821,7 +1871,7 @@ mod wasm_impl {
                 );
                 let ib_key = inbox_contract.key();
                 let ib_state = cream_common::inbox::InboxState {
-                    owner: key_manager.customer_id(),
+                    owner: key_manager.user_id(),
                     messages: std::collections::BTreeMap::new(),
                     updated_at: now,
                 };
@@ -2085,23 +2135,37 @@ mod wasm_impl {
                     sender_name.clone(),
                 ).await;
 
-                // Derive recipient's inbox contract key from their pubkey
-                let recipient_pubkey = {
+                // Look up the recipient's inbox contract key and owner from the directory.
+                // With unified keys, the directory entry's `supplier` field IS the inbox owner.
+                let (recipient_inbox_key, inbox_owner) = {
                     let state = shared.read();
-                    state.directory.entries.values()
-                        .find(|e| e.name == recipient_name)
-                        .map(|e| e.supplier.0)
+                    let entry = state.directory.entries.values()
+                        .find(|e| e.name == recipient_name);
+                    match entry {
+                        Some(e) if e.inbox_contract_key.is_some() => {
+                            (e.inbox_contract_key.clone().unwrap(), e.supplier.clone())
+                        }
+                        _ => {
+                            clog(&format!("[CREAM] ERROR: Recipient {} not found in directory or has no inbox", recipient_name));
+                            return;
+                        }
+                    }
                 };
 
-                let Some(recipient_vk) = recipient_pubkey else {
-                    clog(&format!("[CREAM] ERROR: Recipient {} not found in directory", recipient_name));
-                    return;
-                };
-
-                let inbox_params = cream_common::inbox::InboxParameters { owner: recipient_vk };
-                let params_bytes = serde_json::to_vec(&inbox_params).unwrap();
-                let recipient_inbox = make_contract(INBOX_CONTRACT_WASM, Parameters::from(params_bytes));
-                let recipient_inbox_key = recipient_inbox.key();
+                // GET the recipient's inbox to cache the contract locally.
+                // The response will be processed by the main polling loop; we just
+                // need to give Freenet a moment to fetch and cache the contract
+                // before we send the UPDATE.
+                let get_req = ClientRequest::ContractOp(ContractRequest::Get {
+                    key: *recipient_inbox_key.id(),
+                    return_contract_code: true,
+                    subscribe: false,
+                    blocking_subscribe: false,
+                });
+                if let Err(e) = api.send(get_req).await {
+                    clog(&format!("[CREAM] WARNING: Failed to GET recipient inbox: {:?}", e));
+                }
+                gloo_timers::future::TimeoutFuture::new(2_000).await;
 
                 let now = chrono::Utc::now();
                 let msg_id: u64 = (now.timestamp_millis() as u64)
@@ -2122,8 +2186,8 @@ mod wasm_impl {
 
                 // Build an update state with just this new message
                 let update_state = cream_common::inbox::InboxState {
-                    owner: cream_common::identity::CustomerId(recipient_vk),
-                    messages: std::iter::once((msg_id, message)).collect(),
+                    owner: inbox_owner,
+                    messages: std::iter::once((msg_id, message.clone())).collect(),
                     updated_at: now,
                 };
 
@@ -2133,10 +2197,32 @@ mod wasm_impl {
                     data: UpdateData::State(State::from(update_bytes)),
                 });
 
-                if let Err(e) = api.send(update).await {
-                    clog(&format!("[CREAM] ERROR: Failed to send inbox message: {:?}", e));
-                } else {
-                    clog("[CREAM] SendInboxMessage: sent successfully");
+                // Try sending the update, with one retry after a delay
+                let mut sent_ok = false;
+                for attempt in 0..2 {
+                    if attempt > 0 {
+                        clog("[CREAM] SendInboxMessage: retrying after delay...");
+                        gloo_timers_sleep(2000).await;
+                    }
+                    match api.send(update.clone()).await {
+                        Ok(_) => {
+                            clog("[CREAM] SendInboxMessage: sent successfully");
+                            sent_ok = true;
+                            break;
+                        }
+                        Err(e) => {
+                            clog(&format!("[CREAM] ERROR: Failed to send inbox message (attempt {}): {:?}", attempt + 1, e));
+                        }
+                    }
+                }
+                if sent_ok {
+                    // Track sent message locally for display
+                    shared.write().sent_messages.push(
+                        crate::components::shared_state::SentMessage {
+                            to_name: recipient_name.clone(),
+                            message,
+                        },
+                    );
                 }
             }
 
@@ -2278,7 +2364,7 @@ mod wasm_impl {
                 } else {
                     match serde_json::from_slice::<StorefrontState>(bytes) {
                         Ok(storefront) => {
-                            // Look up the directory entry by the storefront's owner (SupplierId).
+                            // Look up the directory entry by the storefront's owner (UserId).
                             // This maps e.g. info.name "Gary's Farm" → directory name "Gary".
                             let dir_name = {
                                 let state = shared.read();

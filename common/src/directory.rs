@@ -7,14 +7,14 @@ use ed25519_dalek::Verifier;
 use freenet_stdlib::prelude::ContractKey;
 use serde::{Deserialize, Serialize};
 
-use crate::identity::SupplierId;
+use crate::identity::UserId;
 use crate::location::GeoLocation;
 use crate::product::ProductCategory;
 
 /// A single supplier's entry in the global directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectoryEntry {
-    pub supplier: SupplierId,
+    pub supplier: UserId,
     pub name: String,
     pub description: String,
     pub location: GeoLocation,
@@ -26,6 +26,8 @@ pub struct DirectoryEntry {
     pub storefront_key: ContractKey,
     #[serde(default)]
     pub user_contract_key: Option<ContractKey>,
+    #[serde(default)]
+    pub inbox_contract_key: Option<ContractKey>,
     pub updated_at: DateTime<Utc>,
     pub signature: Signature,
 }
@@ -43,6 +45,7 @@ impl DirectoryEntry {
             categories: &self.categories,
             storefront_key: &self.storefront_key,
             user_contract_key: self.user_contract_key.as_ref(),
+            inbox_contract_key: self.inbox_contract_key.as_ref(),
             updated_at: &self.updated_at,
         };
         serde_json::to_vec(&signable).expect("serialization should not fail")
@@ -65,7 +68,7 @@ impl DirectoryEntry {
 
 #[derive(Serialize)]
 struct SignableDirectoryEntry<'a> {
-    supplier: &'a SupplierId,
+    supplier: &'a UserId,
     name: &'a str,
     description: &'a str,
     location: &'a GeoLocation,
@@ -74,13 +77,14 @@ struct SignableDirectoryEntry<'a> {
     categories: &'a [ProductCategory],
     storefront_key: &'a ContractKey,
     user_contract_key: Option<&'a ContractKey>,
+    inbox_contract_key: Option<&'a ContractKey>,
     updated_at: &'a DateTime<Utc>,
 }
 
 /// The full directory state: a map of supplier entries.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DirectoryState {
-    pub entries: BTreeMap<SupplierId, DirectoryEntry>,
+    pub entries: BTreeMap<UserId, DirectoryEntry>,
 }
 
 impl DirectoryState {
@@ -108,7 +112,7 @@ impl DirectoryState {
 /// Summary of directory state: supplier ID -> last updated timestamp.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DirectorySummary {
-    pub timestamps: BTreeMap<SupplierId, DateTime<Utc>>,
+    pub timestamps: BTreeMap<UserId, DateTime<Utc>>,
 }
 
 impl DirectoryState {

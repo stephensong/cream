@@ -5,14 +5,14 @@ use std::hash::{Hash, Hasher};
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-/// A supplier's public identity.
+/// A user's public identity — unified key for all roles (supplier, customer, both).
 ///
 /// Custom serde impl encodes the 32-byte key as a hex string so it works as a
 /// JSON map key (JSON requires string keys).
 #[derive(Debug, Clone)]
-pub struct SupplierId(pub VerifyingKey);
+pub struct UserId(pub VerifyingKey);
 
-impl fmt::Display for SupplierId {
+impl fmt::Display for UserId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for byte in self.0.as_bytes() {
             write!(f, "{:02x}", byte)?;
@@ -21,17 +21,17 @@ impl fmt::Display for SupplierId {
     }
 }
 
-impl Serialize for SupplierId {
+impl Serialize for UserId {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.to_string())
     }
 }
 
-impl<'de> Deserialize<'de> for SupplierId {
+impl<'de> Deserialize<'de> for UserId {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
         if s.len() != 64 {
-            return Err(serde::de::Error::custom("SupplierId hex must be 64 chars"));
+            return Err(serde::de::Error::custom("UserId hex must be 64 chars"));
         }
         let mut bytes = [0u8; 32];
         for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
@@ -39,56 +39,29 @@ impl<'de> Deserialize<'de> for SupplierId {
             bytes[i] = u8::from_str_radix(hex, 16).map_err(serde::de::Error::custom)?;
         }
         VerifyingKey::from_bytes(&bytes)
-            .map(SupplierId)
+            .map(UserId)
             .map_err(serde::de::Error::custom)
     }
 }
 
-impl PartialEq for SupplierId {
+impl PartialEq for UserId {
     fn eq(&self, other: &Self) -> bool {
         self.0.as_bytes() == other.0.as_bytes()
     }
 }
-impl Eq for SupplierId {}
+impl Eq for UserId {}
 
-impl PartialOrd for SupplierId {
+impl PartialOrd for UserId {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
-impl Ord for SupplierId {
+impl Ord for UserId {
     fn cmp(&self, other: &Self) -> Ordering {
         self.0.as_bytes().cmp(other.0.as_bytes())
     }
 }
-impl Hash for SupplierId {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.as_bytes().hash(state);
-    }
-}
-
-/// A customer's public identity.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CustomerId(pub VerifyingKey);
-
-impl PartialEq for CustomerId {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.as_bytes() == other.0.as_bytes()
-    }
-}
-impl Eq for CustomerId {}
-
-impl PartialOrd for CustomerId {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for CustomerId {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.0.as_bytes().cmp(other.0.as_bytes())
-    }
-}
-impl Hash for CustomerId {
+impl Hash for UserId {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.as_bytes().hash(state);
     }
@@ -106,57 +79,26 @@ pub enum UserRole {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserIdentity {
     pub role: UserRole,
-    pub supplier_id: Option<SupplierId>,
-    pub customer_id: Option<CustomerId>,
+    pub user_id: UserId,
 }
 
-/// Derive a deterministic base ed25519 signing key from a name and password.
+/// Derive a deterministic ed25519 signing key from a name and password.
 ///
-/// This is the first step — use `derive_supplier_signing_key` or
-/// `derive_customer_signing_key` for role-specific keys.
+/// Uses a single unified derivation domain (`cream-user-signing-key-v1`)
+/// so that every user has one key regardless of role.
+///
+/// Only available with the `dev` feature (production will use BIP39 mnemonics).
 #[cfg(feature = "dev")]
-fn derive_base_key(name: &str, password: &str) -> [u8; 32] {
+pub fn derive_user_signing_key(name: &str, password: &str) -> ed25519_dalek::SigningKey {
     use hkdf::Hkdf;
     use sha2::Sha256;
 
     let salt = name.trim().to_lowercase();
     let hk = Hkdf::<Sha256>::new(Some(salt.as_bytes()), password.as_bytes());
     let mut okm = [0u8; 32];
-    hk.expand(b"cream-dev-identity-v1", &mut okm)
-        .expect("HKDF expand should not fail for 32 bytes");
-    okm
-}
-
-/// Derive 32 bytes from a seed using HKDF-SHA256 with the given info string.
-#[cfg(feature = "dev")]
-fn derive_role_key(seed: &[u8; 32], info: &[u8]) -> ed25519_dalek::SigningKey {
-    use hkdf::Hkdf;
-    use sha2::Sha256;
-
-    let hk = Hkdf::<Sha256>::new(None, seed);
-    let mut okm = [0u8; 32];
-    hk.expand(info, &mut okm)
+    hk.expand(b"cream-user-signing-key-v1", &mut okm)
         .expect("HKDF expand should not fail for 32 bytes");
     ed25519_dalek::SigningKey::from_bytes(&okm)
-}
-
-/// Derive a deterministic supplier signing key from name + password.
-///
-/// Both the test harness and the UI use this function so that the same
-/// name + password always produces the same supplier keypair.
-///
-/// Only available with the `dev` feature (production will use BIP39 mnemonics).
-#[cfg(feature = "dev")]
-pub fn derive_supplier_signing_key(name: &str, password: &str) -> ed25519_dalek::SigningKey {
-    let base = derive_base_key(name, password);
-    derive_role_key(&base, b"cream-supplier-signing-key-v1")
-}
-
-/// Derive a deterministic customer signing key from name + password.
-#[cfg(feature = "dev")]
-pub fn derive_customer_signing_key(name: &str, password: &str) -> ed25519_dalek::SigningKey {
-    let base = derive_base_key(name, password);
-    derive_role_key(&base, b"cream-customer-signing-key-v1")
 }
 
 /// Name for the root user (Fedimint guardians). Prefixed with `__` to prevent
@@ -169,23 +111,30 @@ pub const ROOT_USER_NAME: &str = "__cream_root__";
 /// Its key is deterministic so every client can compute the same contract key.
 #[cfg(feature = "dev")]
 pub fn root_signing_key() -> ed25519_dalek::SigningKey {
-    let base = derive_base_key(ROOT_USER_NAME, "cream-root-genesis");
-    derive_role_key(&base, b"cream-root-signing-key-v1")
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+
+    let salt = ROOT_USER_NAME.trim().to_lowercase();
+    let hk = Hkdf::<Sha256>::new(Some(salt.as_bytes()), b"cream-root-genesis");
+    let mut okm = [0u8; 32];
+    hk.expand(b"cream-root-signing-key-v1", &mut okm)
+        .expect("HKDF expand should not fail for 32 bytes");
+    ed25519_dalek::SigningKey::from_bytes(&okm)
 }
 
-/// Get the root user's CustomerId (public key).
+/// Get the root user's UserId (public key).
 ///
 /// When the `frost` feature is enabled, this returns the FROST group key
 /// (threshold signature). Otherwise falls back to the single-signer key.
 #[cfg(feature = "dev")]
-pub fn root_customer_id() -> CustomerId {
+pub fn root_user_id() -> UserId {
     #[cfg(feature = "frost")]
     {
-        CustomerId(crate::frost::dev_root_verifying_key())
+        UserId(crate::frost::dev_root_verifying_key())
     }
     #[cfg(not(feature = "frost"))]
     {
-        CustomerId(root_signing_key().verifying_key())
+        UserId(root_signing_key().verifying_key())
     }
 }
 

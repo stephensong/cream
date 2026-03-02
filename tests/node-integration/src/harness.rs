@@ -6,7 +6,7 @@ use freenet_stdlib::client_api::{ClientRequest, ContractRequest, WebApi};
 use freenet_stdlib::prelude::*;
 
 use cream_common::directory::DirectoryState;
-use cream_common::identity::{CustomerId, SupplierId};
+use cream_common::identity::UserId;
 use cream_common::location::GeoLocation;
 use cream_common::order::Order;
 use cream_common::product::{Product, ProductCategory, ProductId};
@@ -18,9 +18,9 @@ use cream_common::wallet::{TransactionKind, WalletTransaction};
 use crate::{
     connect_to_node_at, extract_get_response_state, extract_notification_bytes, is_get_response,
     is_put_response, is_subscribe_success, is_update_notification, is_update_response,
-    make_directory_contract, make_directory_entry, make_dummy_customer, make_dummy_supplier,
-    make_storefront_contract, make_user_contract, node_url, recv_matching, wait_for_get,
-    wait_for_put,
+    make_directory_contract, make_directory_entry, make_dummy_user,
+    make_inbox_contract, make_storefront_contract, make_user_contract, node_url, recv_matching,
+    wait_for_get, wait_for_put,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -28,7 +28,7 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 /// A supplier participant in the test harness.
 pub struct Supplier {
     pub name: String,
-    pub id: SupplierId,
+    pub id: UserId,
     pub verifying_key: VerifyingKey,
     pub api: WebApi,
     pub storefront_key: ContractKey,
@@ -37,6 +37,8 @@ pub struct Supplier {
     pub locality: String,
     /// Contract key for this supplier's user contract.
     pub user_contract_key: Option<ContractKey>,
+    /// Contract key for this supplier's inbox contract.
+    pub inbox_key: Option<ContractKey>,
 }
 
 impl Supplier {
@@ -207,13 +209,15 @@ impl Supplier {
 /// A customer participant in the test harness.
 pub struct Customer {
     pub name: String,
-    pub id: CustomerId,
+    pub id: UserId,
     pub verifying_key: VerifyingKey,
     pub api: WebApi,
     /// CURD wallet balance (derived from on-network ledger).
     pub balance: u64,
     /// Contract key for this customer's user contract.
     pub user_contract_key: Option<ContractKey>,
+    /// Contract key for this customer's inbox contract.
+    pub inbox_key: Option<ContractKey>,
 }
 
 impl Customer {
@@ -341,14 +345,12 @@ impl TestHarness {
         let api_alice = connect_to_node_at(&url_n1).await;
         let api_bob = connect_to_node_at(&url_n2).await;
 
-        // Create supplier identities (deterministic — same keys the UI derives)
-        let (gary_id, gary_vk) = make_dummy_supplier("Gary");
-        let (emma_id, emma_vk) = make_dummy_supplier("Emma");
-        let (iris_id, iris_vk) = make_dummy_supplier("Iris");
-
-        // Create customer identities (deterministic)
-        let (alice_id, alice_vk) = make_dummy_customer("Alice");
-        let (bob_id, bob_vk) = make_dummy_customer("Bob");
+        // Create unified user identities (deterministic — same keys the UI derives)
+        let (gary_id, gary_vk) = make_dummy_user("Gary");
+        let (emma_id, emma_vk) = make_dummy_user("Emma");
+        let (iris_id, iris_vk) = make_dummy_user("Iris");
+        let (alice_id, alice_vk) = make_dummy_user("Alice");
+        let (bob_id, bob_vk) = make_dummy_user("Bob");
 
         // Create storefront contracts
         let (gary_sf_contract, gary_sf_key) = make_storefront_contract(&gary_vk);
@@ -398,6 +400,7 @@ impl TestHarness {
             postcode: "2450".to_string(),
             locality: "Boambee".to_string(),
             user_contract_key: None,
+            inbox_key: None,
         };
         let mut emma = Supplier {
             name: "Emma".to_string(),
@@ -409,6 +412,7 @@ impl TestHarness {
             postcode: "2450".to_string(),
             locality: "Boambee".to_string(),
             user_contract_key: None,
+            inbox_key: None,
         };
         let mut iris = Supplier {
             name: "Iris".to_string(),
@@ -420,6 +424,7 @@ impl TestHarness {
             postcode: "2000".to_string(),
             locality: "Sydney".to_string(),
             user_contract_key: None,
+            inbox_key: None,
         };
 
         let mut alice = Customer {
@@ -429,6 +434,7 @@ impl TestHarness {
             api: api_alice,
             balance: 10_000,
             user_contract_key: None,
+            inbox_key: None,
         };
         let mut bob = Customer {
             name: "Bob".to_string(),
@@ -437,11 +443,10 @@ impl TestHarness {
             api: api_bob,
             balance: 10_000,
             user_contract_key: None,
+            inbox_key: None,
         };
 
         // PUT directory contract (via Gary's connection).
-        // The directory key is deterministic (same WASM + empty params), so a parallel
-        // test may have already created it. A short timeout handles this gracefully.
         let empty_dir = DirectoryState::default();
         let dir_state_bytes = serde_json::to_vec(&empty_dir).unwrap();
         gary.api
@@ -460,7 +465,6 @@ impl TestHarness {
         }
 
         // PUT storefront contracts on their respective nodes.
-        // Gary and Iris PUT on gateway; Emma PUTs on node-2.
         put_storefront(&mut gary, gary_sf_contract).await;
         put_storefront(&mut iris, iris_sf_contract).await;
 
@@ -474,7 +478,7 @@ impl TestHarness {
         put_storefront(&mut emma, emma_sf_contract).await;
 
         // Deploy root user contract with 1,000,000 CURD genesis credit.
-        let root_id = cream_common::identity::root_customer_id();
+        let root_id = cream_common::identity::root_user_id();
         let root_vk = *root_id.0.as_bytes();
         let root_vk = ed25519_dalek::VerifyingKey::from_bytes(&root_vk).unwrap();
         let (root_contract, root_key) = make_user_contract(&root_vk);
@@ -492,7 +496,7 @@ impl TestHarness {
         };
 
         let mut root_state = UserContractState {
-            owner: cream_common::identity::root_customer_id(),
+            owner: cream_common::identity::root_user_id(),
             name: cream_common::identity::ROOT_USER_NAME.to_string(),
             origin_supplier: String::new(),
             current_supplier: String::new(),
@@ -506,7 +510,7 @@ impl TestHarness {
         root_state.signature = cream_common::identity::root_sign(&root_state.signable_bytes());
         let root_state_bytes = serde_json::to_vec(&root_state).unwrap();
 
-        // Deploy root contract on gateway (via Gary's connection, reuse a fresh one)
+        // Deploy root contract on node-1 (via Gary's connection, reuse a fresh one)
         let mut root_api = connect_to_node_at(&url_n1).await;
         wait_for_put(
             &mut root_api,
@@ -523,13 +527,18 @@ impl TestHarness {
         deploy_user_contract(&mut bob, &root_key, &url_n2, "Gary").await;
 
         // Deploy user contracts for suppliers (Gary, Emma, Iris) with 10,000 CURD each.
-        // Must happen before directory registration so user_contract_key is included.
         deploy_supplier_user_contract(&mut gary, &root_key, &url_n1).await;
         deploy_supplier_user_contract(&mut emma, &root_key, &url_n2).await;
         deploy_supplier_user_contract(&mut iris, &root_key, &url_n1).await;
 
+        // Deploy inbox contracts for all participants (same unified key).
+        deploy_inbox(&mut gary.api, &gary.verifying_key, &url_n1, &mut gary.inbox_key).await;
+        deploy_inbox(&mut emma.api, &emma.verifying_key, &url_n2, &mut emma.inbox_key).await;
+        deploy_inbox(&mut iris.api, &iris.verifying_key, &url_n1, &mut iris.inbox_key).await;
+        deploy_inbox_customer(&mut alice, &url_n1).await;
+        deploy_inbox_customer(&mut bob, &url_n2).await;
+
         // Register all 3 suppliers in the directory (after user contracts so keys are available).
-        // Gary and Iris register via gateway; Emma registers via node-2.
         register_supplier_in_directory(&mut gary, &dir_key).await;
         register_supplier_in_directory(&mut iris, &dir_key).await;
         register_supplier_in_directory(&mut emma, &dir_key).await;
@@ -548,7 +557,7 @@ impl TestHarness {
 
 /// Build an empty StorefrontState for a supplier.
 fn make_initial_storefront(
-    owner: &SupplierId,
+    owner: &UserId,
     name: &str,
     description: &str,
     location: GeoLocation,
@@ -594,6 +603,7 @@ async fn register_supplier_in_directory(supplier: &mut Supplier, dir_key: &Contr
         supplier.storefront.info.location.clone(),
         supplier.storefront_key,
         supplier.user_contract_key,
+        supplier.inbox_key,
     );
     let mut entries = BTreeMap::new();
     entries.insert(supplier.id.clone(), entry);
@@ -644,7 +654,7 @@ async fn deploy_supplier_user_contract(
     };
 
     let uc_state = UserContractState {
-        owner: cream_common::identity::CustomerId(supplier.verifying_key),
+        owner: cream_common::identity::UserId(supplier.verifying_key),
         name: supplier.name.clone(),
         origin_supplier: supplier.name.clone(),
         current_supplier: supplier.name.clone(),
@@ -802,4 +812,42 @@ async fn deploy_user_contract(
         .await
         .expect("UpdateResponse for root debit");
     drop(root_api);
+}
+
+/// Deploy an inbox contract for an entity (supplier or customer).
+async fn deploy_inbox(
+    _api: &mut WebApi,
+    owner_vk: &VerifyingKey,
+    node_url_str: &str,
+    inbox_key_out: &mut Option<ContractKey>,
+) {
+    use cream_common::identity::UserId;
+    use cream_common::inbox::InboxState;
+
+    let (inbox_contract, inbox_key) = make_inbox_contract(owner_vk);
+    let ib_state = InboxState {
+        owner: UserId(*owner_vk),
+        messages: std::collections::BTreeMap::new(),
+        updated_at: chrono::Utc::now(),
+    };
+    let ib_state_bytes = serde_json::to_vec(&ib_state).unwrap();
+
+    let mut deploy_api = connect_to_node_at(node_url_str).await;
+    wait_for_put(
+        &mut deploy_api,
+        inbox_contract,
+        WrappedState::new(ib_state_bytes),
+        TIMEOUT,
+    )
+    .await
+    .expect("PutResponse for inbox contract");
+    drop(deploy_api);
+
+    *inbox_key_out = Some(inbox_key);
+}
+
+/// Deploy an inbox contract for a customer.
+async fn deploy_inbox_customer(customer: &mut Customer, node_url_str: &str) {
+    let vk = customer.verifying_key;
+    deploy_inbox(&mut customer.api, &vk, node_url_str, &mut customer.inbox_key).await;
 }

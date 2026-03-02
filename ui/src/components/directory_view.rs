@@ -35,7 +35,7 @@ pub fn DirectoryView() -> Element {
     let my_supplier_id = {
         let km_signal: Signal<Option<crate::components::key_manager::KeyManager>> = use_context();
         let km_guard = km_signal.read();
-        km_guard.as_ref().map(|km| km.supplier_id())
+        km_guard.as_ref().map(|km| km.user_id())
     };
     {
         let shared = shared_state.read();

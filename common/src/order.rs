@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use ed25519_dalek::Signature;
 use serde::{Deserialize, Serialize};
 
-use crate::identity::CustomerId;
+use crate::identity::UserId;
 use crate::product::ProductId;
 
 /// Unique order identifier.
@@ -120,7 +120,7 @@ impl fmt::Display for DepositTier {
 pub struct Order {
     pub id: OrderId,
     pub product_id: ProductId,
-    pub customer: CustomerId,
+    pub customer: UserId,
     pub quantity: u32,
     pub deposit_tier: DepositTier,
     pub deposit_amount: u64,

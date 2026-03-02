@@ -2,7 +2,7 @@ use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use cream_common::directory::DirectoryEntry;
-use cream_common::identity::{CustomerId, SupplierId, UserIdentity, UserRole};
+use cream_common::identity::{UserId, UserIdentity, UserRole};
 use cream_common::order::Order;
 use cream_common::product::Product;
 use cream_common::storefront::{order_signable_bytes, SignedProduct};
@@ -38,10 +38,8 @@ pub enum CreamResponse {
 /// Internal state persisted by the delegate.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct DelegateState {
-    /// Supplier signing key (secret).
-    supplier_key: Option<Vec<u8>>,
-    /// Customer signing key (secret).
-    customer_key: Option<Vec<u8>>,
+    /// User signing key (secret).
+    user_key: Option<Vec<u8>>,
     /// User role.
     role: Option<UserRole>,
     /// Mock CURD balance.
@@ -65,22 +63,8 @@ impl DelegateState {
     }
 
     fn create_identity(&mut self, role: UserRole) -> CreamResponse {
-        match role {
-            UserRole::Supplier => {
-                let key = SigningKey::generate(&mut rand::rngs::OsRng);
-                self.supplier_key = Some(key.to_bytes().to_vec());
-            }
-            UserRole::Customer => {
-                let key = SigningKey::generate(&mut rand::rngs::OsRng);
-                self.customer_key = Some(key.to_bytes().to_vec());
-            }
-            UserRole::Both => {
-                let skey = SigningKey::generate(&mut rand::rngs::OsRng);
-                self.supplier_key = Some(skey.to_bytes().to_vec());
-                let ckey = SigningKey::generate(&mut rand::rngs::OsRng);
-                self.customer_key = Some(ckey.to_bytes().to_vec());
-            }
-        }
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        self.user_key = Some(key.to_bytes().to_vec());
         self.role = Some(role);
         // Give a starting balance for demo purposes
         if self.balance == 0 {
@@ -95,26 +79,20 @@ impl DelegateState {
             None => return CreamResponse::Error("No identity created".into()),
         };
 
-        let supplier_id = self.supplier_key.as_ref().map(|bytes| {
-            let key = signing_key_from_bytes(bytes);
-            SupplierId(VerifyingKey::from(&key))
-        });
+        let user_id = match self.user_key.as_ref() {
+            Some(bytes) => {
+                let key = signing_key_from_bytes(bytes);
+                UserId(VerifyingKey::from(&key))
+            }
+            None => return CreamResponse::Error("No key generated".into()),
+        };
 
-        let customer_id = self.customer_key.as_ref().map(|bytes| {
-            let key = signing_key_from_bytes(bytes);
-            CustomerId(VerifyingKey::from(&key))
-        });
-
-        CreamResponse::Identity(UserIdentity {
-            role,
-            supplier_id,
-            customer_id,
-        })
+        CreamResponse::Identity(UserIdentity { role, user_id })
     }
 
     fn sign_product(&self, product: Product) -> CreamResponse {
-        let Some(key_bytes) = &self.supplier_key else {
-            return CreamResponse::Error("No supplier identity".into());
+        let Some(key_bytes) = &self.user_key else {
+            return CreamResponse::Error("No identity".into());
         };
         let key = signing_key_from_bytes(key_bytes);
         let msg = serde_json::to_vec(&product).expect("serialization should not fail");
@@ -123,8 +101,8 @@ impl DelegateState {
     }
 
     fn sign_order(&self, order: &mut Order) -> CreamResponse {
-        let Some(key_bytes) = &self.customer_key else {
-            return CreamResponse::Error("No customer identity".into());
+        let Some(key_bytes) = &self.user_key else {
+            return CreamResponse::Error("No identity".into());
         };
         let key = signing_key_from_bytes(key_bytes);
         let msg = order_signable_bytes(order);
@@ -133,8 +111,8 @@ impl DelegateState {
     }
 
     fn sign_directory_entry(&self, entry: &mut DirectoryEntry) -> CreamResponse {
-        let Some(key_bytes) = &self.supplier_key else {
-            return CreamResponse::Error("No supplier identity".into());
+        let Some(key_bytes) = &self.user_key else {
+            return CreamResponse::Error("No identity".into());
         };
         let key = signing_key_from_bytes(key_bytes);
         let msg = entry.signable_bytes();
@@ -168,8 +146,7 @@ mod tests {
             CreamResponse::Identity(id) => id,
             other => panic!("Expected Identity, got {:?}", other),
         };
-        assert!(identity.supplier_id.is_some());
-        assert!(identity.customer_id.is_none());
+        assert_eq!(identity.role, UserRole::Supplier);
 
         // Sign a product
         let product = Product {
@@ -191,7 +168,7 @@ mod tests {
         };
 
         // Verify signature
-        let key_bytes = state.supplier_key.as_ref().unwrap();
+        let key_bytes = state.user_key.as_ref().unwrap();
         let key = signing_key_from_bytes(key_bytes);
         let verifying_key = VerifyingKey::from(&key);
         assert!(signed.verify_signature(&verifying_key));
@@ -207,8 +184,6 @@ mod tests {
             CreamResponse::Identity(id) => id,
             other => panic!("Expected Identity, got {:?}", other),
         };
-        assert!(identity.supplier_id.is_some());
-        assert!(identity.customer_id.is_some());
         assert_eq!(identity.role, UserRole::Both);
     }
 
@@ -241,7 +216,7 @@ mod tests {
         };
 
         let entry = DirectoryEntry {
-            supplier: identity.supplier_id.unwrap(),
+            supplier: identity.user_id,
             name: "Test Farm".into(),
             description: "A test dairy farm".into(),
             location: GeoLocation::new(40.0, -74.0),
@@ -254,6 +229,7 @@ mod tests {
             )
             .unwrap(),
             user_contract_key: None,
+            inbox_contract_key: None,
             updated_at: Utc::now(),
             signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
         };

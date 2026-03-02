@@ -21,7 +21,7 @@ use cream_node_integration::harness::TestHarness;
 use cream_node_integration::{
     connect_to_node_at, extract_get_response_state, extract_notification_bytes, is_get_response,
     is_put_response, is_subscribe_success, is_update_notification, make_directory_contract,
-    make_directory_entry, make_dummy_order, make_dummy_product, make_dummy_supplier,
+    make_directory_entry, make_dummy_order, make_dummy_product, make_dummy_user,
     make_storefront_contract, node_url, recv_matching, wait_for_get, wait_for_put,
 };
 
@@ -76,7 +76,7 @@ async fn cumulative_node_tests() {
             "Expected SubscribeResponse for directory"
         );
 
-        let (supplier_id, vk) = make_dummy_supplier("Test Farm");
+        let (supplier_id, vk) = make_dummy_user("Test Farm");
         let (_, sf_key) = make_storefront_contract(&vk);
         let entry = make_directory_entry(
             &supplier_id,
@@ -86,6 +86,7 @@ async fn cumulative_node_tests() {
             "Sydney",
             cream_common::location::GeoLocation::new(-33.87, 151.21),
             sf_key,
+            None,
             None,
         );
 
@@ -125,7 +126,7 @@ async fn cumulative_node_tests() {
         let mut client_a = connect_to_node_at(&node_url(3002)).await;
         let mut client_b = connect_to_node_at(&node_url(3003)).await;
 
-        let (supplier_id, vk) = make_dummy_supplier("Notify Farm");
+        let (supplier_id, vk) = make_dummy_user("Notify Farm");
         let (sf_contract, sf_key) = make_storefront_contract(&vk);
 
         let initial_sf = StorefrontState {
@@ -217,7 +218,7 @@ async fn cumulative_node_tests() {
         let mut client_b_get = connect_to_node_at(&node_url(3003)).await;
         let mut client_b_sub = connect_to_node_at(&node_url(3003)).await;
 
-        let (supplier_id, vk) = make_dummy_supplier("Diagnostic Farm");
+        let (supplier_id, vk) = make_dummy_user("Diagnostic Farm");
         let (sf_contract, sf_key) = make_storefront_contract(&vk);
 
         let initial_sf = StorefrontState {
@@ -333,7 +334,7 @@ async fn cumulative_node_tests() {
         let mut supplier = connect_to_node_at(&node_url(3004)).await;
         let mut customer = connect_to_node_at(&node_url(3003)).await;
 
-        let (supplier_id, vk) = make_dummy_supplier("Count Farm");
+        let (supplier_id, vk) = make_dummy_user("Count Farm");
         let (sf_contract, sf_key) = make_storefront_contract(&vk);
 
         let initial_sf = StorefrontState {
@@ -720,9 +721,9 @@ async fn cumulative_node_tests() {
     println!("── Step 8: insufficient_balance_rejects_order ──");
     {
         use cream_node_integration::harness::Customer;
-        use cream_node_integration::make_dummy_customer;
+        use cream_node_integration::make_dummy_user;
 
-        let (zara_id, zara_vk) = make_dummy_customer("Zara");
+        let (zara_id, zara_vk) = make_dummy_user("Zara");
         let api_zara = connect_to_node_at(&node_url(3004)).await;
 
         let mut zara = Customer {
@@ -732,6 +733,7 @@ async fn cumulative_node_tests() {
             api: api_zara,
             balance: 0,
             user_contract_key: None,
+            inbox_key: None,
         };
 
         // Subscribe Zara to Gary's storefront
@@ -1134,6 +1136,111 @@ async fn cumulative_node_tests() {
         }
 
         drop(probe);
+    }
+    println!("   PASSED");
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Step 11: Inbox message — Gary sends DM to Emma, Emma receives it
+    // ═══════════════════════════════════════════════════════════════════
+    println!("── Step 11: inbox_message_delivery ──");
+    {
+        use cream_common::inbox::{InboxMessage, InboxState, MessageKind};
+
+        // Emma subscribes to her own inbox and waits for subscribe confirmation
+        let emma_inbox_key = h.emma.inbox_key
+            .expect("Emma should have inbox key from harness setup");
+
+        h.emma.api
+            .send(ClientRequest::ContractOp(ContractRequest::Subscribe {
+                key: *emma_inbox_key.id(),
+                summary: None,
+            }))
+            .await
+            .unwrap();
+        recv_matching(&mut h.emma.api, |r| {
+            matches!(r, freenet_stdlib::client_api::HostResponse::ContractResponse(
+                freenet_stdlib::client_api::ContractResponse::SubscribeResponse { subscribed: true, .. }
+            ))
+        }, TIMEOUT)
+            .await
+            .expect("Emma subscribe to her inbox");
+
+        // Gary GETs Emma's inbox to ensure his node has the contract
+        let emma_inbox_bytes = wait_for_get(
+            &mut h.gary.api,
+            *emma_inbox_key.id(),
+            TIMEOUT,
+        )
+        .await
+        .expect("Gary should be able to GET Emma's inbox");
+
+        let emma_inbox_state: InboxState =
+            serde_json::from_slice(&emma_inbox_bytes).unwrap();
+        assert!(emma_inbox_state.messages.is_empty(), "Emma's inbox should start empty");
+
+        // Gary sends a message to Emma's inbox via Update
+        let now = chrono::Utc::now();
+        let msg_id: u64 = now.timestamp_millis() as u64;
+        let message = InboxMessage {
+            id: msg_id,
+            kind: MessageKind::DirectMessage,
+            from_name: "Gary".to_string(),
+            from_key: None,
+            body: "Hey Emma, got any milk?".to_string(),
+            toll_paid: 10,
+            created_at: now,
+        };
+
+        // Inbox uses the same user key (unified identity)
+        let (emma_user_id, _) = make_dummy_user("Emma");
+        let update_state = InboxState {
+            owner: emma_user_id,
+            messages: std::iter::once((msg_id, message)).collect(),
+            updated_at: now,
+        };
+        let update_bytes = serde_json::to_vec(&update_state).unwrap();
+
+        h.gary.api
+            .send(ClientRequest::ContractOp(ContractRequest::Update {
+                key: emma_inbox_key,
+                data: UpdateData::State(State::from(update_bytes)),
+            }))
+            .await
+            .unwrap();
+
+        // Gary should get an UpdateResponse
+        recv_matching(
+            &mut h.gary.api,
+            cream_node_integration::is_update_response,
+            TIMEOUT,
+        )
+        .await
+        .expect("UpdateResponse for Gary's message to Emma's inbox");
+
+        println!("   Gary sent message to Emma's inbox, waiting for notification...");
+
+        // Emma should receive an UpdateNotification with the message
+        let notif = recv_matching(
+            &mut h.emma.api,
+            cream_node_integration::is_update_notification,
+            TIMEOUT,
+        )
+        .await
+        .expect("Emma should receive UpdateNotification for inbox message");
+
+        let notif_bytes = extract_notification_bytes(&notif)
+            .expect("notification should have state bytes");
+        let inbox_update: InboxState =
+            serde_json::from_slice(&notif_bytes).unwrap();
+
+        assert!(
+            inbox_update.messages.contains_key(&msg_id),
+            "Notification should contain the message Gary sent"
+        );
+        let received_msg = &inbox_update.messages[&msg_id];
+        assert_eq!(received_msg.from_name, "Gary");
+        assert_eq!(received_msg.body, "Hey Emma, got any milk?");
+        println!("   Emma received Gary's message via inbox notification");
     }
     println!("   PASSED");
 

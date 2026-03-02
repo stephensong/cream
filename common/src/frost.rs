@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn frost_root_key_matches_identity() {
-        let root_id = crate::identity::root_customer_id();
+        let root_id = crate::identity::root_user_id();
         let (_, pkg) = dev_root_frost_keys();
         assert_eq!(*root_id.0.as_bytes(), *group_verifying_key(&pkg).as_bytes());
     }
