@@ -271,7 +271,10 @@ fn use_chat_connection() {
                                 messages: vec![invite_msg],
                                 started_at: chrono::Utc::now(),
                                 status: SessionStatus::InviteReceived,
-                                has_av: false,
+                                mic_enabled: false,
+                                speaker_enabled: false,
+                                camera_enabled: false,
+                                tv_enabled: false,
                             };
                             chat_for_msg.write().sessions.insert(session_id, session);
                         }
@@ -305,6 +308,9 @@ fn use_chat_connection() {
                             chat_for_msg.write().sessions.remove(&session_id);
                             web_sys::console::log_1(&format!("[CHAT] Session {} closed: {}", session_id, reason).into());
                         }
+                        ServerMessage::Presence { pubkey, online } => {
+                            chat_for_msg.write().peer_online.insert(pubkey, online);
+                        }
                         // SDP/ICE handled in WebRTC phase
                         ServerMessage::Sdp { .. } | ServerMessage::Ice { .. } | ServerMessage::Nonce { .. } => {}
                     }
@@ -316,6 +322,7 @@ fn use_chat_connection() {
                     let mut state = chat_for_close.write();
                     state.connected = false;
                     state.authenticated = false;
+                    state.peer_online.clear();
                     ws_for_close.write().ws = None;
                 },
             ) {

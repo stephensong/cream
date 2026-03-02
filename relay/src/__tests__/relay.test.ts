@@ -448,6 +448,63 @@ describe('Session lifecycle', () => {
   });
 });
 
+describe('Presence', () => {
+  it('returns online=true for a connected, authenticated peer', async () => {
+    const alice = await makeKeypair();
+    const bob = await makeKeypair();
+    const wsA = await authenticateClient(TEST_PORT, alice);
+    const wsB = await authenticateClient(TEST_PORT, bob);
+
+    wsA.send(JSON.stringify({ type: 'ping', pubkey: bob.pubKey }));
+    const msg = await waitForMessage(wsA, 'presence');
+    expect(msg.pubkey).toBe(bob.pubKey);
+    expect(msg.online).toBe(true);
+
+    await closeWs(wsA);
+    await closeWs(wsB);
+  });
+
+  it('returns online=false for an unknown pubkey', async () => {
+    const alice = await makeKeypair();
+    const wsA = await authenticateClient(TEST_PORT, alice);
+
+    const fakePubkey = '00'.repeat(32);
+    wsA.send(JSON.stringify({ type: 'ping', pubkey: fakePubkey }));
+    const msg = await waitForMessage(wsA, 'presence');
+    expect(msg.pubkey).toBe(fakePubkey);
+    expect(msg.online).toBe(false);
+
+    await closeWs(wsA);
+  });
+
+  it('returns online=false after peer disconnects', async () => {
+    const alice = await makeKeypair();
+    const bob = await makeKeypair();
+    const wsA = await authenticateClient(TEST_PORT, alice);
+    const wsB = await authenticateClient(TEST_PORT, bob);
+
+    // Bob disconnects
+    await closeWs(wsB);
+    // Small delay to let the server process the close event
+    await new Promise((r) => setTimeout(r, 50));
+
+    wsA.send(JSON.stringify({ type: 'ping', pubkey: bob.pubKey }));
+    const msg = await waitForMessage(wsA, 'presence');
+    expect(msg.pubkey).toBe(bob.pubKey);
+    expect(msg.online).toBe(false);
+
+    await closeWs(wsA);
+  });
+
+  it('requires authentication', async () => {
+    const { ws } = await connectClient(TEST_PORT);
+    ws.send(JSON.stringify({ type: 'ping', pubkey: '00'.repeat(32) }));
+    const msg = await waitForMessage(ws, 'error');
+    expect(msg.message).toBe('Not authenticated');
+    await closeWs(ws);
+  });
+});
+
 describe('Error handling', () => {
   it('rejects invalid JSON', async () => {
     const kp = await makeKeypair();

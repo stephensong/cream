@@ -5,6 +5,7 @@ use cream_common::inbox::{InboxMessage, MessageKind, INBOX_MESSAGE_COST_CURD};
 use super::chat_client::{
     ChatMessage, ChatSession, ChatState, ChatWsHandle, ClientMsg, SessionStatus,
 };
+use super::chat_view::use_peer_presence;
 use super::node_api::{use_node_action, NodeAction};
 use super::shared_state::use_shared_state;
 use super::user_state::use_user_state;
@@ -88,11 +89,13 @@ pub fn MessagesView() -> Element {
         }
     };
 
+    let peer_online = use_peer_presence(&recipient_pubkey);
+
     let send_disabled = compose_to.read().is_empty()
         || compose_body.read().trim().is_empty()
         || balance < cost;
     let chat_disabled =
-        send_disabled || recipient_pubkey.is_none() || !connected;
+        send_disabled || recipient_pubkey.is_none() || !connected || !peer_online;
 
     rsx! {
         div { class: "messages-view",
@@ -200,7 +203,10 @@ pub fn MessagesView() -> Element {
                                         }],
                                         started_at: chrono::Utc::now(),
                                         status: SessionStatus::PendingAccept,
-                                        has_av: false,
+                                        mic_enabled: false,
+                                        speaker_enabled: false,
+                                        camera_enabled: false,
+                                        tv_enabled: false,
                                     };
                                     {
                                         let mut state = chat.write();
@@ -287,11 +293,27 @@ pub fn MessagesView() -> Element {
     }
 }
 
-/// Action button for chat invites in the inbox: opens the chat panel if the
-/// sender is online, or shows "Sender offline" otherwise.
+/// Action button for chat invites in the inbox: opens the chat panel if a
+/// session exists, offers to join if the relay is connected, or shows offline.
 #[component]
 fn ChatInviteAction(session_id: String, peer_name: String) -> Element {
     let mut chat = use_context::<Signal<ChatState>>();
+    let ws_handle = use_context::<Signal<ChatWsHandle>>();
+    let shared_state = use_shared_state();
+    let node = use_node_action();
+
+    // Resolve peer pubkey for presence check
+    let peer_pubkey: Option<String> = {
+        let shared = shared_state.read();
+        shared.directory.entries.values()
+            .find(|e| e.name == peer_name)
+            .map(|e| {
+                let bytes = e.supplier.0.to_bytes();
+                bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+            })
+    };
+    let peer_online = use_peer_presence(&peer_pubkey);
+
     let chat_read = chat.read();
     let has_session = chat_read.sessions.contains_key(&session_id);
     let is_connected = chat_read.connected;
@@ -307,9 +329,53 @@ fn ChatInviteAction(session_id: String, peer_name: String) -> Element {
                 "Open Chat"
             }
         }
+    } else if is_connected && peer_online {
+        // No relay session exists (missed the ephemeral WebSocket invite).
+        // Let the user join by sending a fresh relay invite with the same session_id.
+        rsx! {
+            button {
+                class: "chat-start-btn",
+                onclick: {
+                    let session_id = session_id.clone();
+                    let peer_name = peer_name.clone();
+                    let peer_pubkey = peer_pubkey.clone();
+                    move |_| {
+                        if let Some(pubkey) = peer_pubkey.clone() {
+                            node.send(NodeAction::ChatMessageToll);
+
+                            let session = ChatSession {
+                                session_id: session_id.clone(),
+                                peer_pubkey: pubkey.clone(),
+                                peer_name: peer_name.clone(),
+                                messages: vec![],
+                                started_at: chrono::Utc::now(),
+                                status: SessionStatus::PendingAccept,
+                                mic_enabled: false,
+                                speaker_enabled: false,
+                                camera_enabled: false,
+                                tv_enabled: false,
+                            };
+                            {
+                                let mut state = chat.write();
+                                state.sessions.insert(session_id.clone(), session);
+                                state.panel_open = true;
+                            }
+
+                            ws_handle.read().send(&ClientMsg::Invite {
+                                to: pubkey,
+                                session_id: session_id.clone(),
+                                ecdh_pubkey: String::new(),
+                                message: String::new(),
+                            });
+                        }
+                    }
+                },
+                "Join Chat"
+            }
+        }
     } else if is_connected {
         rsx! {
-            span { class: "messages-item-offline", "Chat session ended" }
+            span { class: "messages-item-offline", "Peer offline" }
         }
     } else {
         rsx! {

@@ -241,6 +241,13 @@ export function createRelay(port: number = DEFAULT_PORT): Promise<RelayServer> {
             break;
           }
 
+          case 'ping': {
+            const target = pubkeyToSocket.get(msg.pubkey);
+            const online = !!target && target.readyState === WebSocket.OPEN;
+            send(ws, { type: 'presence', pubkey: msg.pubkey, online });
+            break;
+          }
+
           default:
             send(ws, { type: 'error', message: 'Unknown message type' });
         }

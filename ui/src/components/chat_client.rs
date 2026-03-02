@@ -25,6 +25,7 @@ pub enum ServerMessage {
     Sdp { session_id: String, sdp: serde_json::Value },
     Ice { session_id: String, candidate: serde_json::Value },
     Close { session_id: String, reason: String },
+    Presence { pubkey: String, online: bool },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +40,7 @@ pub enum ClientMsg {
     Sdp { session_id: String, sdp: serde_json::Value },
     Ice { session_id: String, candidate: serde_json::Value },
     Close { session_id: String },
+    Ping { pubkey: String },
 }
 
 // ---------- Session status ----------
@@ -69,7 +71,10 @@ pub struct ChatSession {
     pub messages: Vec<ChatMessage>,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub status: SessionStatus,
-    pub has_av: bool,
+    pub mic_enabled: bool,
+    pub speaker_enabled: bool,
+    pub camera_enabled: bool,
+    pub tv_enabled: bool,
 }
 
 // ---------- Chat state (shared via Signal in UI) ----------
@@ -82,6 +87,14 @@ pub struct ChatState {
     pub sessions: HashMap<String, ChatSession>,
     pub panel_open: bool,
     pub last_error: Option<String>,
+    pub peer_online: HashMap<String, bool>,
+}
+
+#[allow(dead_code)]
+impl ChatState {
+    pub fn is_peer_online(&self, pubkey: &str) -> bool {
+        self.peer_online.get(pubkey).copied().unwrap_or(false)
+    }
 }
 
 // ---------- Shared WebSocket handle ----------

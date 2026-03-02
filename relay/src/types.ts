@@ -9,7 +9,8 @@ export type ServerMessage =
   | { type: 'text'; session_id: string; ciphertext: string; nonce: string }
   | { type: 'sdp'; session_id: string; sdp: unknown }
   | { type: 'ice'; session_id: string; candidate: unknown }
-  | { type: 'close'; session_id: string; reason: string };
+  | { type: 'close'; session_id: string; reason: string }
+  | { type: 'presence'; pubkey: string; online: boolean };
 
 /** Messages sent by clients to the server */
 export type ClientMessage =
@@ -20,7 +21,8 @@ export type ClientMessage =
   | { type: 'text'; session_id: string; ciphertext: string; nonce: string }
   | { type: 'sdp'; session_id: string; sdp: unknown }
   | { type: 'ice'; session_id: string; candidate: unknown }
-  | { type: 'close'; session_id: string };
+  | { type: 'close'; session_id: string }
+  | { type: 'ping'; pubkey: string };
 
 export interface Session {
   id: string;

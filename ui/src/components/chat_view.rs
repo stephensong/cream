@@ -14,6 +14,54 @@ fn clog(msg: &str) {
     let _ = msg;
 }
 
+/// Poll the relay every 5 seconds to check if a peer is online.
+/// Returns `true` if the peer is currently connected to the relay.
+#[allow(dead_code)] // used in WASM UI
+pub fn use_peer_presence(pubkey: &Option<String>) -> bool {
+    let chat = use_context::<Signal<ChatState>>();
+    let ws_handle = use_context::<Signal<ChatWsHandle>>();
+
+    // Store pubkey in a signal so the effect can track changes reactively.
+    let mut pk_signal = use_signal(|| pubkey.clone());
+    if *pk_signal.read() != *pubkey {
+        pk_signal.set(pubkey.clone());
+    }
+
+    // Isolate authenticated from other ChatState fields so the effect doesn't
+    // re-fire on every peer_online update (which would create a ping storm).
+    let authenticated = use_memo(move || chat.read().authenticated);
+
+    use_effect(move || {
+        let pk = pk_signal.read().clone();
+        let auth = *authenticated.read();
+
+        let Some(pk) = pk else { return; };
+        if !auth { return; }
+
+        // Send an immediate ping
+        ws_handle.peek().send(&ClientMsg::Ping { pubkey: pk.clone() });
+
+        // Poll every 5s; uses peek() to avoid subscribing to signal changes
+        spawn(async move {
+            loop {
+                #[cfg(target_family = "wasm")]
+                gloo_timers::future::TimeoutFuture::new(5_000).await;
+                #[cfg(not(target_family = "wasm"))]
+                return;
+
+                if !chat.peek().authenticated { break; }
+                // Stop if pubkey changed (a new effect run handles the new pk)
+                if pk_signal.peek().as_ref() != Some(&pk) { break; }
+                ws_handle.peek().send(&ClientMsg::Ping { pubkey: pk.clone() });
+            }
+        });
+    });
+
+    pubkey.as_ref()
+        .map(|pk| chat.read().is_peer_online(pk))
+        .unwrap_or(false)
+}
+
 /// Provide ChatState signal in the app context.
 #[allow(dead_code)] // convenience accessor
 pub fn use_chat_state() -> Signal<ChatState> {
@@ -249,8 +297,70 @@ pub fn ChatPanel() -> Element {
                         }
                     }
 
-                    // Input + Send button (only when active)
+                    // A/V toggle controls + text input (only when active)
                     if session.status == SessionStatus::Active {
+                        div { class: "chat-av-controls",
+                            label {
+                                input {
+                                    r#type: "checkbox",
+                                    checked: session.mic_enabled,
+                                    onchange: {
+                                        let sid = session.session_id.clone();
+                                        move |evt: Event<FormData>| {
+                                            if let Some(s) = chat.write().sessions.get_mut(&sid) {
+                                                s.mic_enabled = evt.checked();
+                                            }
+                                        }
+                                    },
+                                }
+                                " Microphone"
+                            }
+                            label {
+                                input {
+                                    r#type: "checkbox",
+                                    checked: session.speaker_enabled,
+                                    onchange: {
+                                        let sid = session.session_id.clone();
+                                        move |evt: Event<FormData>| {
+                                            if let Some(s) = chat.write().sessions.get_mut(&sid) {
+                                                s.speaker_enabled = evt.checked();
+                                            }
+                                        }
+                                    },
+                                }
+                                " Speaker"
+                            }
+                            label {
+                                input {
+                                    r#type: "checkbox",
+                                    checked: session.camera_enabled,
+                                    onchange: {
+                                        let sid = session.session_id.clone();
+                                        move |evt: Event<FormData>| {
+                                            if let Some(s) = chat.write().sessions.get_mut(&sid) {
+                                                s.camera_enabled = evt.checked();
+                                            }
+                                        }
+                                    },
+                                }
+                                " Camera"
+                            }
+                            label {
+                                input {
+                                    r#type: "checkbox",
+                                    checked: session.tv_enabled,
+                                    onchange: {
+                                        let sid = session.session_id.clone();
+                                        move |evt: Event<FormData>| {
+                                            if let Some(s) = chat.write().sessions.get_mut(&sid) {
+                                                s.tv_enabled = evt.checked();
+                                            }
+                                        }
+                                    },
+                                }
+                                " TV"
+                            }
+                        }
                         div { class: "chat-input",
                             input {
                                 r#type: "text",
@@ -318,10 +428,12 @@ pub fn ChatWithSupplierButton(supplier_name: String) -> Element {
             })
     };
 
+    let peer_online = use_peer_presence(&supplier_pubkey);
+
     let msg_empty = invite_msg.read().trim().is_empty();
     let connected = chat.read().connected;
     let send_disabled = msg_empty || !can_afford;
-    let chat_disabled = send_disabled || supplier_pubkey.is_none() || !connected;
+    let chat_disabled = send_disabled || supplier_pubkey.is_none() || !connected || !peer_online;
 
     rsx! {
         div { class: "chat-invite-input",
@@ -384,7 +496,10 @@ pub fn ChatWithSupplierButton(supplier_name: String) -> Element {
                                     }],
                                     started_at: chrono::Utc::now(),
                                     status: SessionStatus::PendingAccept,
-                                    has_av: false,
+                                    mic_enabled: false,
+                                    speaker_enabled: false,
+                                    camera_enabled: false,
+                                    tv_enabled: false,
                                 };
                                 {
                                     let mut state = chat.write();
