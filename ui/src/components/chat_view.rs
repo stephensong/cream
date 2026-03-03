@@ -321,6 +321,41 @@ pub fn ChatPanel() -> Element {
                         }
                     }
 
+                    // Remote video panel — visible when TV is toggled on.
+                    // Shows the video feed if the peer has their camera on,
+                    // otherwise shows a "No camera feed" placeholder.
+                    if session.tv_enabled {
+                        div { class: "chat-remote-video",
+                            if session.has_remote_video {
+                                video {
+                                    id: "remote-video-el-{session.session_id}",
+                                    autoplay: true,
+                                    muted: !session.speaker_enabled,
+                                    playsinline: "",
+                                    onmounted: {
+                                        #[cfg(target_family = "wasm")]
+                                        let sid = session.session_id.clone();
+                                        #[cfg(target_family = "wasm")]
+                                        let webrtc = webrtc;
+                                        move |_| {
+                                            #[cfg(target_family = "wasm")]
+                                            {
+                                                let rtc_sessions = webrtc.read();
+                                                if let Some(rtc) = rtc_sessions.get(&sid) {
+                                                    if let Some(ref stream) = *rtc.remote_stream.lock().unwrap() {
+                                                        super::chat_client::wasm::attach_remote_stream_to_video(&sid, stream);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
+                                }
+                            } else {
+                                p { class: "chat-no-video", "No camera feed" }
+                            }
+                        }
+                    }
+
                     // A/V toggle controls + text input (only when active)
                     if session.status == SessionStatus::Active {
                         div { class: "chat-av-controls",
@@ -331,8 +366,22 @@ pub fn ChatPanel() -> Element {
                                     onchange: {
                                         let sid = session.session_id.clone();
                                         move |evt: Event<FormData>| {
+                                            let enabled = evt.checked();
                                             if let Some(s) = chat.write().sessions.get_mut(&sid) {
-                                                s.mic_enabled = evt.checked();
+                                                s.mic_enabled = enabled;
+                                            }
+                                            #[cfg(target_family = "wasm")]
+                                            {
+                                                let rtc_sessions = webrtc.read();
+                                                if let Some(rtc) = rtc_sessions.get(&sid) {
+                                                    if let Some(ref ws) = ws_handle.read().ws {
+                                                        if enabled {
+                                                            super::chat_client::wasm::start_mic(rtc, ws, &sid);
+                                                        } else {
+                                                            super::chat_client::wasm::stop_mic(rtc, ws, &sid);
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     },
@@ -346,8 +395,16 @@ pub fn ChatPanel() -> Element {
                                     onchange: {
                                         let sid = session.session_id.clone();
                                         move |evt: Event<FormData>| {
+                                            let enabled = evt.checked();
                                             if let Some(s) = chat.write().sessions.get_mut(&sid) {
-                                                s.speaker_enabled = evt.checked();
+                                                s.speaker_enabled = enabled;
+                                            }
+                                            #[cfg(target_family = "wasm")]
+                                            {
+                                                let rtc_sessions = webrtc.read();
+                                                if let Some(rtc) = rtc_sessions.get(&sid) {
+                                                    super::chat_client::wasm::set_remote_audio_enabled(rtc, enabled, &sid);
+                                                }
                                             }
                                         }
                                     },
@@ -361,8 +418,22 @@ pub fn ChatPanel() -> Element {
                                     onchange: {
                                         let sid = session.session_id.clone();
                                         move |evt: Event<FormData>| {
+                                            let enabled = evt.checked();
                                             if let Some(s) = chat.write().sessions.get_mut(&sid) {
-                                                s.camera_enabled = evt.checked();
+                                                s.camera_enabled = enabled;
+                                            }
+                                            #[cfg(target_family = "wasm")]
+                                            {
+                                                let rtc_sessions = webrtc.read();
+                                                if let Some(rtc) = rtc_sessions.get(&sid) {
+                                                    if let Some(ref ws) = ws_handle.read().ws {
+                                                        if enabled {
+                                                            super::chat_client::wasm::start_camera(rtc, ws, &sid);
+                                                        } else {
+                                                            super::chat_client::wasm::stop_camera(rtc, ws, &sid);
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     },
@@ -382,7 +453,7 @@ pub fn ChatPanel() -> Element {
                                         }
                                     },
                                 }
-                                " TV"
+                                " Screen"
                             }
                         }
                         div { class: "chat-input",
@@ -524,6 +595,7 @@ pub fn ChatWithSupplierButton(supplier_name: String) -> Element {
                                     speaker_enabled: false,
                                     camera_enabled: false,
                                     tv_enabled: false,
+                                    has_remote_video: false,
                                 };
                                 {
                                     let mut state = chat.write();

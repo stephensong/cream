@@ -25,6 +25,29 @@ use super::chat_client::{ChatState, ChatWsHandle, SessionStatus};
 use super::chat_client::WebRtcSessions;
 use super::chat_view::{ChatPanel, ChatInviteBanner};
 
+/// Handle a data-channel control message (prefixed with `__ctrl:`).
+#[cfg(target_family = "wasm")]
+fn handle_dc_control(chat: &mut Signal<ChatState>, session_id: &str, ctrl: &str) {
+    match ctrl {
+        "camera_on" => {
+            if let Some(s) = chat.write().sessions.get_mut(session_id) {
+                s.has_remote_video = true;
+            }
+            web_sys::console::log_1(&format!("[WEBRTC] Peer camera ON for {}", session_id).into());
+        }
+        "camera_off" => {
+            if let Some(s) = chat.write().sessions.get_mut(session_id) {
+                s.has_remote_video = false;
+            }
+            super::chat_client::wasm::detach_remote_video(session_id);
+            web_sys::console::log_1(&format!("[WEBRTC] Peer camera OFF for {}", session_id).into());
+        }
+        other => {
+            web_sys::console::log_1(&format!("[WEBRTC] Unknown control: {}", other).into());
+        }
+    }
+}
+
 /// Read `?supplier=X` from the browser URL bar. Returns `None` outside WASM.
 fn get_supplier_query_param() -> Option<String> {
     #[cfg(target_family = "wasm")]
@@ -282,6 +305,7 @@ fn use_chat_connection() {
                                 speaker_enabled: false,
                                 camera_enabled: false,
                                 tv_enabled: false,
+                                has_remote_video: false,
                             };
                             chat_for_msg.write().sessions.insert(session_id, session);
                         }
@@ -293,10 +317,15 @@ fn use_chat_connection() {
                             // Begin WebRTC handshake — offerer creates offer
                             if let Some(ref ws) = ws_for_webrtc.peek().ws {
                                 let mut chat_dc = chat_for_msg;
+                                let mut chat_rv = chat_for_msg;
                                 match super::chat_client::wasm::setup_offerer(
                                     session_id.clone(),
                                     ws,
                                     move |sid, text| {
+                                        if let Some(ctrl) = text.strip_prefix(super::chat_client::DC_CONTROL_PREFIX) {
+                                            handle_dc_control(&mut chat_dc, &sid, ctrl);
+                                            return;
+                                        }
                                         let mut state = chat_dc.write();
                                         let peer_name = state.sessions.get(&sid)
                                             .map(|s| s.peer_name.clone())
@@ -313,6 +342,11 @@ fn use_chat_connection() {
                                     },
                                     move |sid| {
                                         web_sys::console::log_1(&format!("[WEBRTC] Offerer data channel ready for {}", sid).into());
+                                    },
+                                    move |sid, has_video| {
+                                        if let Some(s) = chat_rv.write().sessions.get_mut(&sid) {
+                                            s.has_remote_video = has_video;
+                                        }
                                     },
                                 ) {
                                     Ok(rtc_session) => {
@@ -363,37 +397,60 @@ fn use_chat_connection() {
                                     super::chat_client::wasm::handle_sdp_answer(&rtc.pc, &sdp);
                                 }
                             } else if sdp_type == "offer" {
-                                // We're the answerer — set up answerer side
-                                if let Some(ref ws) = ws_for_webrtc.peek().ws {
-                                    let mut chat_dc = chat_for_msg;
-                                    match super::chat_client::wasm::setup_answerer(
-                                        session_id.clone(),
-                                        &sdp,
-                                        ws,
-                                        move |sid, text| {
-                                            let mut state = chat_dc.write();
-                                            let peer_name = state.sessions.get(&sid)
-                                                .map(|s| s.peer_name.clone())
-                                                .unwrap_or_default();
-                                            let msg = ChatMessage {
-                                                sender_is_me: false,
-                                                sender_name: peer_name,
-                                                body: text,
-                                                timestamp: chrono::Utc::now(),
-                                            };
-                                            if let Some(session) = state.sessions.get_mut(&sid) {
-                                                session.messages.push(msg);
-                                            }
-                                        },
-                                        move |sid| {
-                                            web_sys::console::log_1(&format!("[WEBRTC] Answerer data channel ready for {}", sid).into());
-                                        },
-                                    ) {
-                                        Ok(rtc_session) => {
-                                            webrtc_for_msg.write().insert(session_id, rtc_session);
+                                // Check if we already have a WebRTC session for this ID
+                                // (renegotiation after track add/remove)
+                                let existing = webrtc_for_msg.peek().contains_key(&session_id);
+                                if existing {
+                                    if let Some(ref ws) = ws_for_webrtc.peek().ws {
+                                        if let Some(rtc) = webrtc_for_msg.peek().get(&session_id) {
+                                            super::chat_client::wasm::handle_renegotiation_offer(
+                                                &rtc.pc, &sdp, ws, &session_id,
+                                            );
                                         }
-                                        Err(e) => {
-                                            web_sys::console::log_1(&format!("[WEBRTC] setup_answerer failed: {}", e).into());
+                                    }
+                                } else {
+                                    // Initial answerer setup — create new PeerConnection
+                                    if let Some(ref ws) = ws_for_webrtc.peek().ws {
+                                        let mut chat_dc = chat_for_msg;
+                                        let mut chat_rv = chat_for_msg;
+                                        match super::chat_client::wasm::setup_answerer(
+                                            session_id.clone(),
+                                            &sdp,
+                                            ws,
+                                            move |sid, text| {
+                                                if let Some(ctrl) = text.strip_prefix(super::chat_client::DC_CONTROL_PREFIX) {
+                                                    handle_dc_control(&mut chat_dc, &sid, ctrl);
+                                                    return;
+                                                }
+                                                let mut state = chat_dc.write();
+                                                let peer_name = state.sessions.get(&sid)
+                                                    .map(|s| s.peer_name.clone())
+                                                    .unwrap_or_default();
+                                                let msg = ChatMessage {
+                                                    sender_is_me: false,
+                                                    sender_name: peer_name,
+                                                    body: text,
+                                                    timestamp: chrono::Utc::now(),
+                                                };
+                                                if let Some(session) = state.sessions.get_mut(&sid) {
+                                                    session.messages.push(msg);
+                                                }
+                                            },
+                                            move |sid| {
+                                                web_sys::console::log_1(&format!("[WEBRTC] Answerer data channel ready for {}", sid).into());
+                                            },
+                                            move |sid, has_video| {
+                                                if let Some(s) = chat_rv.write().sessions.get_mut(&sid) {
+                                                    s.has_remote_video = has_video;
+                                                }
+                                            },
+                                        ) {
+                                            Ok(rtc_session) => {
+                                                webrtc_for_msg.write().insert(session_id, rtc_session);
+                                            }
+                                            Err(e) => {
+                                                web_sys::console::log_1(&format!("[WEBRTC] setup_answerer failed: {}", e).into());
+                                            }
                                         }
                                     }
                                 }

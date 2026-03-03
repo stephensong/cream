@@ -77,6 +77,7 @@ pub struct ChatSession {
     pub speaker_enabled: bool,
     pub camera_enabled: bool,
     pub tv_enabled: bool,
+    pub has_remote_video: bool,
 }
 
 // ---------- Chat state (shared via Signal in UI) ----------
@@ -108,11 +109,20 @@ pub struct WebRtcSession {
     pub pc: web_sys::RtcPeerConnection,
     pub dc: Arc<Mutex<Option<web_sys::RtcDataChannel>>>,
     pub ready: Arc<Mutex<bool>>,
+    pub local_audio_track: Arc<Mutex<Option<web_sys::MediaStreamTrack>>>,
+    pub local_video_track: Arc<Mutex<Option<web_sys::MediaStreamTrack>>>,
+    pub remote_stream: Arc<Mutex<Option<web_sys::MediaStream>>>,
+    pub audio_sender: Arc<Mutex<Option<web_sys::RtcRtpSender>>>,
+    pub video_sender: Arc<Mutex<Option<web_sys::RtcRtpSender>>>,
 }
 
 /// Map of session_id → WebRtcSession. Shared via Dioxus context as Signal.
 #[cfg(target_family = "wasm")]
 pub type WebRtcSessions = HashMap<String, WebRtcSession>;
+
+/// Prefix for internal control messages sent over the data channel.
+/// These are not displayed as chat messages.
+pub const DC_CONTROL_PREFIX: &str = "__ctrl:";
 
 /// Try to send a message via the WebRTC data channel for this session.
 /// Returns true if sent, false if data channel not ready (caller should fall back to relay).
@@ -332,10 +342,17 @@ pub mod wasm {
         ws: &web_sys::WebSocket,
         mut on_dc_message: impl FnMut(String, String) + 'static,
         on_dc_open: impl FnMut(String) + 'static,
+        on_remote_video: impl FnMut(String, bool) + 'static,
     ) -> Result<WebRtcSession, String> {
         let pc = create_peer_connection()?;
         let dc_holder: Arc<Mutex<Option<web_sys::RtcDataChannel>>> = Arc::new(Mutex::new(None));
         let ready: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+        let remote_stream: Arc<Mutex<Option<web_sys::MediaStream>>> = Arc::new(Mutex::new(None));
+
+        // ontrack — store remote media stream
+        let remote_stream_clone = remote_stream.clone();
+        let sid_for_track = session_id.clone();
+        setup_ontrack_handler(&pc, remote_stream_clone, sid_for_track, on_remote_video);
 
         // Create data channel
         let dc_init = web_sys::RtcDataChannelInit::new();
@@ -444,6 +461,11 @@ pub mod wasm {
             pc,
             dc: dc_holder,
             ready,
+            local_audio_track: Arc::new(Mutex::new(None)),
+            local_video_track: Arc::new(Mutex::new(None)),
+            remote_stream,
+            audio_sender: Arc::new(Mutex::new(None)),
+            video_sender: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -455,6 +477,7 @@ pub mod wasm {
         ws: &web_sys::WebSocket,
         on_dc_message: impl FnMut(String, String) + 'static,
         on_dc_open: impl FnMut(String) + 'static,
+        on_remote_video: impl FnMut(String, bool) + 'static,
     ) -> Result<WebRtcSession, String> {
         use std::cell::RefCell;
         use std::rc::Rc;
@@ -462,6 +485,12 @@ pub mod wasm {
         let pc = create_peer_connection()?;
         let dc_holder: Arc<Mutex<Option<web_sys::RtcDataChannel>>> = Arc::new(Mutex::new(None));
         let ready: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+        let remote_stream: Arc<Mutex<Option<web_sys::MediaStream>>> = Arc::new(Mutex::new(None));
+
+        // ontrack — store remote media stream
+        let remote_stream_clone = remote_stream.clone();
+        let sid_for_track = session_id.clone();
+        setup_ontrack_handler(&pc, remote_stream_clone, sid_for_track, on_remote_video);
 
         // Wrap callbacks in Rc<RefCell<>> so they can be shared between the ondatachannel
         // closure and the inner event handlers it creates.
@@ -593,6 +622,11 @@ pub mod wasm {
             pc,
             dc: dc_holder,
             ready,
+            local_audio_track: Arc::new(Mutex::new(None)),
+            local_video_track: Arc::new(Mutex::new(None)),
+            remote_stream,
+            audio_sender: Arc::new(Mutex::new(None)),
+            video_sender: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -644,8 +678,350 @@ pub mod wasm {
         });
     }
 
+    // ---------- Media helpers ----------
+
+    /// Register the ontrack handler on a PeerConnection. Stores the remote
+    /// MediaStream and attaches it to the DOM video element for the session.
+    /// `on_remote_video(session_id, has_video)` is called when video tracks
+    /// arrive or end, allowing the UI to update reactively.
+    fn setup_ontrack_handler(
+        pc: &web_sys::RtcPeerConnection,
+        remote_stream: Arc<Mutex<Option<web_sys::MediaStream>>>,
+        session_id: String,
+        on_remote_video: impl FnMut(String, bool) + 'static,
+    ) {
+        use wasm_bindgen::JsCast;
+        use std::rc::Rc;
+        use std::cell::RefCell;
+
+        let on_remote_video = Rc::new(RefCell::new(on_remote_video));
+
+        let on_track_cb = Closure::wrap(Box::new(move |evt: web_sys::RtcTrackEvent| {
+            let streams = evt.streams();
+            if streams.length() > 0 {
+                let stream: web_sys::MediaStream = streams.get(0).unchecked_into();
+                let track = evt.track();
+                let is_video = track.kind() == "video";
+
+                clog(&format!("[WEBRTC] ontrack: {} track for session {}", track.kind(), session_id));
+                *remote_stream.lock().unwrap() = Some(stream.clone());
+
+                if is_video {
+                    attach_remote_stream_to_video(&session_id, &stream);
+                    on_remote_video.borrow_mut()(session_id.clone(), true);
+
+                    // Listen for track ended/mute to detect when remote camera stops
+                    let sid = session_id.clone();
+                    let cb = on_remote_video.clone();
+                    let on_ended = Closure::wrap(Box::new(move |_: JsValue| {
+                        clog(&format!("[WEBRTC] Remote video track ended for session {}", sid));
+                        detach_remote_video(&sid);
+                        cb.borrow_mut()(sid.clone(), false);
+                    }) as Box<dyn FnMut(JsValue)>);
+                    track.set_onended(Some(on_ended.as_ref().unchecked_ref()));
+                    on_ended.forget();
+                }
+            }
+        }) as Box<dyn FnMut(web_sys::RtcTrackEvent)>);
+        pc.set_ontrack(Some(on_track_cb.as_ref().unchecked_ref()));
+        on_track_cb.forget();
+    }
+
+    /// Set srcObject on the Dioxus-rendered <video> element for this session.
+    /// The element must already exist in the DOM (rendered by RSX when TV is on).
+    /// If TV is off (element absent), the stream is still stored in remote_stream
+    /// and will be attached when TV toggles on via the onmounted callback.
+    pub fn attach_remote_stream_to_video(session_id: &str, stream: &web_sys::MediaStream) {
+        let doc = match web_sys::window().and_then(|w| w.document()) {
+            Some(d) => d,
+            None => return,
+        };
+        let el_id = format!("remote-video-el-{}", session_id);
+        match doc.get_element_by_id(&el_id) {
+            Some(el) => {
+                let _ = js_sys::Reflect::set(&el, &"srcObject".into(), stream);
+                clog(&format!("[WEBRTC] Attached remote stream to #{}", el_id));
+            }
+            None => {
+                clog(&format!("[WEBRTC] #{} not in DOM (TV off?), stream stored for later", el_id));
+            }
+        }
+    }
+
+    /// Clear srcObject on the video element when the remote peer stops their camera.
+    pub fn detach_remote_video(session_id: &str) {
+        let doc = match web_sys::window().and_then(|w| w.document()) {
+            Some(d) => d,
+            None => return,
+        };
+        let el_id = format!("remote-video-el-{}", session_id);
+        if let Some(el) = doc.get_element_by_id(&el_id) {
+            let _ = js_sys::Reflect::set(&el, &"srcObject".into(), &wasm_bindgen::JsValue::NULL);
+            clog(&format!("[WEBRTC] Cleared srcObject on #{}", el_id));
+        }
+    }
+
+    /// Create a new SDP offer on the existing PeerConnection and send it
+    /// through the relay, triggering renegotiation.
+    fn renegotiate(pc: &web_sys::RtcPeerConnection, ws: &web_sys::WebSocket, session_id: &str) {
+        let pc = pc.clone();
+        let ws = ws.clone();
+        let sid = session_id.to_string();
+        wasm_bindgen_futures::spawn_local(async move {
+            let offer = match wasm_bindgen_futures::JsFuture::from(pc.create_offer()).await {
+                Ok(o) => o,
+                Err(e) => {
+                    clog(&format!("[WEBRTC] renegotiate create_offer failed: {:?}", e));
+                    return;
+                }
+            };
+            let offer_sdp = js_sys::Reflect::get(&offer, &"sdp".into())
+                .unwrap()
+                .as_string()
+                .unwrap();
+            let desc = web_sys::RtcSessionDescriptionInit::new(web_sys::RtcSdpType::Offer);
+            desc.set_sdp(&offer_sdp);
+            if let Err(e) = wasm_bindgen_futures::JsFuture::from(pc.set_local_description(&desc)).await {
+                clog(&format!("[WEBRTC] renegotiate setLocalDescription failed: {:?}", e));
+                return;
+            }
+            let sdp_json = serde_json::json!({ "type": "offer", "sdp": offer_sdp });
+            let msg = ClientMsg::Sdp { session_id: sid, sdp: sdp_json };
+            let json = serde_json::to_string(&msg).unwrap();
+            let _ = ws.send_with_str(&json);
+            clog("[WEBRTC] Sent renegotiation offer");
+        });
+    }
+
+    /// Handle a renegotiation offer on an existing PeerConnection. This applies
+    /// the remote offer and sends back an answer, without creating a new PC.
+    pub fn handle_renegotiation_offer(
+        pc: &web_sys::RtcPeerConnection,
+        sdp: &serde_json::Value,
+        ws: &web_sys::WebSocket,
+        session_id: &str,
+    ) {
+        let offer_sdp = sdp.get("sdp").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let pc = pc.clone();
+        let ws = ws.clone();
+        let sid = session_id.to_string();
+        wasm_bindgen_futures::spawn_local(async move {
+            let remote_desc = web_sys::RtcSessionDescriptionInit::new(web_sys::RtcSdpType::Offer);
+            remote_desc.set_sdp(&offer_sdp);
+            if let Err(e) = wasm_bindgen_futures::JsFuture::from(pc.set_remote_description(&remote_desc)).await {
+                clog(&format!("[WEBRTC] renegotiation setRemoteDescription failed: {:?}", e));
+                return;
+            }
+            let answer = match wasm_bindgen_futures::JsFuture::from(pc.create_answer()).await {
+                Ok(a) => a,
+                Err(e) => {
+                    clog(&format!("[WEBRTC] renegotiation create_answer failed: {:?}", e));
+                    return;
+                }
+            };
+            let answer_sdp = js_sys::Reflect::get(&answer, &"sdp".into())
+                .unwrap()
+                .as_string()
+                .unwrap();
+            let local_desc = web_sys::RtcSessionDescriptionInit::new(web_sys::RtcSdpType::Answer);
+            local_desc.set_sdp(&answer_sdp);
+            if let Err(e) = wasm_bindgen_futures::JsFuture::from(pc.set_local_description(&local_desc)).await {
+                clog(&format!("[WEBRTC] renegotiation setLocalDescription failed: {:?}", e));
+                return;
+            }
+            let sdp_json = serde_json::json!({ "type": "answer", "sdp": answer_sdp });
+            let msg = ClientMsg::Sdp { session_id: sid, sdp: sdp_json };
+            let json = serde_json::to_string(&msg).unwrap();
+            let _ = ws.send_with_str(&json);
+            clog("[WEBRTC] Sent renegotiation answer");
+        });
+    }
+
+    /// Start capturing audio from the microphone. Adds the track to the
+    /// PeerConnection and triggers renegotiation.
+    pub fn start_mic(session: &WebRtcSession, ws: &web_sys::WebSocket, session_id: &str) {
+        use wasm_bindgen::JsCast;
+
+        let window = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+        let navigator = window.navigator();
+        let media_devices = match navigator.media_devices() {
+            Ok(md) => md,
+            Err(e) => {
+                clog(&format!("[WEBRTC] media_devices() failed: {:?}", e));
+                return;
+            }
+        };
+
+        let constraints = web_sys::MediaStreamConstraints::new();
+        constraints.set_audio(&true.into());
+        constraints.set_video(&false.into());
+
+        let promise = match media_devices.get_user_media_with_constraints(&constraints) {
+            Ok(p) => p,
+            Err(e) => {
+                clog(&format!("[WEBRTC] getUserMedia(audio) failed: {:?}", e));
+                return;
+            }
+        };
+
+        let pc = session.pc.clone();
+        let ws = ws.clone();
+        let sid = session_id.to_string();
+        let local_audio = session.local_audio_track.clone();
+        let audio_sender = session.audio_sender.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let stream_js = match wasm_bindgen_futures::JsFuture::from(promise).await {
+                Ok(s) => s,
+                Err(e) => {
+                    clog(&format!("[WEBRTC] getUserMedia(audio) promise rejected: {:?}", e));
+                    return;
+                }
+            };
+            let stream: web_sys::MediaStream = stream_js.unchecked_into();
+            let tracks = stream.get_audio_tracks();
+            if tracks.length() == 0 {
+                clog("[WEBRTC] No audio tracks in stream");
+                return;
+            }
+            let track: web_sys::MediaStreamTrack = tracks.get(0).unchecked_into();
+            let sender = pc.add_track_0(&track, &stream);
+            *local_audio.lock().unwrap() = Some(track);
+            *audio_sender.lock().unwrap() = Some(sender);
+            clog("[WEBRTC] Added local audio track, renegotiating");
+            renegotiate(&pc, &ws, &sid);
+        });
+    }
+
+    /// Stop the microphone. Removes the track from the PeerConnection and
+    /// triggers renegotiation.
+    pub fn stop_mic(session: &WebRtcSession, ws: &web_sys::WebSocket, session_id: &str) {
+        if let Some(track) = session.local_audio_track.lock().unwrap().take() {
+            track.stop();
+        }
+        if let Some(sender) = session.audio_sender.lock().unwrap().take() {
+            let _ = session.pc.remove_track(&sender);
+            clog("[WEBRTC] Removed local audio track, renegotiating");
+            renegotiate(&session.pc, ws, session_id);
+        }
+    }
+
+    /// Start capturing video from the camera. Adds the track to the
+    /// PeerConnection and triggers renegotiation.
+    pub fn start_camera(session: &WebRtcSession, ws: &web_sys::WebSocket, session_id: &str) {
+        use wasm_bindgen::JsCast;
+
+        let window = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+        let navigator = window.navigator();
+        let media_devices = match navigator.media_devices() {
+            Ok(md) => md,
+            Err(e) => {
+                clog(&format!("[WEBRTC] media_devices() failed: {:?}", e));
+                return;
+            }
+        };
+
+        let constraints = web_sys::MediaStreamConstraints::new();
+        constraints.set_audio(&false.into());
+        constraints.set_video(&true.into());
+
+        let promise = match media_devices.get_user_media_with_constraints(&constraints) {
+            Ok(p) => p,
+            Err(e) => {
+                clog(&format!("[WEBRTC] getUserMedia(video) failed: {:?}", e));
+                return;
+            }
+        };
+
+        let pc = session.pc.clone();
+        let ws = ws.clone();
+        let sid = session_id.to_string();
+        let local_video = session.local_video_track.clone();
+        let video_sender = session.video_sender.clone();
+        let dc = session.dc.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let stream_js = match wasm_bindgen_futures::JsFuture::from(promise).await {
+                Ok(s) => s,
+                Err(e) => {
+                    clog(&format!("[WEBRTC] getUserMedia(video) promise rejected: {:?}", e));
+                    return;
+                }
+            };
+            let stream: web_sys::MediaStream = stream_js.unchecked_into();
+            let tracks = stream.get_video_tracks();
+            if tracks.length() == 0 {
+                clog("[WEBRTC] No video tracks in stream");
+                return;
+            }
+            let track: web_sys::MediaStreamTrack = tracks.get(0).unchecked_into();
+            let sender = pc.add_track_0(&track, &stream);
+            *local_video.lock().unwrap() = Some(track);
+            *video_sender.lock().unwrap() = Some(sender);
+            // Notify peer that camera is on
+            if let Some(ref dc) = *dc.lock().unwrap() {
+                let _ = dc.send_with_str(&format!("{}camera_on", DC_CONTROL_PREFIX));
+            }
+            clog("[WEBRTC] Added local video track, renegotiating");
+            renegotiate(&pc, &ws, &sid);
+        });
+    }
+
+    /// Stop the camera. Removes the track from the PeerConnection and
+    /// triggers renegotiation.
+    pub fn stop_camera(session: &WebRtcSession, ws: &web_sys::WebSocket, session_id: &str) {
+        if let Some(track) = session.local_video_track.lock().unwrap().take() {
+            track.stop();
+        }
+        // Notify peer that camera is off
+        if let Some(ref dc) = *session.dc.lock().unwrap() {
+            let _ = dc.send_with_str(&format!("{}camera_off", DC_CONTROL_PREFIX));
+        }
+        if let Some(sender) = session.video_sender.lock().unwrap().take() {
+            let _ = session.pc.remove_track(&sender);
+            clog("[WEBRTC] Removed local video track, renegotiating");
+            renegotiate(&session.pc, ws, session_id);
+        }
+    }
+
+    /// Mute or unmute remote audio (no renegotiation needed).
+    /// Toggles both the remote audio track enabled state and the <video>
+    /// element's muted attribute (needed because we start muted for autoplay).
+    pub fn set_remote_audio_enabled(session: &WebRtcSession, enabled: bool, session_id: &str) {
+        use wasm_bindgen::JsCast;
+
+        if let Some(ref stream) = *session.remote_stream.lock().unwrap() {
+            let tracks = stream.get_audio_tracks();
+            for i in 0..tracks.length() {
+                let track: web_sys::MediaStreamTrack = tracks.get(i).unchecked_into();
+                track.set_enabled(enabled);
+            }
+        }
+
+        // Also toggle the video element's muted state
+        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            let el_id = format!("remote-video-el-{}", session_id);
+            if let Some(el) = doc.get_element_by_id(&el_id) {
+                let _ = js_sys::Reflect::set(&el, &"muted".into(), &(!enabled).into());
+            }
+        }
+
+        clog(&format!("[WEBRTC] Remote audio enabled={}", enabled));
+    }
+
     /// Close a WebRTC session and clean up resources.
     pub fn close_session(session: &WebRtcSession) {
+        // Stop local media tracks to release hardware
+        if let Some(track) = session.local_audio_track.lock().unwrap().take() {
+            track.stop();
+        }
+        if let Some(track) = session.local_video_track.lock().unwrap().take() {
+            track.stop();
+        }
         if let Some(ref dc) = *session.dc.lock().unwrap() {
             dc.close();
         }

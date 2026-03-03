@@ -207,6 +207,7 @@ pub fn MessagesView() -> Element {
                                         speaker_enabled: false,
                                         camera_enabled: false,
                                         tv_enabled: false,
+                                        has_remote_video: false,
                                     };
                                     {
                                         let mut state = chat.write();
@@ -354,6 +355,7 @@ fn ChatInviteAction(session_id: String, peer_name: String) -> Element {
                                 speaker_enabled: false,
                                 camera_enabled: false,
                                 tv_enabled: false,
+                                has_remote_video: false,
                             };
                             {
                                 let mut state = chat.write();
