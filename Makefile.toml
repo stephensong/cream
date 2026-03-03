@@ -418,6 +418,7 @@ open('${KEYS}/gw1_public_key.pem', 'w').write(pub_hex)
         --data-dir "${BASE}/gw1" \
         --transport-keypair "${KEYS}/gw1_private_key.pem" \
         --network-port 3101 \
+        --min-number-of-connections 5 --max-number-of-connections 6 \
         >> "${LOGS}/gw1.log" 2>&1 &
     echo $! > "${PIDS}/gw1.pid"
 
@@ -437,15 +438,20 @@ public_key = "${KEYS}/gw1_public_key.pem"
 TOML
     rm -f "${BASE}/config.toml"
 
+    # Connection limits tuned for 7-node network (6 possible peers per node).
+    # Default min=10 exceeds peer count, causing perpetual connection acquisition churn.
+    CONN_ARGS="--min-number-of-connections 5 --max-number-of-connections 6"
+
     echo "Starting node-1 on ws:3002..."
     : > "${LOGS}/n1.log"
     nohup env ${ENV} freenet network \
         --skip-load-from-network \
         --config-dir "${BASE}" \
         --ws-api-port 3002 \
-        --public-network-port 3003 \
+        --public-network-port 3102 \
         --data-dir "${BASE}/n1" \
         --network-port 3102 \
+        ${CONN_ARGS} \
         >> "${LOGS}/n1.log" 2>&1 &
     echo $! > "${PIDS}/n1.pid"
     sleep 2
@@ -456,9 +462,10 @@ TOML
         --skip-load-from-network \
         --config-dir "${BASE}" \
         --ws-api-port 3003 \
-        --public-network-port 3005 \
+        --public-network-port 3103 \
         --data-dir "${BASE}/n2" \
         --network-port 3103 \
+        ${CONN_ARGS} \
         >> "${LOGS}/n2.log" 2>&1 &
     echo $! > "${PIDS}/n2.pid"
     sleep 2
@@ -469,9 +476,10 @@ TOML
         --skip-load-from-network \
         --config-dir "${BASE}" \
         --ws-api-port 3004 \
-        --public-network-port 3006 \
+        --public-network-port 3104 \
         --data-dir "${BASE}/n3" \
         --network-port 3104 \
+        ${CONN_ARGS} \
         >> "${LOGS}/n3.log" 2>&1 &
     echo $! > "${PIDS}/n3.pid"
     sleep 2
@@ -486,6 +494,7 @@ TOML
         --public-network-port 3105 \
         --data-dir "${BASE}/g1" \
         --network-port 3105 \
+        ${CONN_ARGS} \
         >> "${LOGS}/g1.log" 2>&1 &
     echo $! > "${PIDS}/g1.pid"
     sleep 2
@@ -499,6 +508,7 @@ TOML
         --public-network-port 3106 \
         --data-dir "${BASE}/g2" \
         --network-port 3106 \
+        ${CONN_ARGS} \
         >> "${LOGS}/g2.log" 2>&1 &
     echo $! > "${PIDS}/g2.pid"
     sleep 2
@@ -512,6 +522,7 @@ TOML
         --public-network-port 3107 \
         --data-dir "${BASE}/g3" \
         --network-port 3107 \
+        ${CONN_ARGS} \
         >> "${LOGS}/g3.log" 2>&1 &
     echo $! > "${PIDS}/g3.pid"
     sleep 2
