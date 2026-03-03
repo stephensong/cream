@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 
-use cream_common::chat::CHAT_MESSAGE_COST_CURD;
+use cream_common::chat::{CHAT_MESSAGE_COST_CURD, AV_TOLL_COST_CURD, AV_TOLL_INTERVAL_SECS};
 
 use super::chat_client::{ChatMessage, ChatSession, ChatState, ChatWsHandle, ClientMsg, SessionStatus};
 #[cfg(target_family = "wasm")]
@@ -205,6 +205,57 @@ pub fn ChatPanel() -> Element {
     };
     #[cfg(not(target_family = "wasm"))]
     let try_dc = || { |_sid: &str, _text: &str| -> bool { false } };
+
+    // A/V usage toll: charge AV_TOLL_COST_CURD every AV_TOLL_INTERVAL_SECS while
+    // mic or camera is active on any session. Auto-disable mic/camera when balance
+    // is insufficient.
+    let shared = use_shared_state();
+    {
+        let node = node.clone();
+        use_effect(move || {
+            spawn(async move {
+                loop {
+                    #[cfg(target_family = "wasm")]
+                    gloo_timers::future::TimeoutFuture::new(AV_TOLL_INTERVAL_SECS * 1000).await;
+                    #[cfg(not(target_family = "wasm"))]
+                    return;
+
+                    let any_sending = chat.peek().sessions.values()
+                        .any(|s| s.mic_enabled || s.camera_enabled);
+                    if !any_sending {
+                        continue;
+                    }
+
+                    let balance = shared.peek().user_contract
+                        .as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
+
+                    if balance >= AV_TOLL_COST_CURD {
+                        node.send(NodeAction::AvToll);
+                    } else {
+                        // Insufficient balance — auto-stop mic and camera on all sessions
+                        clog("[CHAT] A/V toll: insufficient balance, auto-stopping mic/camera");
+                        let sids: Vec<String> = chat.peek().sessions.keys().cloned().collect();
+                        for sid in &sids {
+                            if let Some(s) = chat.write().sessions.get_mut(sid) {
+                                s.mic_enabled = false;
+                                s.camera_enabled = false;
+                            }
+                            #[cfg(target_family = "wasm")]
+                            {
+                                let rtc_sessions = webrtc.read();
+                                if let Some(rtc) = rtc_sessions.get(sid) {
+                                    if let Some(ref ws) = ws_handle.read().ws {
+                                        super::chat_client::wasm::stop_mic(rtc, ws, sid);
+                                        super::chat_client::wasm::stop_camera(rtc, ws, sid);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        });
+    }
 
     let chat_read = chat.read();
     let has_sessions = !chat_read.sessions.is_empty();

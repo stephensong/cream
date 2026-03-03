@@ -96,6 +96,8 @@ pub enum NodeAction {
     },
     /// Charge per chat message sent (CHAT_MESSAGE_COST_CURD each).
     ChatMessageToll,
+    /// Charge periodic A/V usage toll (AV_TOLL_COST_CURD per tick).
+    AvToll,
 }
 
 /// Get a handle to send actions to the node communication coroutine.
@@ -2245,6 +2247,27 @@ mod wasm_impl {
                     user_name,
                 ).await;
                 clog(&format!("[CREAM] ChatMessageToll: paid {} CURD", cost));
+            }
+
+            NodeAction::AvToll => {
+                let cost = cream_common::chat::AV_TOLL_COST_CURD;
+                clog(&format!("[CREAM] AvToll: charging {} CURD", cost));
+
+                let current_balance = shared.read().user_contract
+                    .as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
+                if current_balance < cost {
+                    clog("[CREAM] AvToll: insufficient balance, skipping");
+                    return;
+                }
+
+                let user_name = user_state.read().moniker.clone().unwrap_or_default();
+                wallet.transfer_to_root(
+                    api,
+                    cost,
+                    "A/V usage toll".to_string(),
+                    user_name,
+                ).await;
+                clog(&format!("[CREAM] AvToll: paid {} CURD", cost));
             }
 
             NodeAction::SubscribeCustomerStorefront { storefront_key } => {
