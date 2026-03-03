@@ -1,4 +1,4 @@
-import { Page, expect } from '@playwright/test';
+import { Page, expect, Locator } from '@playwright/test';
 
 /**
  * Navigate to the app and wait for WASM to load.
@@ -39,4 +39,23 @@ export async function waitForSupplierCount(page: Page, n: number): Promise<void>
     const count = await page.locator('.supplier-card').count();
     expect(count).toBeGreaterThanOrEqual(n);
   }).toPass({ timeout: 20_000 });
+}
+
+/**
+ * Wait for any Dioxus hot-reload "rebuilding" overlay to clear.
+ * dx serve shows "Your app is being rebuilt" when a non-hot-reloadable change is detected.
+ * The overlay resets all app state when the rebuild completes, so callers should
+ * wait for it to disappear before interacting with the page.
+ */
+export async function waitForRebuildComplete(page: Page): Promise<void> {
+  const overlay = page.getByText('Your app is being rebuilt');
+  // If overlay is visible, wait for it to disappear (rebuild finishes)
+  const isVisible = await overlay.isVisible().catch(() => false);
+  if (isVisible) {
+    await expect(overlay).not.toBeVisible({ timeout: 60_000 });
+    // After rebuild, wait for the app to re-render
+    await expect(
+      page.locator('.app-header').first()
+    ).toBeVisible({ timeout: 15_000 });
+  }
 }

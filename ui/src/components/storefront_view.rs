@@ -30,6 +30,17 @@ pub fn StorefrontView(supplier_name: String) -> Element {
         };
     }
 
+    // Resolve the supplier name case-insensitively. The route parameter may come
+    // from a rendezvous lookup (lowercase) while storefronts are keyed by directory
+    // name (original case). Find the correct-case key if it exists.
+    let supplier_name = {
+        let shared = shared_state.read();
+        shared.storefronts.keys()
+            .find(|k| k.eq_ignore_ascii_case(&supplier_name))
+            .cloned()
+            .unwrap_or(supplier_name)
+    };
+
     // Check if this is the current user's storefront and if user is registered
     let state = user_state.read();
     let is_own = state.moniker.as_ref() == Some(&supplier_name);

@@ -2372,10 +2372,11 @@ mod wasm_impl {
                                     .map(|e| e.name.clone())
                             };
                             let name_from_map = instance_to_name.get(key.id()).cloned();
-                            // In customer mode, use the connected_supplier name so StorefrontView
-                            // can look it up by the route parameter (which comes from rendezvous).
-                            let name = customer_supplier_name.map(|s| s.to_string())
-                                .or(dir_name)
+                            // Prefer directory name (correct case) over rendezvous name
+                            // (lowercase). Route parameters are resolved case-insensitively
+                            // so "gary" from rendezvous will still match "Gary" from directory.
+                            let name = dir_name
+                                .or(customer_supplier_name.map(|s| s.to_string()))
                                 .or(name_from_map)
                                 .unwrap_or_else(|| storefront.info.name.clone());
                             clog(&format!("[CREAM] Storefront GET: keyed as '{}' (info.name='{}', owner={:?}, {} products)",

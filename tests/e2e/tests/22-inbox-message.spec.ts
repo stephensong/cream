@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { completeSetup } from '../helpers/setup-flow';
-import { waitForConnected, waitForSupplierCount } from '../helpers/wait-for-app';
+import { waitForConnected, waitForSupplierCount, waitForRebuildComplete } from '../helpers/wait-for-app';
 
 test.describe('Inbox Message', () => {
   test('send and receive inbox direct message', async ({ browser }) => {
@@ -35,15 +35,26 @@ test.describe('Inbox Message', () => {
     await garyPage.click('button:has-text("Messages")');
     await expect(garyPage.locator('.messages-compose')).toBeVisible({ timeout: 15_000 });
 
-    // Select Emma as recipient
+    // Wait for any hot-reload overlay to clear before interacting
+    await waitForRebuildComplete(garyPage);
+
+    // Re-verify compose form is visible after potential rebuild
+    await expect(garyPage.locator('.messages-compose')).toBeVisible({ timeout: 15_000 });
+
+    // Select Emma as recipient and verify selection took effect
     await garyPage.selectOption('.messages-compose select', 'Emma');
+    await expect(garyPage.locator('.messages-compose select')).toHaveValue('Emma');
 
     // Type message body
     const messageBody = 'Hello Emma, do you have any raw milk available this week?';
     await garyPage.fill('.messages-compose textarea', messageBody);
 
+    // Wait for Send Message button to be enabled (confirms form state is valid)
+    const sendBtn = garyPage.locator('.messages-compose-footer button', { hasText: 'Send Message' });
+    await expect(sendBtn).toBeEnabled({ timeout: 10_000 });
+
     // Click Send Message
-    await garyPage.click('button:has-text("Send Message")');
+    await sendBtn.click();
 
     // Verify sent message appears in Gary's list
     await expect(async () => {
