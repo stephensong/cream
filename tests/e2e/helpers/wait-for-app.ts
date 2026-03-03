@@ -1,4 +1,4 @@
-import { Page, expect, Locator } from '@playwright/test';
+import { Page, expect } from '@playwright/test';
 
 /**
  * Navigate to the app and wait for WASM to load.
@@ -10,6 +10,7 @@ export async function waitForAppLoad(page: Page): Promise<void> {
   await expect(
     page.locator('.user-setup, .app-header').first()
   ).toBeVisible({ timeout: 30_000 });
+  await dismissDxToast(page);
 }
 
 /**
@@ -20,6 +21,7 @@ export async function waitForAppLoadAt(page: Page, url: string): Promise<void> {
   await expect(
     page.locator('.user-setup, .app-header').first()
   ).toBeVisible({ timeout: 30_000 });
+  await dismissDxToast(page);
 }
 
 /**
@@ -42,20 +44,16 @@ export async function waitForSupplierCount(page: Page, n: number): Promise<void>
 }
 
 /**
- * Wait for any Dioxus hot-reload "rebuilding" overlay to clear.
- * dx serve shows "Your app is being rebuilt" when a non-hot-reloadable change is detected.
- * The overlay resets all app state when the rebuild completes, so callers should
- * wait for it to disappear before interacting with the page.
+ * Dismiss the Dioxus dx-serve "Your app is being rebuilt" toast overlay.
+ *
+ * dx serve 0.7.3 has a bug where its WebSocket never sends a "build complete"
+ * message to new clients, so the overlay stays forever. The toast JS exposes
+ * window.closeDXToast() which we call to dismiss it.
  */
-export async function waitForRebuildComplete(page: Page): Promise<void> {
-  const overlay = page.getByText('Your app is being rebuilt');
-  // If overlay is visible, wait for it to disappear (rebuild finishes)
-  const isVisible = await overlay.isVisible().catch(() => false);
-  if (isVisible) {
-    await expect(overlay).not.toBeVisible({ timeout: 60_000 });
-    // After rebuild, wait for the app to re-render
-    await expect(
-      page.locator('.app-header').first()
-    ).toBeVisible({ timeout: 15_000 });
-  }
+export async function dismissDxToast(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    if (typeof (window as any).closeDXToast === 'function') {
+      (window as any).closeDXToast();
+    }
+  });
 }

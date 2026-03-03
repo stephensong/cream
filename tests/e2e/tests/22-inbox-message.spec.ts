@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { completeSetup } from '../helpers/setup-flow';
-import { waitForConnected, waitForSupplierCount, waitForRebuildComplete } from '../helpers/wait-for-app';
+import { waitForConnected, waitForSupplierCount } from '../helpers/wait-for-app';
 
 test.describe('Inbox Message', () => {
   test('send and receive inbox direct message', async ({ browser }) => {
@@ -33,12 +33,6 @@ test.describe('Inbox Message', () => {
 
     // Gary navigates to Messages
     await garyPage.click('button:has-text("Messages")');
-    await expect(garyPage.locator('.messages-compose')).toBeVisible({ timeout: 15_000 });
-
-    // Wait for any hot-reload overlay to clear before interacting
-    await waitForRebuildComplete(garyPage);
-
-    // Re-verify compose form is visible after potential rebuild
     await expect(garyPage.locator('.messages-compose')).toBeVisible({ timeout: 15_000 });
 
     // Select Emma as recipient and verify selection took effect
