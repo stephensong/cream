@@ -331,7 +331,10 @@ async fn cumulative_node_tests() {
     // ═══════════════════════════════════════════════════════════════════
     println!("── Step 4: product_count_increments_for_subscriber ──");
     {
-        let mut supplier = connect_to_node_at(&node_url(3004)).await;
+        // Use node-1 (3002) for supplier instead of node-3 (3004) — node-3 is the
+        // least-connected peer in the gateway star topology (#3362) and interest
+        // propagation from node-2→gateway→node-3 is timing-dependent.
+        let mut supplier = connect_to_node_at(&node_url(3002)).await;
         let mut customer = connect_to_node_at(&node_url(3003)).await;
 
         let (supplier_id, vk) = make_dummy_user("Count Farm");
