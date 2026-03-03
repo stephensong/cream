@@ -21,6 +21,8 @@ use super::lightning_remote::LightningClient;
 use super::wallet_view::WalletView;
 #[allow(unused_imports)] // SessionStatus used in WASM cfg block
 use super::chat_client::{ChatState, ChatWsHandle, SessionStatus};
+#[cfg(target_family = "wasm")]
+use super::chat_client::WebRtcSessions;
 use super::chat_view::{ChatPanel, ChatInviteBanner};
 
 /// Read `?supplier=X` from the browser URL bar. Returns `None` outside WASM.
@@ -85,6 +87,8 @@ pub fn App() -> Element {
     });
     use_context_provider(|| Signal::new(ChatState::default()));
     use_context_provider(|| Signal::new(ChatWsHandle::default()));
+    #[cfg(target_family = "wasm")]
+    use_context_provider(|| Signal::new(WebRtcSessions::default()));
     use_node_coroutine();
 
     let key_manager: Signal<Option<KeyManager>> = use_context();
@@ -217,6 +221,9 @@ fn use_chat_connection() {
             let mut chat_for_open = chat_state;
             let mut chat_for_close = chat_state;
             let mut ws_for_close = ws_handle;
+            let ws_for_webrtc = ws_handle;
+            let mut webrtc_for_msg: Signal<WebRtcSessions> = use_context();
+            let mut webrtc_for_close: Signal<WebRtcSessions> = use_context();
 
             match super::chat_client::wasm::connect(
                 &relay,
@@ -283,6 +290,39 @@ fn use_chat_connection() {
                             if let Some(s) = chat_for_msg.write().sessions.get_mut(&session_id) {
                                 s.status = SessionStatus::Active;
                             }
+                            // Begin WebRTC handshake — offerer creates offer
+                            if let Some(ref ws) = ws_for_webrtc.peek().ws {
+                                let mut chat_dc = chat_for_msg;
+                                match super::chat_client::wasm::setup_offerer(
+                                    session_id.clone(),
+                                    ws,
+                                    move |sid, text| {
+                                        let mut state = chat_dc.write();
+                                        let peer_name = state.sessions.get(&sid)
+                                            .map(|s| s.peer_name.clone())
+                                            .unwrap_or_default();
+                                        let msg = ChatMessage {
+                                            sender_is_me: false,
+                                            sender_name: peer_name,
+                                            body: text,
+                                            timestamp: chrono::Utc::now(),
+                                        };
+                                        if let Some(session) = state.sessions.get_mut(&sid) {
+                                            session.messages.push(msg);
+                                        }
+                                    },
+                                    move |sid| {
+                                        web_sys::console::log_1(&format!("[WEBRTC] Offerer data channel ready for {}", sid).into());
+                                    },
+                                ) {
+                                    Ok(rtc_session) => {
+                                        webrtc_for_msg.write().insert(session_id, rtc_session);
+                                    }
+                                    Err(e) => {
+                                        web_sys::console::log_1(&format!("[WEBRTC] setup_offerer failed: {}", e).into());
+                                    }
+                                }
+                            }
                         }
                         ServerMessage::Decline { session_id } => {
                             // Peer declined — remove the session we created
@@ -306,13 +346,65 @@ fn use_chat_connection() {
                         }
                         ServerMessage::Close { session_id, reason } => {
                             chat_for_msg.write().sessions.remove(&session_id);
+                            // Clean up WebRTC session
+                            if let Some(rtc) = webrtc_for_close.write().remove(&session_id) {
+                                super::chat_client::wasm::close_session(&rtc);
+                            }
                             web_sys::console::log_1(&format!("[CHAT] Session {} closed: {}", session_id, reason).into());
                         }
                         ServerMessage::Presence { pubkey, online } => {
                             chat_for_msg.write().peer_online.insert(pubkey, online);
                         }
-                        // SDP/ICE handled in WebRTC phase
-                        ServerMessage::Sdp { .. } | ServerMessage::Ice { .. } | ServerMessage::Nonce { .. } => {}
+                        ServerMessage::Sdp { session_id, sdp } => {
+                            let sdp_type = sdp.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            if sdp_type == "answer" {
+                                // We're the offerer — apply the answer
+                                if let Some(rtc) = webrtc_for_msg.peek().get(&session_id) {
+                                    super::chat_client::wasm::handle_sdp_answer(&rtc.pc, &sdp);
+                                }
+                            } else if sdp_type == "offer" {
+                                // We're the answerer — set up answerer side
+                                if let Some(ref ws) = ws_for_webrtc.peek().ws {
+                                    let mut chat_dc = chat_for_msg;
+                                    match super::chat_client::wasm::setup_answerer(
+                                        session_id.clone(),
+                                        &sdp,
+                                        ws,
+                                        move |sid, text| {
+                                            let mut state = chat_dc.write();
+                                            let peer_name = state.sessions.get(&sid)
+                                                .map(|s| s.peer_name.clone())
+                                                .unwrap_or_default();
+                                            let msg = ChatMessage {
+                                                sender_is_me: false,
+                                                sender_name: peer_name,
+                                                body: text,
+                                                timestamp: chrono::Utc::now(),
+                                            };
+                                            if let Some(session) = state.sessions.get_mut(&sid) {
+                                                session.messages.push(msg);
+                                            }
+                                        },
+                                        move |sid| {
+                                            web_sys::console::log_1(&format!("[WEBRTC] Answerer data channel ready for {}", sid).into());
+                                        },
+                                    ) {
+                                        Ok(rtc_session) => {
+                                            webrtc_for_msg.write().insert(session_id, rtc_session);
+                                        }
+                                        Err(e) => {
+                                            web_sys::console::log_1(&format!("[WEBRTC] setup_answerer failed: {}", e).into());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        ServerMessage::Ice { session_id, candidate } => {
+                            if let Some(rtc) = webrtc_for_msg.peek().get(&session_id) {
+                                super::chat_client::wasm::handle_ice_candidate(&rtc.pc, &candidate);
+                            }
+                        }
+                        ServerMessage::Nonce { .. } => {}
                     }
                 },
                 move || {

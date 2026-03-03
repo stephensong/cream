@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(target_family = "wasm")]
+use std::sync::{Arc, Mutex};
 
 /// Default relay URL, overridden at compile-time via CREAM_RELAY_URL.
 #[allow(dead_code)] // used in WASM builds
@@ -95,6 +97,40 @@ impl ChatState {
     pub fn is_peer_online(&self, pubkey: &str) -> bool {
         self.peer_online.get(pubkey).copied().unwrap_or(false)
     }
+}
+
+// ---------- WebRTC data channel session ----------
+
+/// Tracks a WebRTC peer connection and its data channel for one chat session.
+/// Stored outside of ChatState because RtcPeerConnection is not Clone.
+#[cfg(target_family = "wasm")]
+pub struct WebRtcSession {
+    pub pc: web_sys::RtcPeerConnection,
+    pub dc: Arc<Mutex<Option<web_sys::RtcDataChannel>>>,
+    pub ready: Arc<Mutex<bool>>,
+}
+
+/// Map of session_id → WebRtcSession. Shared via Dioxus context as Signal.
+#[cfg(target_family = "wasm")]
+pub type WebRtcSessions = HashMap<String, WebRtcSession>;
+
+/// Try to send a message via the WebRTC data channel for this session.
+/// Returns true if sent, false if data channel not ready (caller should fall back to relay).
+#[cfg(target_family = "wasm")]
+pub fn send_via_datachannel(sessions: &WebRtcSessions, session_id: &str, text: &str) -> bool {
+    if let Some(session) = sessions.get(session_id) {
+        let ready = *session.ready.lock().unwrap();
+        if ready {
+            if let Some(ref dc) = *session.dc.lock().unwrap() {
+                if dc.ready_state() == web_sys::RtcDataChannelState::Open {
+                    if dc.send_with_str(text).is_ok() {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 // ---------- Shared WebSocket handle ----------
@@ -247,23 +283,374 @@ pub mod wasm {
 
     // ---------- WebRTC helpers ----------
 
-    /// Create an RTC peer connection with default STUN config.
-    pub fn create_peer_connection() -> Result<web_sys::RtcPeerConnection, String> {
+    use super::{WebRtcSession, Arc, Mutex};
+
+    /// ICE server configuration. Reads CREAM_ICE_SERVERS env var at compile time.
+    /// Falls back to Google STUN. Operators can set the env var to add TURN servers.
+    fn ice_server_config() -> web_sys::RtcConfiguration {
+        let json_str = option_env!("CREAM_ICE_SERVERS")
+            .unwrap_or(r#"[{"urls":"stun:stun.l.google.com:19302"}]"#);
+
+        let servers: Vec<serde_json::Value> = serde_json::from_str(json_str)
+            .unwrap_or_else(|_| vec![serde_json::json!({"urls": "stun:stun.l.google.com:19302"})]);
+
         let ice_servers = js_sys::Array::new();
-        let stun = js_sys::Object::new();
-        js_sys::Reflect::set(
-            &stun,
-            &"urls".into(),
-            &"stun:stun.l.google.com:19302".into(),
-        )
-        .map_err(|e| format!("Reflect error: {:?}", e))?;
-        ice_servers.push(&stun);
+        for server in &servers {
+            let obj = js_sys::Object::new();
+            if let Some(urls) = server.get("urls") {
+                let _ = js_sys::Reflect::set(
+                    &obj,
+                    &"urls".into(),
+                    &serde_wasm_bindgen::to_value(urls).unwrap_or("stun:stun.l.google.com:19302".into()),
+                );
+            }
+            if let Some(username) = server.get("username").and_then(|v| v.as_str()) {
+                let _ = js_sys::Reflect::set(&obj, &"username".into(), &username.into());
+            }
+            if let Some(credential) = server.get("credential").and_then(|v| v.as_str()) {
+                let _ = js_sys::Reflect::set(&obj, &"credential".into(), &credential.into());
+            }
+            ice_servers.push(&obj);
+        }
 
         let config = web_sys::RtcConfiguration::new();
         config.set_ice_servers(&ice_servers);
+        config
+    }
 
+    /// Create an RTC peer connection with configured ICE servers.
+    pub fn create_peer_connection() -> Result<web_sys::RtcPeerConnection, String> {
+        let config = ice_server_config();
         web_sys::RtcPeerConnection::new_with_configuration(&config)
             .map_err(|e| format!("RtcPeerConnection failed: {:?}", e))
+    }
+
+    /// Set up the offerer side: creates PeerConnection + DataChannel, generates SDP offer,
+    /// and sends offer + ICE candidates via the relay WebSocket.
+    pub fn setup_offerer(
+        session_id: String,
+        ws: &web_sys::WebSocket,
+        mut on_dc_message: impl FnMut(String, String) + 'static,
+        on_dc_open: impl FnMut(String) + 'static,
+    ) -> Result<WebRtcSession, String> {
+        let pc = create_peer_connection()?;
+        let dc_holder: Arc<Mutex<Option<web_sys::RtcDataChannel>>> = Arc::new(Mutex::new(None));
+        let ready: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+
+        // Create data channel
+        let dc_init = web_sys::RtcDataChannelInit::new();
+        dc_init.set_ordered(true);
+        let dc = pc.create_data_channel_with_data_channel_dict("chat", &dc_init);
+
+        // Data channel onopen
+        let ready_clone = ready.clone();
+        let sid_clone = session_id.clone();
+        let on_dc_open = std::cell::RefCell::new(Some(on_dc_open));
+        let on_open_cb = Closure::wrap(Box::new(move |_: JsValue| {
+            clog(&format!("[WEBRTC] Data channel open for session {}", sid_clone));
+            *ready_clone.lock().unwrap() = true;
+            if let Some(mut cb) = on_dc_open.borrow_mut().take() {
+                cb(sid_clone.clone());
+            }
+        }) as Box<dyn FnMut(JsValue)>);
+        dc.set_onopen(Some(on_open_cb.as_ref().unchecked_ref()));
+        on_open_cb.forget();
+
+        // Data channel onmessage
+        let sid_clone = session_id.clone();
+        let on_msg_cb = Closure::wrap(Box::new(move |evt: web_sys::MessageEvent| {
+            if let Some(text) = evt.data().as_string() {
+                on_dc_message(sid_clone.clone(), text);
+            }
+        }) as Box<dyn FnMut(web_sys::MessageEvent)>);
+        dc.set_onmessage(Some(on_msg_cb.as_ref().unchecked_ref()));
+        on_msg_cb.forget();
+
+        // Data channel onclose
+        let ready_clone = ready.clone();
+        let sid_clone = session_id.clone();
+        let on_close_cb = Closure::wrap(Box::new(move |_: JsValue| {
+            clog(&format!("[WEBRTC] Data channel closed for session {}", sid_clone));
+            *ready_clone.lock().unwrap() = false;
+        }) as Box<dyn FnMut(JsValue)>);
+        dc.set_onclose(Some(on_close_cb.as_ref().unchecked_ref()));
+        on_close_cb.forget();
+
+        *dc_holder.lock().unwrap() = Some(dc);
+
+        // ICE candidate handler — send candidates to peer via relay
+        let ws_clone = ws.clone();
+        let sid_clone = session_id.clone();
+        let on_ice_cb = Closure::wrap(Box::new(move |evt: web_sys::RtcPeerConnectionIceEvent| {
+            if let Some(candidate) = evt.candidate() {
+                let candidate_json = serde_json::json!({
+                    "candidate": candidate.candidate(),
+                    "sdpMid": candidate.sdp_mid(),
+                    "sdpMLineIndex": candidate.sdp_m_line_index(),
+                });
+                let msg = ClientMsg::Ice {
+                    session_id: sid_clone.clone(),
+                    candidate: candidate_json,
+                };
+                let json = serde_json::to_string(&msg).unwrap();
+                let _ = ws_clone.send_with_str(&json);
+            }
+        }) as Box<dyn FnMut(web_sys::RtcPeerConnectionIceEvent)>);
+        pc.set_onicecandidate(Some(on_ice_cb.as_ref().unchecked_ref()));
+        on_ice_cb.forget();
+
+        // Create offer and set local description, then send offer via relay
+        let pc_clone = pc.clone();
+        let ws_clone = ws.clone();
+        let sid_clone = session_id.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let offer = match wasm_bindgen_futures::JsFuture::from(pc_clone.create_offer()).await {
+                Ok(o) => o,
+                Err(e) => {
+                    clog(&format!("[WEBRTC] create_offer failed: {:?}", e));
+                    return;
+                }
+            };
+
+            let offer_sdp = js_sys::Reflect::get(&offer, &"sdp".into())
+                .unwrap()
+                .as_string()
+                .unwrap();
+
+            let desc = web_sys::RtcSessionDescriptionInit::new(web_sys::RtcSdpType::Offer);
+            desc.set_sdp(&offer_sdp);
+
+            if let Err(e) = wasm_bindgen_futures::JsFuture::from(
+                pc_clone.set_local_description(&desc),
+            ).await {
+                clog(&format!("[WEBRTC] set_local_description (offer) failed: {:?}", e));
+                return;
+            }
+
+            let sdp_json = serde_json::json!({
+                "type": "offer",
+                "sdp": offer_sdp,
+            });
+            let msg = ClientMsg::Sdp {
+                session_id: sid_clone,
+                sdp: sdp_json,
+            };
+            let json = serde_json::to_string(&msg).unwrap();
+            let _ = ws_clone.send_with_str(&json);
+            clog("[WEBRTC] Sent SDP offer via relay");
+        });
+
+        Ok(WebRtcSession {
+            pc,
+            dc: dc_holder,
+            ready,
+        })
+    }
+
+    /// Set up the answerer side: creates PeerConnection, applies the remote offer,
+    /// creates an SDP answer, and sends it via the relay.
+    pub fn setup_answerer(
+        session_id: String,
+        sdp_offer: &serde_json::Value,
+        ws: &web_sys::WebSocket,
+        on_dc_message: impl FnMut(String, String) + 'static,
+        on_dc_open: impl FnMut(String) + 'static,
+    ) -> Result<WebRtcSession, String> {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let pc = create_peer_connection()?;
+        let dc_holder: Arc<Mutex<Option<web_sys::RtcDataChannel>>> = Arc::new(Mutex::new(None));
+        let ready: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+
+        // Wrap callbacks in Rc<RefCell<>> so they can be shared between the ondatachannel
+        // closure and the inner event handlers it creates.
+        let on_dc_message = Rc::new(RefCell::new(on_dc_message));
+        let on_dc_open = Rc::new(RefCell::new(Some(on_dc_open)));
+
+        // Handle incoming data channel from offerer
+        let dc_holder_clone = dc_holder.clone();
+        let ready_clone = ready.clone();
+        let sid_clone = session_id.clone();
+        let on_datachannel_cb = Closure::wrap(Box::new(move |evt: web_sys::RtcDataChannelEvent| {
+            let dc = evt.channel();
+            clog(&format!("[WEBRTC] Received data channel '{}' for session {}", dc.label(), sid_clone));
+
+            // onopen
+            let ready_c = ready_clone.clone();
+            let sid_c = sid_clone.clone();
+            let on_dc_open_c = on_dc_open.clone();
+            let open_cb = Closure::wrap(Box::new(move |_: JsValue| {
+                clog(&format!("[WEBRTC] Answerer data channel open for session {}", sid_c));
+                *ready_c.lock().unwrap() = true;
+                if let Some(mut cb) = on_dc_open_c.borrow_mut().take() {
+                    cb(sid_c.clone());
+                }
+            }) as Box<dyn FnMut(JsValue)>);
+            dc.set_onopen(Some(open_cb.as_ref().unchecked_ref()));
+            open_cb.forget();
+
+            // onmessage
+            let sid_c = sid_clone.clone();
+            let on_dc_msg = on_dc_message.clone();
+            let on_msg_cb = Closure::wrap(Box::new(move |evt: web_sys::MessageEvent| {
+                if let Some(text) = evt.data().as_string() {
+                    on_dc_msg.borrow_mut()(sid_c.clone(), text);
+                }
+            }) as Box<dyn FnMut(web_sys::MessageEvent)>);
+            dc.set_onmessage(Some(on_msg_cb.as_ref().unchecked_ref()));
+            on_msg_cb.forget();
+
+            // onclose
+            let ready_c = ready_clone.clone();
+            let sid_c = sid_clone.clone();
+            let on_close_cb = Closure::wrap(Box::new(move |_: JsValue| {
+                clog(&format!("[WEBRTC] Answerer data channel closed for session {}", sid_c));
+                *ready_c.lock().unwrap() = false;
+            }) as Box<dyn FnMut(JsValue)>);
+            dc.set_onclose(Some(on_close_cb.as_ref().unchecked_ref()));
+            on_close_cb.forget();
+
+            *dc_holder_clone.lock().unwrap() = Some(dc);
+        }) as Box<dyn FnMut(web_sys::RtcDataChannelEvent)>);
+        pc.set_ondatachannel(Some(on_datachannel_cb.as_ref().unchecked_ref()));
+        on_datachannel_cb.forget();
+
+        // ICE candidate handler
+        let ws_clone = ws.clone();
+        let sid_clone = session_id.clone();
+        let on_ice_cb = Closure::wrap(Box::new(move |evt: web_sys::RtcPeerConnectionIceEvent| {
+            if let Some(candidate) = evt.candidate() {
+                let candidate_json = serde_json::json!({
+                    "candidate": candidate.candidate(),
+                    "sdpMid": candidate.sdp_mid(),
+                    "sdpMLineIndex": candidate.sdp_m_line_index(),
+                });
+                let msg = ClientMsg::Ice {
+                    session_id: sid_clone.clone(),
+                    candidate: candidate_json,
+                };
+                let json = serde_json::to_string(&msg).unwrap();
+                let _ = ws_clone.send_with_str(&json);
+            }
+        }) as Box<dyn FnMut(web_sys::RtcPeerConnectionIceEvent)>);
+        pc.set_onicecandidate(Some(on_ice_cb.as_ref().unchecked_ref()));
+        on_ice_cb.forget();
+
+        // Set remote description (offer), create answer, send via relay
+        let offer_sdp = sdp_offer.get("sdp").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let pc_clone = pc.clone();
+        let ws_clone = ws.clone();
+        let sid_clone = session_id.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let remote_desc = web_sys::RtcSessionDescriptionInit::new(web_sys::RtcSdpType::Offer);
+            remote_desc.set_sdp(&offer_sdp);
+
+            if let Err(e) = wasm_bindgen_futures::JsFuture::from(
+                pc_clone.set_remote_description(&remote_desc),
+            ).await {
+                clog(&format!("[WEBRTC] set_remote_description (offer) failed: {:?}", e));
+                return;
+            }
+
+            let answer = match wasm_bindgen_futures::JsFuture::from(pc_clone.create_answer()).await {
+                Ok(a) => a,
+                Err(e) => {
+                    clog(&format!("[WEBRTC] create_answer failed: {:?}", e));
+                    return;
+                }
+            };
+
+            let answer_sdp = js_sys::Reflect::get(&answer, &"sdp".into())
+                .unwrap()
+                .as_string()
+                .unwrap();
+
+            let local_desc = web_sys::RtcSessionDescriptionInit::new(web_sys::RtcSdpType::Answer);
+            local_desc.set_sdp(&answer_sdp);
+
+            if let Err(e) = wasm_bindgen_futures::JsFuture::from(
+                pc_clone.set_local_description(&local_desc),
+            ).await {
+                clog(&format!("[WEBRTC] set_local_description (answer) failed: {:?}", e));
+                return;
+            }
+
+            let sdp_json = serde_json::json!({
+                "type": "answer",
+                "sdp": answer_sdp,
+            });
+            let msg = ClientMsg::Sdp {
+                session_id: sid_clone,
+                sdp: sdp_json,
+            };
+            let json = serde_json::to_string(&msg).unwrap();
+            let _ = ws_clone.send_with_str(&json);
+            clog("[WEBRTC] Sent SDP answer via relay");
+        });
+
+        Ok(WebRtcSession {
+            pc,
+            dc: dc_holder,
+            ready,
+        })
+    }
+
+    /// Offerer calls this when the SDP answer arrives from the answerer.
+    pub fn handle_sdp_answer(pc: &web_sys::RtcPeerConnection, sdp_answer: &serde_json::Value) {
+        let answer_sdp = sdp_answer.get("sdp").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let pc_clone = pc.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let desc = web_sys::RtcSessionDescriptionInit::new(web_sys::RtcSdpType::Answer);
+            desc.set_sdp(&answer_sdp);
+            if let Err(e) = wasm_bindgen_futures::JsFuture::from(
+                pc_clone.set_remote_description(&desc),
+            ).await {
+                clog(&format!("[WEBRTC] set_remote_description (answer) failed: {:?}", e));
+            } else {
+                clog("[WEBRTC] Set remote description (answer) successfully");
+            }
+        });
+    }
+
+    /// Add a trickle ICE candidate received from the remote peer.
+    pub fn handle_ice_candidate(pc: &web_sys::RtcPeerConnection, candidate: &serde_json::Value) {
+        let candidate_str = candidate.get("candidate").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let sdp_mid = candidate.get("sdpMid").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let sdp_m_line_index = candidate.get("sdpMLineIndex").and_then(|v| v.as_u64()).map(|n| n as u16);
+
+        let init = web_sys::RtcIceCandidateInit::new(&candidate_str);
+        if let Some(ref mid) = sdp_mid {
+            init.set_sdp_mid(Some(mid));
+        }
+        if let Some(idx) = sdp_m_line_index {
+            init.set_sdp_m_line_index(Some(idx));
+        }
+
+        let pc_clone = pc.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            match web_sys::RtcIceCandidate::new(&init) {
+                Ok(rtc_candidate) => {
+                    if let Err(e) = wasm_bindgen_futures::JsFuture::from(
+                        pc_clone.add_ice_candidate_with_opt_rtc_ice_candidate(Some(&rtc_candidate)),
+                    ).await {
+                        clog(&format!("[WEBRTC] add_ice_candidate failed: {:?}", e));
+                    }
+                }
+                Err(e) => {
+                    clog(&format!("[WEBRTC] RtcIceCandidate::new failed: {:?}", e));
+                }
+            }
+        });
+    }
+
+    /// Close a WebRTC session and clean up resources.
+    pub fn close_session(session: &WebRtcSession) {
+        if let Some(ref dc) = *session.dc.lock().unwrap() {
+            dc.close();
+        }
+        session.pc.close();
+        *session.ready.lock().unwrap() = false;
     }
 }
 

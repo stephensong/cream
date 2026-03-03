@@ -3,6 +3,8 @@ use dioxus::prelude::*;
 use cream_common::chat::CHAT_MESSAGE_COST_CURD;
 
 use super::chat_client::{ChatMessage, ChatSession, ChatState, ChatWsHandle, ClientMsg, SessionStatus};
+#[cfg(target_family = "wasm")]
+use super::chat_client::WebRtcSessions;
 use super::node_api::{use_node_action, NodeAction};
 use super::shared_state::use_shared_state;
 use super::user_state::use_user_state;
@@ -146,6 +148,7 @@ fn send_chat_message(
     session_id: &str,
     my_name: &str,
     msg_input: &mut Signal<String>,
+    try_datachannel: impl Fn(&str, &str) -> bool,
 ) {
     let body = msg_input.read().trim().to_string();
     if body.is_empty() { return; }
@@ -163,6 +166,13 @@ fn send_chat_message(
         s.messages.push(msg);
     }
 
+    // Try WebRTC data channel first, fall back to relay
+    if try_datachannel(session_id, &body) {
+        clog("[CHAT] Sent via WebRTC data channel");
+        msg_input.set(String::new());
+        return;
+    }
+
     ws_handle.read().send(&ClientMsg::Text {
         session_id: session_id.to_string(),
         ciphertext: body,
@@ -176,11 +186,25 @@ fn send_chat_message(
 pub fn ChatPanel() -> Element {
     let mut chat = use_context::<Signal<ChatState>>();
     let ws_handle = use_context::<Signal<ChatWsHandle>>();
+    #[cfg(target_family = "wasm")]
+    let webrtc = use_context::<Signal<WebRtcSessions>>();
     let mut active_session = use_signal(|| None::<String>);
     let mut msg_input = use_signal(String::new);
     let node = use_node_action();
     let user_state = use_user_state();
     let my_name = user_state.read().moniker.clone().unwrap_or_default();
+
+    // Returns a closure that tries sending via WebRTC data channel.
+    // On WASM, reads the WebRtcSessions signal. On native, always returns false.
+    #[cfg(target_family = "wasm")]
+    let try_dc = move || {
+        let webrtc = webrtc;
+        move |sid: &str, text: &str| -> bool {
+            super::chat_client::send_via_datachannel(&webrtc.read(), sid, text)
+        }
+    };
+    #[cfg(not(target_family = "wasm"))]
+    let try_dc = || { |_sid: &str, _text: &str| -> bool { false } };
 
     let chat_read = chat.read();
     let has_sessions = !chat_read.sessions.is_empty();
@@ -372,7 +396,7 @@ pub fn ChatPanel() -> Element {
                                     let my_name = my_name.clone();
                                     move |evt: KeyboardEvent| {
                                         if evt.key() == Key::Enter {
-                                            send_chat_message(&mut chat, &ws_handle, &node, &session_id, &my_name, &mut msg_input);
+                                            send_chat_message(&mut chat, &ws_handle, &node, &session_id, &my_name, &mut msg_input, try_dc());
                                         }
                                     }
                                 },
@@ -384,7 +408,7 @@ pub fn ChatPanel() -> Element {
                                     let session_id = session.session_id.clone();
                                     let my_name = my_name.clone();
                                     move |_| {
-                                        send_chat_message(&mut chat, &ws_handle, &node, &session_id, &my_name, &mut msg_input);
+                                        send_chat_message(&mut chat, &ws_handle, &node, &session_id, &my_name, &mut msg_input, try_dc());
                                     }
                                 },
                                 "Send"
