@@ -384,6 +384,13 @@ fn use_chat_connection() {
                             if let Some(rtc) = webrtc_for_close.write().remove(&session_id) {
                                 super::chat_client::wasm::close_session(&rtc);
                             }
+                            // Remove hidden audio element
+                            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                                let audio_id = format!("remote-audio-{}", session_id);
+                                if let Some(el) = doc.get_element_by_id(&audio_id) {
+                                    el.remove();
+                                }
+                            }
                             web_sys::console::log_1(&format!("[CHAT] Session {} closed: {}", session_id, reason).into());
                         }
                         ServerMessage::Presence { pubkey, online } => {

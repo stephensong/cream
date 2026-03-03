@@ -720,6 +720,9 @@ pub mod wasm {
                     }) as Box<dyn FnMut(JsValue)>);
                     track.set_onended(Some(on_ended.as_ref().unchecked_ref()));
                     on_ended.forget();
+                } else {
+                    // Audio track — create a hidden <audio> element to play it
+                    attach_remote_audio(&session_id, &stream);
                 }
             }
         }) as Box<dyn FnMut(web_sys::RtcTrackEvent)>);
@@ -746,6 +749,33 @@ pub mod wasm {
                 clog(&format!("[WEBRTC] #{} not in DOM (TV off?), stream stored for later", el_id));
             }
         }
+    }
+
+    /// Create a hidden <audio> element in the DOM to play the remote peer's audio.
+    /// The element ID is `remote-audio-{session_id}` so we can find it later to
+    /// toggle muted state via the Speaker checkbox.
+    fn attach_remote_audio(session_id: &str, stream: &web_sys::MediaStream) {
+        let doc = match web_sys::window().and_then(|w| w.document()) {
+            Some(d) => d,
+            None => return,
+        };
+        let el_id = format!("remote-audio-{}", session_id);
+        // Remove existing audio element if any (e.g. renegotiation)
+        if let Some(existing) = doc.get_element_by_id(&el_id) {
+            existing.remove();
+        }
+        let audio = match doc.create_element("audio") {
+            Ok(el) => el,
+            Err(_) => return,
+        };
+        audio.set_id(&el_id);
+        let _ = audio.set_attribute("autoplay", "");
+        let _ = js_sys::Reflect::set(&audio, &"srcObject".into(), stream);
+        // Append to body (hidden, no visual)
+        if let Some(body) = doc.body() {
+            let _ = body.append_child(&audio);
+        }
+        clog(&format!("[WEBRTC] Created hidden <audio> #{} for remote audio playback", el_id));
     }
 
     /// Clear srcObject on the video element when the remote peer stops their camera.
@@ -1002,10 +1032,14 @@ pub mod wasm {
             }
         }
 
-        // Also toggle the video element's muted state
+        // Toggle muted state on both the hidden <audio> and the <video> element
         if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-            let el_id = format!("remote-video-el-{}", session_id);
-            if let Some(el) = doc.get_element_by_id(&el_id) {
+            let audio_id = format!("remote-audio-{}", session_id);
+            if let Some(el) = doc.get_element_by_id(&audio_id) {
+                let _ = js_sys::Reflect::set(&el, &"muted".into(), &(!enabled).into());
+            }
+            let video_id = format!("remote-video-el-{}", session_id);
+            if let Some(el) = doc.get_element_by_id(&video_id) {
                 let _ = js_sys::Reflect::set(&el, &"muted".into(), &(!enabled).into());
             }
         }
