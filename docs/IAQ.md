@@ -837,3 +837,59 @@ CREAM (Freenet + contracts + UI) should target **< 1.5 GB RAM** to leave headroo
 | Start9 marketplace | https://marketplace.start9.com/ |
 
 ---
+
+## Is CREAM one big network or many small ones?
+
+**Many small ones.** CREAM is open-source co-operative software, not a national franchise. Each community runs their own independent instance.
+
+### Why co-ops, not a single network?
+
+Raw dairy is inherently local. A customer in Perth has no use for a directory of NSW farms. The value proposition is **knowing your farmer** — visiting the farm, seeing the animals, building trust through repeated in-person transactions. A single national directory would be mostly noise.
+
+Guardian federations also work best when guardians know and trust each other. Three farmers in the Hunter Valley running guardian nodes on their StartOS devices makes sense. Three strangers spread across a continent doesn't.
+
+Each co-op is a completely independent CREAM instance:
+
+- Its own Freenet network and guardian federation
+- Its own directory of suppliers and customers
+- Its own e-cash token supply (see below)
+- Its own branding, name, and community governance
+
+The software is identical, but the communities are sovereign. "Hunter Valley Raw" and "Gippsland Fresh" might both run CREAM under the hood, with their own identities and cultures.
+
+### Can each co-op name their own e-cash token?
+
+Yes. "CURD" is just CREAM's default token name. Each co-op can brand their e-cash however they like — CURD, MOO, BLEAT, whatever resonates with their community. The underlying mechanics (FROST threshold signing, Lightning peg-in/out, escrow, toll rates) are identical regardless of what the token is called.
+
+This reinforces that each co-op is community-owned, not a franchise stamped from a template.
+
+### What about shared guardians?
+
+This is where it gets interesting. The biggest barrier to launching a new co-op is guardian hardware — each guardian needs a StartOS device running a Freenet node, Bitcoin Core, and LND. If three farmers each need to buy a device before they can launch, that's a significant upfront commitment.
+
+**The solution: shared guardian hardware across co-ops.**
+
+A single StartOS device can run multiple guardian daemon instances — one per co-op — each with its own FROST key share, port, and Freenet node connection. The hardware is shared, the cryptographic identities are isolated. A guardian in Bathurst could serve both a Blue Mountains co-op and a Central West co-op simultaneously.
+
+This means:
+
+- **Guardians don't need to be farmers.** A trusted community member, a local tech enthusiast, anyone who believes in the mission can buy one device and participate in multiple federations.
+- **Proximity matters** — for latency (FROST signing rounds are HTTP calls between guardians) and for trust (you want guardians who are known to the communities they serve). Geographic neighbors naturally fit both criteria.
+- **The barrier drops** from "find three people willing to buy devices" to "find three people in the region who already have one."
+- **A mesh of trust emerges** — overlapping guardian participation creates informal connections between neighboring co-ops without any formal federation protocol.
+
+### What about delivery and shipping?
+
+**Not in scope.** CREAM is deliberately focused on in-person collection. The entire value proposition — provenance, trust, freshness, direct farmer-customer relationships — depends on physical proximity.
+
+Adding delivery would require chain-of-custody tracking, temperature compliance, dispute resolution, refund flows, and reputation systems. It would also attract regulatory attention and erode the community trust model. Most importantly, it would make CREAM compete with every other anonymous online marketplace, where it has no advantage.
+
+If delivery demand emerges organically within a mature co-op, it could be added as a supplier-level opt-in feature. But it's not a platform concern.
+
+### How does a customer find their local co-op?
+
+Initially, word of mouth — the same way people find their local farmer's market. A co-op's rendezvous service endpoint and postcode coverage area are all that's needed.
+
+In future, a lightweight discovery layer could let co-ops advertise their existence (postcode range + rendezvous URL) so new customers can find the nearest one. But that's a trivial addition, not an architectural commitment.
+
+---
