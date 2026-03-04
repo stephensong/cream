@@ -892,13 +892,34 @@ This preserves the human trust chain that makes CREAM work. The neighboring co-o
 
 The real-world cost to bootstrap: **one StartOS device and an introduction from a neighboring co-op.** As the network grows, finding nearby guardians with spare capacity gets easier, not harder.
 
-### What about delivery and shipping?
+### What about delivery?
 
-**Not in scope.** CREAM is deliberately focused on in-person collection. The entire value proposition — provenance, trust, freshness, direct farmer-customer relationships — depends on physical proximity.
+CREAM supports two collection models, both designed to preserve privacy at every layer.
 
-Adding delivery would require chain-of-custody tracking, temperature compliance, dispute resolution, refund flows, and reputation systems. It would also attract regulatory attention and erode the community trust model. Most importantly, it would make CREAM compete with every other anonymous online marketplace, where it has no advantage.
+**Direct pickup (default).** The supplier publishes a postcode area and arranges pickup details via private chat with the customer. No physical address needs to appear on the storefront listing.
 
-If delivery demand emerges organically within a mature co-op, it could be added as a supplier-level opt-in feature. But it's not a platform concern.
+**Supplier delivery.** The supplier offers delivery within a local radius. The **customer** provides a delivery address (visible only to the supplier), and the supplier decides whether to service it. This inverts the usual model — the supplier never publishes their own location, making them invisible to online snooping. It's not Amazon-style shipping through a courier; it's a farmer doing a milk run within their local area.
+
+**The milkman model.** This is where it gets powerful. A delivery person operates as a reseller within the co-op:
+
+1. The **milkman** registers as a supplier on the co-op (offering delivery within their area).
+2. They negotiate bulk pickup from the **farmer** via private chat — only the milkman knows the farm's location.
+3. **End customers** order from the milkman's storefront and provide their delivery address — only the milkman knows where they live.
+4. The **farmer** never learns who the end customers are or where they live. The **customers** never learn where the farm is. The **milkman** is the only party who bridges both worlds.
+
+This creates three-party privacy:
+
+| Party | Knows supplier location? | Knows customer addresses? |
+|-------|-------------------------|--------------------------|
+| Farmer | Yes (it's them) | No |
+| Milkman | Yes | Yes |
+| Customer | No | Yes (it's them) |
+
+The milkman takes on the visibility risk voluntarily, in exchange for the resale margin. They have a direct trust relationship with both the farmer and the customers, so there's mutual accountability.
+
+No special infrastructure is needed — the milkman is just another supplier in the co-op who happens to source from other suppliers rather than from their own cows. CURD flows naturally: customers pay the milkman, milkman pays the farmer, all on-network. Chat handles the scheduling. The existing order and escrow system handles the money.
+
+What CREAM deliberately does **not** support is anonymous long-distance shipping through courier networks. That would require chain-of-custody tracking, dispute resolution, and reputation systems — all the complexity of a generic marketplace. CREAM's delivery model is personal and local: the farmer or the milkman is driving past your house anyway.
 
 ### How does a customer find their local co-op?
 
