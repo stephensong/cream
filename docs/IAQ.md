@@ -878,6 +878,20 @@ This means:
 - **The barrier drops** from "find three people willing to buy devices" to "find three people in the region who already have one."
 - **A mesh of trust emerges** — overlapping guardian participation creates informal connections between neighboring co-ops without any formal federation protocol.
 
+### How does a new supplier bootstrap a co-op?
+
+A supplier buys one StartOS device. This single box runs their Freenet node, guardian daemon, Bitcoin Core, and LND — it's their shop front **and** one-third of the guardian federation.
+
+They then need two more guardians. Rather than anonymous discovery (which would mean trusting strangers with the co-op's money supply), the model is **introduction through the existing network**:
+
+1. The supplier contacts a neighboring co-op's admin — via CREAM itself, or through the local farming community.
+2. That admin vouches for two of their existing guardians who have spare capacity and are geographically nearby.
+3. The supplier has a conversation with them, establishes trust, then runs the DKG signing ceremony together.
+
+This preserves the human trust chain that makes CREAM work. The neighboring co-op's reputation is on the line when they make the introduction. It's low-friction — you're not cold-calling strangers — but there's social accountability behind every guardian relationship.
+
+The real-world cost to bootstrap: **one StartOS device and an introduction from a neighboring co-op.** As the network grows, finding nearby guardians with spare capacity gets easier, not harder.
+
 ### What about delivery and shipping?
 
 **Not in scope.** CREAM is deliberately focused on in-person collection. The entire value proposition — provenance, trust, freshness, direct farmer-customer relationships — depends on physical proximity.
