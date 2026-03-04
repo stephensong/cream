@@ -929,8 +929,41 @@ These models form a spectrum of distribution, all supported by the same platform
 | Farmer delivers | No | Home | Minimal (address on order) |
 | Milkman delivers | No | Home | None |
 | Reseller shopfront | No | Shop | None |
+| Farmer's market | Yes (at market) | Market venue | Market features |
 
 What CREAM deliberately does **not** support is anonymous long-distance shipping through courier networks. That would require chain-of-custody tracking, dispute resolution, and reputation systems — all the complexity of a generic marketplace. CREAM's delivery model is personal and local.
+
+### How do farmer's markets work with CREAM?
+
+Physical farmer's markets are a natural partner for CREAM. The market organizer acts as a **venue curator** — they provide the physical location, opening hours, and a curated list of participating suppliers. CREAM handles the product catalogue, reservations, and payments.
+
+**How it works:**
+
+1. The **market organizer** registers a market on CREAM — a special entity with a venue address, schedule (e.g., "Saturdays 7am–1pm"), and a list of participating suppliers.
+2. **Farmers** opt in to list some or all of their products at the market. A product can appear on both the farmer's own storefront (for farm gate collection) and the market's combined listing.
+3. **Customers** browse the market's aggregated catalogue — seeing products from all participating farmers in one place. They reserve products and pay deposits via CURD, just like any other CREAM order.
+4. On market day, the customer **collects at the market venue** from the farmer's stall. The reservation ensures the farmer brings the right quantity.
+
+**What the organizer sees:**
+
+A market dashboard showing all participating suppliers, their committed products for the next market day, and aggregate reservation volumes. This helps with stall planning, logistics, and communication. The organizer can message all suppliers through CREAM's existing chat and inbox.
+
+**What the organizer does NOT do:**
+
+- **Handle money.** CURD flows directly from customer to farmer. The organizer may charge a stall fee as a separate CURD transaction, but that's between the organizer and each farmer — CREAM doesn't enforce it.
+- **Hold inventory.** Each farmer's products have one source of truth on their own storefront contract. The market listing is a view over multiple storefronts, not a separate inventory.
+- **Guarantee quality.** The organizer curates which suppliers participate, but each farmer maintains their own reputation through direct customer relationships.
+
+**What's needed beyond current CREAM:**
+
+- **Market entity** — distinct from a regular supplier. Has a venue location, schedule, and a roster of participating suppliers.
+- **Supplier opt-in** — a farmer links selected products to one or more markets. The product becomes discoverable through the market's combined listing.
+- **Market-scoped orders** — when a customer reserves through the market listing, the order is tagged with the market venue as the collection point. Payment still flows directly to the farmer.
+- **Organizer dashboard** — aggregate view of participating suppliers, committed products, and reservation volumes for upcoming market days.
+
+**Why this matters:**
+
+Farmer's markets are the existing real-world trust network for local food. Market organizers already curate suppliers, attract customers, and manage logistics. CREAM doesn't replace the market — it enhances it with online reservations, guaranteed availability, and private payments. The organizer becomes a bridge between CREAM's digital co-op and the physical market community, naturally onboarding both suppliers and customers who might never have sought out CREAM independently.
 
 ### How does a customer find their local co-op?
 
