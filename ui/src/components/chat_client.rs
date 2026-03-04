@@ -64,6 +64,20 @@ pub struct ChatMessage {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
+/// State machine for the request-to-pay protocol between chat peers.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)] // variants used in WASM UI
+pub enum PaymentRequest {
+    /// We asked the peer to pay us N CURD per interval.
+    SentPending { curd_per_interval: u64 },
+    /// The peer asked us to pay them N CURD per interval.
+    ReceivedPending { curd_per_interval: u64 },
+    /// We are actively paying the peer N CURD per interval.
+    ActivePaying { curd_per_interval: u64 },
+    /// The peer is actively paying us N CURD per interval.
+    ActiveReceiving { curd_per_interval: u64 },
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // fields used in WASM UI
 pub struct ChatSession {
@@ -78,6 +92,8 @@ pub struct ChatSession {
     pub camera_enabled: bool,
     pub tv_enabled: bool,
     pub has_remote_video: bool,
+    pub is_initiator: bool,
+    pub payment_request: Option<PaymentRequest>,
 }
 
 // ---------- Chat state (shared via Signal in UI) ----------

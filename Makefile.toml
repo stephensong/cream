@@ -185,6 +185,10 @@ script = [
     # Clear previous DKG keys so a fresh ceremony runs
     rm -rf "${KEYS_BASE}/guardian-1" "${KEYS_BASE}/guardian-2" "${KEYS_BASE}/guardian-3"
 
+    # Compute the "root" user's pubkey for admin pre-seeding
+    ROOT_ADMIN_PUBKEY=$(cargo run -p cream-node-integration --features node-tests --bin pubkey -- root 2>/dev/null)
+    echo "Root admin pubkey: ${ROOT_ADMIN_PUBKEY}"
+
     # Peer URLs for each guardian (each gets the other two)
     PEERS_1="http://localhost:3011,http://localhost:3012"
     PEERS_2="http://localhost:3010,http://localhost:3012"
@@ -203,6 +207,7 @@ script = [
         : > "${LOGS_DIR}/guardian-${i}.log"
         nohup "${GUARDIAN_BIN}" --share-index "${i}" --port "${PORT}" --peers "${PEERS}" \
             --node-url "${NODE_URL}" \
+            --admin-pubkeys "${ROOT_ADMIN_PUBKEY}" \
             >> "${LOGS_DIR}/guardian-${i}.log" 2>&1 &
         echo $! > "${PIDS_DIR}/guardian-${i}.pid"
     done

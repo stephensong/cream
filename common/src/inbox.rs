@@ -54,9 +54,6 @@ pub struct InboxSummary {
     pub message_ids: BTreeSet<MessageId>,
 }
 
-/// Cost in CURD to send an inbox message.
-pub const INBOX_MESSAGE_COST_CURD: u64 = 10;
-
 impl InboxState {
     /// Remove messages older than 30 days.
     /// Returns `true` if any messages were removed.

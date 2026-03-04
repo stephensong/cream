@@ -17,34 +17,57 @@ use super::messages_view::MessagesView;
 use super::storefront_view::StorefrontView;
 use super::supplier_dashboard::SupplierDashboard;
 use super::user_state::{use_user_state, UserState};
-use super::lightning_remote::LightningClient;
 use super::wallet_view::WalletView;
 #[allow(unused_imports)] // SessionStatus used in WASM cfg block
 use super::chat_client::{ChatState, ChatWsHandle, SessionStatus};
 #[cfg(target_family = "wasm")]
 use super::chat_client::WebRtcSessions;
 use super::chat_view::{ChatPanel, ChatInviteBanner};
+use super::profile_view::ProfileView;
 
 /// Handle a data-channel control message (prefixed with `__ctrl:`).
 #[cfg(target_family = "wasm")]
 fn handle_dc_control(chat: &mut Signal<ChatState>, session_id: &str, ctrl: &str) {
-    match ctrl {
-        "camera_on" => {
+    use super::chat_client::PaymentRequest;
+
+    if ctrl == "camera_on" {
+        if let Some(s) = chat.write().sessions.get_mut(session_id) {
+            s.has_remote_video = true;
+        }
+        web_sys::console::log_1(&format!("[WEBRTC] Peer camera ON for {}", session_id).into());
+    } else if ctrl == "camera_off" {
+        if let Some(s) = chat.write().sessions.get_mut(session_id) {
+            s.has_remote_video = false;
+        }
+        super::chat_client::wasm::detach_remote_video(session_id);
+        web_sys::console::log_1(&format!("[WEBRTC] Peer camera OFF for {}", session_id).into());
+    } else if let Some(amount_str) = ctrl.strip_prefix("pay_request:") {
+        if let Ok(amount) = amount_str.parse::<u64>() {
             if let Some(s) = chat.write().sessions.get_mut(session_id) {
-                s.has_remote_video = true;
+                s.payment_request = Some(PaymentRequest::ReceivedPending { curd_per_interval: amount });
             }
-            web_sys::console::log_1(&format!("[WEBRTC] Peer camera ON for {}", session_id).into());
+            web_sys::console::log_1(&format!("[WEBRTC] Peer requests {} CURD/interval for {}", amount, session_id).into());
         }
-        "camera_off" => {
-            if let Some(s) = chat.write().sessions.get_mut(session_id) {
-                s.has_remote_video = false;
+    } else if ctrl == "pay_accept" {
+        let mut state = chat.write();
+        if let Some(s) = state.sessions.get_mut(session_id) {
+            if let Some(PaymentRequest::SentPending { curd_per_interval }) = s.payment_request {
+                s.payment_request = Some(PaymentRequest::ActiveReceiving { curd_per_interval });
             }
-            super::chat_client::wasm::detach_remote_video(session_id);
-            web_sys::console::log_1(&format!("[WEBRTC] Peer camera OFF for {}", session_id).into());
         }
-        other => {
-            web_sys::console::log_1(&format!("[WEBRTC] Unknown control: {}", other).into());
+        web_sys::console::log_1(&format!("[WEBRTC] Peer accepted payment for {}", session_id).into());
+    } else if ctrl == "pay_decline" {
+        if let Some(s) = chat.write().sessions.get_mut(session_id) {
+            s.payment_request = None;
         }
+        web_sys::console::log_1(&format!("[WEBRTC] Peer declined payment for {}", session_id).into());
+    } else if ctrl == "pay_stop" {
+        if let Some(s) = chat.write().sessions.get_mut(session_id) {
+            s.payment_request = None;
+        }
+        web_sys::console::log_1(&format!("[WEBRTC] Peer stopped payment for {}", session_id).into());
+    } else {
+        web_sys::console::log_1(&format!("[WEBRTC] Unknown control: {}", ctrl).into());
     }
 }
 
@@ -94,6 +117,8 @@ pub enum Route {
     Iaq {},
     #[route("/guardian")]
     Guardian {},
+    #[route("/profile")]
+    Profile {},
     #[redirect("/", || Route::Directory {})]
     #[route("/:..segments")]
     NotFound { segments: Vec<String> },
@@ -108,11 +133,41 @@ pub fn App() -> Element {
         let km = auto_derive_key_manager();
         Signal::new(km)
     });
+    use_context_provider(|| Signal::new(cream_common::tolls::TollRates::default()));
+    use_context_provider(|| Signal::new(super::toll_rates::AdminStatus::default())); // is_admin
     use_context_provider(|| Signal::new(ChatState::default()));
     use_context_provider(|| Signal::new(ChatWsHandle::default()));
     #[cfg(target_family = "wasm")]
     use_context_provider(|| Signal::new(WebRtcSessions::default()));
     use_node_coroutine();
+
+    // Derive toll rates reactively from root user contract (no polling needed)
+    {
+        let shared: Signal<SharedState> = use_shared_state();
+        let mut toll_signal: Signal<cream_common::tolls::TollRates> = use_context();
+        use_effect(move || {
+            if let Some(root) = shared.read().root_user_contract.as_ref() {
+                toll_signal.set(root.toll_rates.clone());
+            }
+        });
+    }
+
+    // Check admin status reactively when key_manager changes (e.g. on login)
+    {
+        let key_manager: Signal<Option<KeyManager>> = use_context();
+        let mut is_admin: Signal<super::toll_rates::AdminStatus> = use_context();
+        use_effect(move || {
+            // Synchronous read creates reactive dependency on key_manager signal
+            let km_opt = key_manager.read().clone();
+            if let Some(km) = km_opt {
+                let pubkey_hex = km.pubkey_hex();
+                spawn(async move {
+                    let status = super::toll_rates::check_admin_status(&pubkey_hex).await;
+                    is_admin.set(status);
+                });
+            }
+        });
+    }
 
     let key_manager: Signal<Option<KeyManager>> = use_context();
     let user_state = use_user_state();
@@ -132,7 +187,7 @@ pub fn App() -> Element {
 }
 
 /// Render the navigation buttons for the app header.
-fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_supplier: bool, connected_supplier: Option<String>, inbox_count: usize) -> Element {
+fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_supplier: bool, connected_supplier: Option<String>, inbox_count: usize, admin_status: super::toll_rates::AdminStatus) -> Element {
     if let Some(supplier) = connected_supplier {
         // Customer mode: single-storefront nav
         rsx! {
@@ -157,6 +212,12 @@ fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_su
                 button {
                     onclick: move |_| { nav.push(Route::Wallet {}); },
                     "Wallet ({displayed_balance} CURD)"
+                }
+                if admin_status.admin {
+                    button {
+                        onclick: move |_| { nav.push(Route::Guardian {}); },
+                        if admin_status.root { "Root" } else { "Admin" }
+                    }
                 }
             }
         }
@@ -186,10 +247,10 @@ fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_su
                     onclick: move |_| { nav.push(Route::Wallet {}); },
                     "Wallet ({displayed_balance} CURD)"
                 }
-                if LightningClient::is_available() {
+                if admin_status.admin {
                     button {
                         onclick: move |_| { nav.push(Route::Guardian {}); },
-                        "Guardian"
+                        if admin_status.root { "Root" } else { "Admin" }
                     }
                 }
             }
@@ -306,6 +367,8 @@ fn use_chat_connection() {
                                 camera_enabled: false,
                                 tv_enabled: false,
                                 has_remote_video: false,
+                                is_initiator: false,
+                                payment_request: None,
                             };
                             chat_for_msg.write().sessions.insert(session_id, session);
                         }
@@ -563,7 +626,11 @@ fn AppLayout() -> Element {
                 div { class: "header-top",
                     h1 { "CREAM " span { class: "tagline", "rises to the top" } }
                     div { class: "user-info",
-                        span { class: "user-moniker", "{moniker}" }
+                        Link {
+                            class: "user-moniker clickable",
+                            to: Route::Profile {},
+                            "{moniker}"
+                        }
                         span { class: "user-postcode", " - {postcode_display}" }
                         span { class: "role-badge", " [{role_label}]" }
                         button {
@@ -590,7 +657,8 @@ fn AppLayout() -> Element {
                 p { "The decentralized, private 24/7 farmer's market" }
                 {
                     let inbox_count = shared.read().inbox.as_ref().map(|i| i.messages.len()).unwrap_or(0);
-                    nav_buttons(nav.clone(), order_count, displayed_balance, is_supplier, connected_supplier.clone(), inbox_count)
+                    let admin_status = *use_context::<Signal<super::toll_rates::AdminStatus>>().read();
+                    nav_buttons(nav.clone(), order_count, displayed_balance, is_supplier, connected_supplier.clone(), inbox_count, admin_status)
                 }
             }
             ChatInviteBanner {}
@@ -676,6 +744,12 @@ fn Iaq() -> Element {
 #[component]
 fn Guardian() -> Element {
     rsx! { GuardianAdmin {} }
+}
+
+/// Route component: renders the user profile page.
+#[component]
+fn Profile() -> Element {
+    rsx! { ProfileView {} }
 }
 
 /// Catch-all for unknown routes — redirects to directory (or storefront in customer mode).

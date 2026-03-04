@@ -10,6 +10,7 @@ use super::user_state::use_user_state;
 pub fn OrderForm(supplier_name: String, product_id: String, product_name: String, price_per_unit: u64) -> Element {
     let mut user_state = use_user_state();
     let shared_state = use_shared_state();
+    let node_action = use_node_action();
     let mut quantity = use_signal(|| 1u32);
     let mut deposit_tier = use_signal(|| "2-Day Reserve (10%)".to_string());
     let mut submitted_id = use_signal(|| None::<u32>);
@@ -101,8 +102,7 @@ pub fn OrderForm(supplier_name: String, product_id: String, product_name: String
                             insufficient_funds.set(false);
 
                             // Send to node (PlaceOrder also handles the double-entry transfer)
-                            let node = use_node_action();
-                            node.send(NodeAction::PlaceOrder {
+                            node_action.send(NodeAction::PlaceOrder {
                                 storefront_name: supplier.clone(),
                                 product_id: product_id.clone(),
                                 quantity: qty,

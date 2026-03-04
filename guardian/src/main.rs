@@ -111,6 +111,11 @@ struct Cli {
     /// Maximum daily peg-out amount in sats (default: unlimited).
     #[arg(long)]
     daily_pegout_limit_sats: Option<u64>,
+
+    /// Comma-separated list of user pubkeys (hex) that are admins.
+    /// If empty, all users are treated as admins (dev compatibility).
+    #[arg(long, value_delimiter = ',')]
+    admin_pubkeys: Vec<String>,
 }
 
 struct AppState {
@@ -126,6 +131,7 @@ struct AppState {
     refreshing: AtomicBool,
     node_connected: AtomicBool,
     lightning: Option<Arc<LightningState>>,
+    admin_pubkeys: RwLock<Vec<String>>,
 }
 
 impl AppState {
@@ -796,6 +802,166 @@ fn save_keys(share_index: u16, keys: &PersistedKeys) -> Result<(), String> {
     std::fs::write(&path, data).map_err(|e| format!("Failed to write: {}", e))?;
     println!("Saved DKG keys to {}", path.display());
     Ok(())
+}
+
+// ─── Admin Pubkeys Persistence ───────────────────────────────────────────────
+
+fn admin_pubkeys_path(share_index: u16) -> PathBuf {
+    let cache = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    cache
+        .join("freenet")
+        .join(format!("guardian-{}", share_index))
+        .join("admin_pubkeys.json")
+}
+
+fn load_admin_pubkeys(share_index: u16) -> Vec<String> {
+    let path = admin_pubkeys_path(share_index);
+    match std::fs::read_to_string(&path) {
+        Ok(data) => match serde_json::from_str::<Vec<String>>(&data) {
+            Ok(keys) => {
+                println!("Loaded {} admin pubkey(s) from {}", keys.len(), path.display());
+                keys
+            }
+            Err(e) => {
+                eprintln!("WARNING: Failed to parse admin pubkeys: {}, starting empty", e);
+                Vec::new()
+            }
+        },
+        Err(_) => Vec::new(),
+    }
+}
+
+fn save_admin_pubkeys(share_index: u16, keys: &[String]) -> Result<(), String> {
+    let path = admin_pubkeys_path(share_index);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {}", e))?;
+    }
+    let data =
+        serde_json::to_string_pretty(keys).map_err(|e| format!("Failed to serialize: {}", e))?;
+    std::fs::write(&path, data).map_err(|e| format!("Failed to write: {}", e))?;
+    println!("Saved admin pubkeys to {}", path.display());
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct AdminCheckQuery {
+    pubkey: String,
+}
+
+#[derive(Serialize)]
+struct AdminCheckResponse {
+    admin: bool,
+    root: bool,
+}
+
+async fn admin_check_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<AdminCheckQuery>,
+) -> Json<AdminCheckResponse> {
+    let pubkey = query.pubkey.to_lowercase();
+    let mut admins = state.admin_pubkeys.write().await;
+
+    let is_admin = if admins.is_empty() {
+        // First user to check becomes the admin (auto-promote)
+        admins.push(pubkey.clone());
+        if let Err(e) = save_admin_pubkeys(state.share_index, &admins) {
+            eprintln!("WARNING: Failed to persist auto-admin: {}", e);
+        }
+        println!("Auto-promoted {} as first admin", pubkey);
+        true
+    } else {
+        admins.contains(&pubkey)
+    };
+    let is_root = admins.first() == Some(&pubkey);
+    Json(AdminCheckResponse { admin: is_admin, root: is_root })
+}
+
+#[derive(Serialize)]
+struct AdminListResponse {
+    admins: Vec<String>,
+}
+
+async fn admin_list_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<AdminCheckQuery>,
+) -> Result<Json<AdminListResponse>, (axum::http::StatusCode, Json<ErrorResponse>)> {
+    let pubkey = query.pubkey.to_lowercase();
+    let admins = state.admin_pubkeys.read().await;
+    if admins.first() != Some(&pubkey) {
+        return Err((
+            axum::http::StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Only root admin can list admins".to_string(),
+            }),
+        ));
+    }
+    Ok(Json(AdminListResponse { admins: admins.clone() }))
+}
+
+#[derive(Deserialize)]
+struct AdminGrantRequest {
+    pubkey: String,
+    grantor: String,
+}
+
+async fn admin_grant_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AdminGrantRequest>,
+) -> Result<Json<AdminListResponse>, (axum::http::StatusCode, Json<ErrorResponse>)> {
+    let grantor = req.grantor.to_lowercase();
+    let pubkey = req.pubkey.to_lowercase();
+    let mut admins = state.admin_pubkeys.write().await;
+    if admins.first() != Some(&grantor) {
+        return Err((
+            axum::http::StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Only root admin can grant admin".to_string(),
+            }),
+        ));
+    }
+    if admins.contains(&pubkey) {
+        return Err((
+            axum::http::StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: "Already an admin".to_string(),
+            }),
+        ));
+    }
+    admins.push(pubkey);
+    if let Err(e) = save_admin_pubkeys(state.share_index, &admins) {
+        eprintln!("WARNING: Failed to persist admin list: {}", e);
+    }
+    Ok(Json(AdminListResponse { admins: admins.clone() }))
+}
+
+async fn admin_revoke_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AdminGrantRequest>,
+) -> Result<Json<AdminListResponse>, (axum::http::StatusCode, Json<ErrorResponse>)> {
+    let grantor = req.grantor.to_lowercase();
+    let pubkey = req.pubkey.to_lowercase();
+    let mut admins = state.admin_pubkeys.write().await;
+    if admins.first() != Some(&grantor) {
+        return Err((
+            axum::http::StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Only root admin can revoke admin".to_string(),
+            }),
+        ));
+    }
+    if admins.first() == Some(&pubkey) {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Cannot revoke root admin".to_string(),
+            }),
+        ));
+    }
+    admins.retain(|k| k != &pubkey);
+    if let Err(e) = save_admin_pubkeys(state.share_index, &admins) {
+        eprintln!("WARNING: Failed to persist admin list: {}", e);
+    }
+    Ok(Json(AdminListResponse { admins: admins.clone() }))
 }
 
 // ─── DKG Ceremony ───────────────────────────────────────────────────────────
@@ -1534,6 +1700,17 @@ async fn main() {
         refreshing: AtomicBool::new(false),
         node_connected: AtomicBool::new(false),
         lightning,
+        admin_pubkeys: RwLock::new({
+            // Merge CLI-provided admin pubkeys with any auto-promoted admins from disk
+            let mut keys: Vec<String> = cli.admin_pubkeys.iter().map(|s| s.to_lowercase()).collect();
+            for persisted in load_admin_pubkeys(cli.share_index) {
+                let lower = persisted.to_lowercase();
+                if !keys.contains(&lower) {
+                    keys.push(lower);
+                }
+            }
+            keys
+        }),
     });
 
     // ── Key initialization ──
@@ -1594,7 +1771,11 @@ async fn main() {
         .route("/redeal/receive", post(redeal_receive_handler))
         .route("/public-key", get(public_key_handler))
         .route("/config", get(config_handler))
-        .route("/health", get(health_handler));
+        .route("/health", get(health_handler))
+        .route("/admin-check", get(admin_check_handler))
+        .route("/admin-list", get(admin_list_handler))
+        .route("/admin-grant", post(admin_grant_handler))
+        .route("/admin-revoke", post(admin_revoke_handler));
 
     // Lightning routes (conditional on --lightning-gateway)
     if state.lightning.is_some() {

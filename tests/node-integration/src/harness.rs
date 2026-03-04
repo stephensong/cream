@@ -318,6 +318,7 @@ pub struct TestHarness {
     pub iris: Supplier,
     pub alice: Customer,
     pub bob: Customer,
+    pub root_admin: Customer,
     pub directory_key: ContractKey,
     pub root_contract_key: ContractKey,
 }
@@ -351,6 +352,7 @@ impl TestHarness {
         let (iris_id, iris_vk) = make_dummy_user("Iris");
         let (alice_id, alice_vk) = make_dummy_user("Alice");
         let (bob_id, bob_vk) = make_dummy_user("Bob");
+        let (root_admin_id, root_admin_vk) = make_dummy_user("root");
 
         // Create storefront contracts
         let (gary_sf_contract, gary_sf_key) = make_storefront_contract(&gary_vk);
@@ -446,6 +448,18 @@ impl TestHarness {
             inbox_key: None,
         };
 
+        // "root" admin user — connected to node-1
+        let api_root_admin = connect_to_node_at(&url_n1).await;
+        let mut root_admin = Customer {
+            name: "root".to_string(),
+            id: root_admin_id,
+            verifying_key: root_admin_vk,
+            api: api_root_admin,
+            balance: 10_000,
+            user_contract_key: None,
+            inbox_key: None,
+        };
+
         // PUT directory contract (via Gary's connection).
         let empty_dir = DirectoryState::default();
         let dir_state_bytes = serde_json::to_vec(&empty_dir).unwrap();
@@ -502,6 +516,7 @@ impl TestHarness {
             current_supplier: String::new(),
             balance_curds: 1_000_000,
             invited_by: String::new(),
+            toll_rates: Default::default(),
             ledger: vec![genesis_tx],
             next_tx_id: 1,
             updated_at: chrono::Utc::now(),
@@ -522,9 +537,10 @@ impl TestHarness {
         .expect("PutResponse for root user contract");
         drop(root_api);
 
-        // Deploy user contracts for Alice and Bob with initial 10,000 CURD allocation.
+        // Deploy user contracts for Alice, Bob, and root admin with initial 10,000 CURD allocation.
         deploy_user_contract(&mut alice, &root_key, &url_n1, "Gary").await;
         deploy_user_contract(&mut bob, &root_key, &url_n2, "Gary").await;
+        deploy_user_contract(&mut root_admin, &root_key, &url_n1, "Gary").await;
 
         // Deploy user contracts for suppliers (Gary, Emma, Iris) with 10,000 CURD each.
         deploy_supplier_user_contract(&mut gary, &root_key, &url_n1).await;
@@ -537,6 +553,7 @@ impl TestHarness {
         deploy_inbox(&mut iris.api, &iris.verifying_key, &url_n1, &mut iris.inbox_key).await;
         deploy_inbox_customer(&mut alice, &url_n1).await;
         deploy_inbox_customer(&mut bob, &url_n2).await;
+        deploy_inbox_customer(&mut root_admin, &url_n1).await;
 
         // Register all 3 suppliers in the directory (after user contracts so keys are available).
         register_supplier_in_directory(&mut gary, &dir_key).await;
@@ -549,6 +566,7 @@ impl TestHarness {
             iris,
             alice,
             bob,
+            root_admin,
             directory_key: dir_key,
             root_contract_key: root_key,
         }
@@ -660,6 +678,7 @@ async fn deploy_supplier_user_contract(
         current_supplier: supplier.name.clone(),
         balance_curds: 10_000,
         invited_by: String::new(),
+        toll_rates: Default::default(),
         ledger: vec![initial_credit],
         next_tx_id: 1,
         updated_at: chrono::Utc::now(),
@@ -753,6 +772,7 @@ async fn deploy_user_contract(
         current_supplier: invited_by.to_string(),
         balance_curds: 10_000,
         invited_by: invited_by.to_string(),
+        toll_rates: Default::default(),
         ledger: vec![initial_credit],
         next_tx_id: 1,
         updated_at: chrono::Utc::now(),

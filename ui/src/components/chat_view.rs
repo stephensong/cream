@@ -1,8 +1,8 @@
 use dioxus::prelude::*;
 
-use cream_common::chat::{CHAT_MESSAGE_COST_CURD, AV_TOLL_COST_CURD, AV_TOLL_INTERVAL_SECS};
+use super::toll_rates::use_toll_rates;
 
-use super::chat_client::{ChatMessage, ChatSession, ChatState, ChatWsHandle, ClientMsg, SessionStatus};
+use super::chat_client::{ChatMessage, ChatSession, ChatState, ChatWsHandle, ClientMsg, PaymentRequest, SessionStatus};
 #[cfg(target_family = "wasm")]
 use super::chat_client::WebRtcSessions;
 use super::node_api::{use_node_action, NodeAction};
@@ -144,7 +144,7 @@ pub fn ChatInviteBanner() -> Element {
 fn send_chat_message(
     chat: &mut Signal<ChatState>,
     ws_handle: &Signal<ChatWsHandle>,
-    node: &Coroutine<NodeAction>,
+    _node: &Coroutine<NodeAction>,
     session_id: &str,
     my_name: &str,
     msg_input: &mut Signal<String>,
@@ -152,9 +152,6 @@ fn send_chat_message(
 ) {
     let body = msg_input.read().trim().to_string();
     if body.is_empty() { return; }
-
-    // Charge per-message toll
-    node.send(NodeAction::ChatMessageToll);
 
     let msg = ChatMessage {
         sender_is_me: true,
@@ -190,6 +187,7 @@ pub fn ChatPanel() -> Element {
     let webrtc = use_context::<Signal<WebRtcSessions>>();
     let mut active_session = use_signal(|| None::<String>);
     let mut msg_input = use_signal(String::new);
+    let mut pay_amount_input = use_signal(String::new);
     let node = use_node_action();
     let user_state = use_user_state();
     let my_name = user_state.read().moniker.clone().unwrap_or_default();
@@ -206,50 +204,76 @@ pub fn ChatPanel() -> Element {
     #[cfg(not(target_family = "wasm"))]
     let try_dc = || { |_sid: &str, _text: &str| -> bool { false } };
 
-    // A/V usage toll: charge AV_TOLL_COST_CURD every AV_TOLL_INTERVAL_SECS while
-    // mic or camera is active on any session. Auto-disable mic/camera when balance
-    // is insufficient.
+    // Unified payment loop: session tolls (initiator-only) + request-to-pay
     let shared = use_shared_state();
+    let toll_rates = use_toll_rates();
     {
         let node = node.clone();
         use_effect(move || {
             spawn(async move {
                 loop {
                     #[cfg(target_family = "wasm")]
-                    gloo_timers::future::TimeoutFuture::new(AV_TOLL_INTERVAL_SECS * 1000).await;
+                    {
+                        let interval_ms = toll_rates.read().session_interval_secs * 1000;
+                        gloo_timers::future::TimeoutFuture::new(interval_ms).await;
+                    }
                     #[cfg(not(target_family = "wasm"))]
                     return;
 
-                    let any_sending = chat.peek().sessions.values()
-                        .any(|s| s.mic_enabled || s.camera_enabled);
-                    if !any_sending {
-                        continue;
-                    }
-
                     let balance = shared.peek().user_contract
                         .as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
+                    let toll_cost = toll_rates.read().session_toll_curd;
 
-                    if balance >= AV_TOLL_COST_CURD {
-                        node.send(NodeAction::AvToll);
-                    } else {
-                        // Insufficient balance — auto-stop mic and camera on all sessions
-                        clog("[CHAT] A/V toll: insufficient balance, auto-stopping mic/camera");
-                        let sids: Vec<String> = chat.peek().sessions.keys().cloned().collect();
-                        for sid in &sids {
-                            if let Some(s) = chat.write().sessions.get_mut(sid) {
-                                s.mic_enabled = false;
-                                s.camera_enabled = false;
+                    // Step A — Session tolls: initiator pays per interval
+                    let sessions: Vec<(String, bool, String)> = chat.peek().sessions.iter()
+                        .filter(|(_, s)| s.status == SessionStatus::Active && s.is_initiator)
+                        .map(|(sid, s)| (sid.clone(), true, s.peer_pubkey.clone()))
+                        .collect();
+
+                    for (sid, _, _) in &sessions {
+                        if balance < toll_cost {
+                            clog(&format!("[CHAT] Session toll: insufficient balance, closing session {}", sid));
+                            ws_handle.peek().send(&ClientMsg::Close {
+                                session_id: sid.clone(),
+                            });
+                            chat.write().sessions.remove(sid);
+                        } else {
+                            node.send(NodeAction::SessionToll);
+                        }
+                    }
+
+                    // Step B — Request-to-pay: charge peer transfers
+                    let paying_sessions: Vec<(String, u64, String)> = chat.peek().sessions.iter()
+                        .filter_map(|(sid, s)| {
+                            if let Some(PaymentRequest::ActivePaying { curd_per_interval }) = &s.payment_request {
+                                Some((sid.clone(), *curd_per_interval, s.peer_pubkey.clone()))
+                            } else {
+                                None
                             }
+                        })
+                        .collect();
+
+                    for (sid, amount, peer_pubkey) in &paying_sessions {
+                        let current_balance = shared.peek().user_contract
+                            .as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
+                        if current_balance < *amount {
+                            clog(&format!("[CHAT] Request-to-pay: insufficient balance, stopping payment for {}", sid));
+                            // Send stop via data channel
                             #[cfg(target_family = "wasm")]
                             {
                                 let rtc_sessions = webrtc.read();
-                                if let Some(rtc) = rtc_sessions.get(sid) {
-                                    if let Some(ref ws) = ws_handle.read().ws {
-                                        super::chat_client::wasm::stop_mic(rtc, ws, sid);
-                                        super::chat_client::wasm::stop_camera(rtc, ws, sid);
-                                    }
-                                }
+                                let ctrl_msg = format!("{}pay_stop", super::chat_client::DC_CONTROL_PREFIX);
+                                super::chat_client::send_via_datachannel(&rtc_sessions, sid, &ctrl_msg);
                             }
+                            if let Some(s) = chat.write().sessions.get_mut(sid) {
+                                s.payment_request = None;
+                            }
+                        } else {
+                            node.send(NodeAction::PeerTransfer {
+                                peer_pubkey_hex: peer_pubkey.clone(),
+                                amount: *amount,
+                                description: "Chat peer payment".to_string(),
+                            });
                         }
                     }
                 }
@@ -507,6 +531,173 @@ pub fn ChatPanel() -> Element {
                                 " Screen"
                             }
                         }
+                        // Request-to-pay controls
+                        div { class: "chat-payment-controls",
+                            {
+                                let sid = session.session_id.clone();
+                                let payment_request = session.payment_request.clone();
+                                match payment_request {
+                                    None => {
+                                        let sid = sid.clone();
+                                        rsx! {
+                                            div { class: "chat-pay-request",
+                                                input {
+                                                    r#type: "number",
+                                                    min: "1",
+                                                    placeholder: "CURD/interval",
+                                                    value: "{pay_amount_input}",
+                                                    oninput: move |e| pay_amount_input.set(e.value()),
+                                                }
+                                                button {
+                                                    class: "chat-pay-btn",
+                                                    disabled: pay_amount_input.read().parse::<u64>().unwrap_or(0) == 0,
+                                                    onclick: {
+                                                        let sid = sid.clone();
+                                                        move |_| {
+                                                            let amount: u64 = pay_amount_input.read().parse().unwrap_or(0);
+                                                            if amount == 0 { return; }
+                                                            #[cfg(target_family = "wasm")]
+                                                            {
+                                                                let rtc_sessions = webrtc.read();
+                                                                let ctrl_msg = format!("{}pay_request:{}", super::chat_client::DC_CONTROL_PREFIX, amount);
+                                                                super::chat_client::send_via_datachannel(&rtc_sessions, &sid, &ctrl_msg);
+                                                            }
+                                                            if let Some(s) = chat.write().sessions.get_mut(&sid) {
+                                                                s.payment_request = Some(PaymentRequest::SentPending { curd_per_interval: amount });
+                                                            }
+                                                            pay_amount_input.set(String::new());
+                                                        }
+                                                    },
+                                                    "Request Payment"
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Some(PaymentRequest::SentPending { curd_per_interval }) => {
+                                        let sid = sid.clone();
+                                        rsx! {
+                                            div { class: "chat-pay-status",
+                                                span { "Requested {curd_per_interval} CURD/interval..." }
+                                                button {
+                                                    class: "chat-pay-cancel",
+                                                    onclick: {
+                                                        let sid = sid.clone();
+                                                        move |_| {
+                                                            #[cfg(target_family = "wasm")]
+                                                            {
+                                                                let rtc_sessions = webrtc.read();
+                                                                let ctrl_msg = format!("{}pay_stop", super::chat_client::DC_CONTROL_PREFIX);
+                                                                super::chat_client::send_via_datachannel(&rtc_sessions, &sid, &ctrl_msg);
+                                                            }
+                                                            if let Some(s) = chat.write().sessions.get_mut(&sid) {
+                                                                s.payment_request = None;
+                                                            }
+                                                        }
+                                                    },
+                                                    "Cancel"
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Some(PaymentRequest::ReceivedPending { curd_per_interval }) => {
+                                        let sid = sid.clone();
+                                        rsx! {
+                                            div { class: "chat-pay-status",
+                                                span { "Peer requests {curd_per_interval} CURD/interval" }
+                                                button {
+                                                    class: "chat-pay-accept",
+                                                    onclick: {
+                                                        let sid = sid.clone();
+                                                        move |_| {
+                                                            #[cfg(target_family = "wasm")]
+                                                            {
+                                                                let rtc_sessions = webrtc.read();
+                                                                let ctrl_msg = format!("{}pay_accept", super::chat_client::DC_CONTROL_PREFIX);
+                                                                super::chat_client::send_via_datachannel(&rtc_sessions, &sid, &ctrl_msg);
+                                                            }
+                                                            if let Some(s) = chat.write().sessions.get_mut(&sid) {
+                                                                s.payment_request = Some(PaymentRequest::ActivePaying { curd_per_interval });
+                                                            }
+                                                        }
+                                                    },
+                                                    "Accept"
+                                                }
+                                                button {
+                                                    class: "chat-pay-decline",
+                                                    onclick: {
+                                                        let sid = sid.clone();
+                                                        move |_| {
+                                                            #[cfg(target_family = "wasm")]
+                                                            {
+                                                                let rtc_sessions = webrtc.read();
+                                                                let ctrl_msg = format!("{}pay_decline", super::chat_client::DC_CONTROL_PREFIX);
+                                                                super::chat_client::send_via_datachannel(&rtc_sessions, &sid, &ctrl_msg);
+                                                            }
+                                                            if let Some(s) = chat.write().sessions.get_mut(&sid) {
+                                                                s.payment_request = None;
+                                                            }
+                                                        }
+                                                    },
+                                                    "Decline"
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Some(PaymentRequest::ActivePaying { curd_per_interval }) => {
+                                        let sid = sid.clone();
+                                        rsx! {
+                                            div { class: "chat-pay-status chat-pay-active",
+                                                span { "Paying {curd_per_interval} CURD/interval" }
+                                                button {
+                                                    class: "chat-pay-stop",
+                                                    onclick: {
+                                                        let sid = sid.clone();
+                                                        move |_| {
+                                                            #[cfg(target_family = "wasm")]
+                                                            {
+                                                                let rtc_sessions = webrtc.read();
+                                                                let ctrl_msg = format!("{}pay_stop", super::chat_client::DC_CONTROL_PREFIX);
+                                                                super::chat_client::send_via_datachannel(&rtc_sessions, &sid, &ctrl_msg);
+                                                            }
+                                                            if let Some(s) = chat.write().sessions.get_mut(&sid) {
+                                                                s.payment_request = None;
+                                                            }
+                                                        }
+                                                    },
+                                                    "Stop"
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Some(PaymentRequest::ActiveReceiving { curd_per_interval }) => {
+                                        let sid = sid.clone();
+                                        rsx! {
+                                            div { class: "chat-pay-status chat-pay-active",
+                                                span { "Receiving {curd_per_interval} CURD/interval" }
+                                                button {
+                                                    class: "chat-pay-stop",
+                                                    onclick: {
+                                                        let sid = sid.clone();
+                                                        move |_| {
+                                                            #[cfg(target_family = "wasm")]
+                                                            {
+                                                                let rtc_sessions = webrtc.read();
+                                                                let ctrl_msg = format!("{}pay_stop", super::chat_client::DC_CONTROL_PREFIX);
+                                                                super::chat_client::send_via_datachannel(&rtc_sessions, &sid, &ctrl_msg);
+                                                            }
+                                                            if let Some(s) = chat.write().sessions.get_mut(&sid) {
+                                                                s.payment_request = None;
+                                                            }
+                                                        }
+                                                    },
+                                                    "Stop"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         div { class: "chat-input",
                             input {
                                 r#type: "text",
@@ -559,8 +750,9 @@ pub fn ChatWithSupplierButton(supplier_name: String) -> Element {
     let my_name = user_state.read().moniker.clone().unwrap_or_default();
     let mut invite_msg = use_signal(String::new);
 
+    let toll_rates_invite = use_toll_rates();
     let balance = shared.read().user_contract.as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
-    let cost = CHAT_MESSAGE_COST_CURD;
+    let cost = toll_rates_invite.read().session_toll_curd;
     let can_afford = balance >= cost;
 
     // Find supplier's public key from directory
@@ -619,8 +811,6 @@ pub fn ChatWithSupplierButton(supplier_name: String) -> Element {
                             if body.is_empty() { return; }
 
                             if let Some(ref pubkey) = supplier_pubkey {
-                                node.send(NodeAction::ChatMessageToll);
-
                                 let session_id = format!("chat-{}", chrono::Utc::now().timestamp_millis());
                                 node.send(NodeAction::SendInboxMessage {
                                     recipient_name: supplier_name.clone(),
@@ -647,6 +837,8 @@ pub fn ChatWithSupplierButton(supplier_name: String) -> Element {
                                     camera_enabled: false,
                                     tv_enabled: false,
                                     has_remote_video: false,
+                                    is_initiator: true,
+                                    payment_request: None,
                                 };
                                 {
                                     let mut state = chat.write();

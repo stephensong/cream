@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 
-use cream_common::inbox::{InboxMessage, MessageKind, INBOX_MESSAGE_COST_CURD};
+use cream_common::inbox::{InboxMessage, MessageKind};
 
 use super::chat_client::{
     ChatMessage, ChatSession, ChatState, ChatWsHandle, ClientMsg, SessionStatus,
@@ -16,6 +16,7 @@ pub fn MessagesView() -> Element {
     let user_state = use_user_state();
     let mut chat = use_context::<Signal<ChatState>>();
     let ws_handle = use_context::<Signal<ChatWsHandle>>();
+    let node_action = use_node_action();
     let mut compose_to = use_signal(String::new);
     let mut compose_body = use_signal(String::new);
     let mut send_error = use_signal(|| None::<String>);
@@ -26,7 +27,8 @@ pub fn MessagesView() -> Element {
         .as_ref()
         .map(|uc| uc.balance_curds)
         .unwrap_or(0);
-    let cost = INBOX_MESSAGE_COST_CURD;
+    let toll_rates = super::toll_rates::use_toll_rates();
+    let cost = toll_rates.read().inbox_message_curd;
     let my_name = user_state.read().moniker.clone().unwrap_or_default();
 
     // Combine received inbox messages and locally-tracked sent messages
@@ -145,8 +147,7 @@ pub fn MessagesView() -> Element {
                                 )));
                                 return;
                             }
-                            let node = use_node_action();
-                            node.send(NodeAction::SendInboxMessage {
+                            node_action.send(NodeAction::SendInboxMessage {
                                 recipient_name: to,
                                 body,
                                 kind: MessageKind::DirectMessage,
@@ -174,16 +175,12 @@ pub fn MessagesView() -> Element {
                                     )));
                                     return;
                                 }
-                                let node = use_node_action();
-
                                 if let Some(ref pubkey) = recipient_pubkey {
-                                    node.send(NodeAction::ChatMessageToll);
-
                                     let session_id = format!(
                                         "chat-{}",
                                         chrono::Utc::now().timestamp_millis()
                                     );
-                                    node.send(NodeAction::SendInboxMessage {
+                                    node_action.send(NodeAction::SendInboxMessage {
                                         recipient_name: to.clone(),
                                         body: body.clone(),
                                         kind: MessageKind::ChatInvite {
@@ -208,6 +205,8 @@ pub fn MessagesView() -> Element {
                                         camera_enabled: false,
                                         tv_enabled: false,
                                         has_remote_video: false,
+                                        is_initiator: true,
+                                        payment_request: None,
                                     };
                                     {
                                         let mut state = chat.write();
@@ -301,7 +300,6 @@ fn ChatInviteAction(session_id: String, peer_name: String) -> Element {
     let mut chat = use_context::<Signal<ChatState>>();
     let ws_handle = use_context::<Signal<ChatWsHandle>>();
     let shared_state = use_shared_state();
-    let node = use_node_action();
 
     // Resolve peer pubkey for presence check
     let peer_pubkey: Option<String> = {
@@ -342,8 +340,6 @@ fn ChatInviteAction(session_id: String, peer_name: String) -> Element {
                     let peer_pubkey = peer_pubkey.clone();
                     move |_| {
                         if let Some(pubkey) = peer_pubkey.clone() {
-                            node.send(NodeAction::ChatMessageToll);
-
                             let session = ChatSession {
                                 session_id: session_id.clone(),
                                 peer_pubkey: pubkey.clone(),
@@ -356,6 +352,8 @@ fn ChatInviteAction(session_id: String, peer_name: String) -> Element {
                                 camera_enabled: false,
                                 tv_enabled: false,
                                 has_remote_video: false,
+                                is_initiator: true,
+                                payment_request: None,
                             };
                             {
                                 let mut state = chat.write();

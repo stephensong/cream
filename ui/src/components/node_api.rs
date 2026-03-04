@@ -94,10 +94,18 @@ pub enum NodeAction {
         body: String,
         kind: cream_common::inbox::MessageKind,
     },
-    /// Charge per chat message sent (CHAT_MESSAGE_COST_CURD each).
-    ChatMessageToll,
-    /// Charge periodic A/V usage toll (AV_TOLL_COST_CURD per tick).
-    AvToll,
+    /// Session toll: initiator pays per interval to root/guardians.
+    SessionToll,
+    /// Peer-to-peer transfer: user → peer's contract (for request-to-pay).
+    PeerTransfer {
+        peer_pubkey_hex: String,
+        amount: u64,
+        description: String,
+    },
+    /// Update toll rates on the root user contract (admin only, FROST-signed).
+    SetTollRates {
+        rates: cream_common::tolls::TollRates,
+    },
 }
 
 /// Get a handle to send actions to the node communication coroutine.
@@ -211,6 +219,7 @@ mod wasm_impl {
         let mut shared = use_shared_state();
         let key_manager_signal: Signal<Option<KeyManager>> = use_context();
         let user_state: Signal<crate::components::user_state::UserState> = use_context();
+        let toll_rates: Signal<cream_common::tolls::TollRates> = use_context();
 
         // ── Connect to node via WebSocket ───────────────────────────────
         // Default node URL; overridable at compile-time via CREAM_NODE_URL env var,
@@ -499,6 +508,7 @@ mod wasm_impl {
                         &signing_service,
                         &mut inbox_contract_instance_id,
                         &mut inbox_contract_key,
+                        &toll_rates,
                     ).await;
                 }
 
@@ -527,7 +537,7 @@ mod wasm_impl {
                             tracing::debug!("Node OK");
                         }
                         Ok(other) => {
-                            tracing::debug!("Unhandled response: {:?}", other);
+                            clog(&format!("[CREAM] Unhandled response: {:?}", other));
                         }
                         Err(e) => {
                             // Check if this is a MissingContract error for the
@@ -562,7 +572,7 @@ mod wasm_impl {
                                     tracing::error!("Failed to PUT directory: {:?}", e);
                                 }
                             } else {
-                                tracing::error!("Node error: {:?}", e);
+                                clog(&format!("[CREAM] Node error: {:?}", e));
                                 shared.write().last_error = Some(format!("{:?}", e));
                             }
                         }
@@ -700,6 +710,7 @@ mod wasm_impl {
                 current_supplier: String::new(),
                 balance_curds: 0,
                 invited_by: String::new(),
+                toll_rates: Default::default(),
                 ledger: vec![tx],
                 next_tx_id: 0,
                 updated_at: chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap(),
@@ -784,6 +795,7 @@ mod wasm_impl {
         signing_service: &crate::components::signing_service::SigningService,
         inbox_contract_instance_id: &mut Option<ContractInstanceId>,
         inbox_contract_key_ref: &mut Option<ContractKey>,
+        toll_rates: &Signal<cream_common::tolls::TollRates>,
     ) {
         // Construct wallet backend for this action dispatch
         let mut wallet = CreamNativeWallet::new(
@@ -978,6 +990,7 @@ mod wasm_impl {
                     current_supplier: name.clone(),
                     balance_curds: 0,
                     invited_by: String::new(),
+                    toll_rates: Default::default(),
                     ledger: Vec::new(),
                     next_tx_id: 0,
                     updated_at: chrono::Utc::now(),
@@ -1812,6 +1825,7 @@ mod wasm_impl {
                     current_supplier,
                     balance_curds: 0,
                     invited_by,
+                    toll_rates: Default::default(),
                     ledger: Vec::new(),
                     next_tx_id: 0,
                     updated_at: now,
@@ -1935,10 +1949,11 @@ mod wasm_impl {
             }
 
             NodeAction::PegIn { amount_sats } => {
-                use cream_common::lightning_gateway::{LightningGateway, PaymentStatus, CURD_PER_SAT};
+                use cream_common::lightning_gateway::{LightningGateway, PaymentStatus};
                 use super::super::lightning_mock::MockLightningGateway;
+                let curd_per_sat = toll_rates.read().curd_per_sat;
 
-                clog(&format!("[CREAM] PegIn: {} sats → {} CURD", amount_sats, amount_sats * CURD_PER_SAT));
+                clog(&format!("[CREAM] PegIn: {} sats → {} CURD", amount_sats, amount_sats * curd_per_sat));
                 let mut gw = MockLightningGateway::new();
 
                 let invoice = match gw.create_invoice(amount_sats, "CURD peg-in") {
@@ -1951,7 +1966,7 @@ mod wasm_impl {
 
                 match gw.check_invoice(&invoice.payment_hash) {
                     Ok(PaymentStatus::Success { .. }) => {
-                        let curd_amount = amount_sats * CURD_PER_SAT;
+                        let curd_amount = amount_sats * curd_per_sat;
                         let user_name = user_state.read().moniker.clone().unwrap_or_default();
                         wallet.transfer_from_root(
                             api,
@@ -1971,8 +1986,7 @@ mod wasm_impl {
             }
 
             NodeAction::PegInAllocate { amount_sats, payment_hash } => {
-                use cream_common::lightning_gateway::CURD_PER_SAT;
-                let curd_amount = amount_sats * CURD_PER_SAT;
+                let curd_amount = amount_sats * toll_rates.read().curd_per_sat;
                 clog(&format!("[CREAM] PegInAllocate: {} sats → {} CURD (hash: {})", amount_sats, curd_amount, payment_hash));
 
                 let user_name = user_state.read().moniker.clone().unwrap_or_default();
@@ -1994,10 +2008,10 @@ mod wasm_impl {
             }
 
             NodeAction::PegOut { amount_curd, bolt11 } => {
-                use cream_common::lightning_gateway::{LightningGateway, PaymentStatus, CURD_PER_SAT};
+                use cream_common::lightning_gateway::{LightningGateway, PaymentStatus};
                 use super::super::lightning_mock::MockLightningGateway;
 
-                let sats_out = amount_curd / CURD_PER_SAT;
+                let sats_out = amount_curd / toll_rates.read().curd_per_sat;
                 clog(&format!("[CREAM] PegOut: {} CURD → {} sats", amount_curd, sats_out));
 
                 // Check balance
@@ -2040,8 +2054,7 @@ mod wasm_impl {
             }
 
             NodeAction::PegOutViaGateway { amount_curd, bolt11 } => {
-                use cream_common::lightning_gateway::CURD_PER_SAT;
-                let sats_out = amount_curd / CURD_PER_SAT;
+                let sats_out = amount_curd / toll_rates.read().curd_per_sat;
                 clog(&format!("[CREAM] PegOutViaGateway: {} CURD → {} sats", amount_curd, sats_out));
 
                 // Check balance
@@ -2118,7 +2131,7 @@ mod wasm_impl {
             } => {
                 clog(&format!("[CREAM] SendInboxMessage to {}: {} chars", recipient_name, body.len()));
 
-                let cost = cream_common::inbox::INBOX_MESSAGE_COST_CURD;
+                let cost = toll_rates.read().inbox_message_curd;
 
                 // Check balance from on-network user contract
                 let current_balance = shared.read().user_contract
@@ -2228,14 +2241,14 @@ mod wasm_impl {
                 }
             }
 
-            NodeAction::ChatMessageToll => {
-                let cost = cream_common::chat::CHAT_MESSAGE_COST_CURD;
-                clog(&format!("[CREAM] ChatMessageToll: charging {} CURD", cost));
+            NodeAction::SessionToll => {
+                let cost = toll_rates.read().session_toll_curd;
+                clog(&format!("[CREAM] SessionToll: charging {} CURD", cost));
 
                 let current_balance = shared.read().user_contract
                     .as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
                 if current_balance < cost {
-                    clog("[CREAM] ERROR: Insufficient balance for chat message toll");
+                    clog("[CREAM] SessionToll: insufficient balance, skipping");
                     return;
                 }
 
@@ -2243,31 +2256,56 @@ mod wasm_impl {
                 wallet.transfer_to_root(
                     api,
                     cost,
-                    "Chat message toll".to_string(),
+                    "Chat session toll".to_string(),
                     user_name,
                 ).await;
-                clog(&format!("[CREAM] ChatMessageToll: paid {} CURD", cost));
+                clog(&format!("[CREAM] SessionToll: paid {} CURD", cost));
             }
 
-            NodeAction::AvToll => {
-                let cost = cream_common::chat::AV_TOLL_COST_CURD;
-                clog(&format!("[CREAM] AvToll: charging {} CURD", cost));
+            NodeAction::PeerTransfer { peer_pubkey_hex, amount, description } => {
+                clog(&format!("[CREAM] PeerTransfer: {} CURD to {}", amount, &peer_pubkey_hex[..16]));
 
                 let current_balance = shared.read().user_contract
                     .as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
-                if current_balance < cost {
-                    clog("[CREAM] AvToll: insufficient balance, skipping");
+                if current_balance < amount {
+                    clog("[CREAM] PeerTransfer: insufficient balance, skipping");
                     return;
                 }
 
+                // Derive the peer's contract key from their public key
+                let pubkey_bytes: Vec<u8> = (0..peer_pubkey_hex.len())
+                    .step_by(2)
+                    .filter_map(|i| u8::from_str_radix(&peer_pubkey_hex[i..i+2], 16).ok())
+                    .collect();
+                if pubkey_bytes.len() != 32 {
+                    clog("[CREAM] PeerTransfer: invalid peer pubkey hex length");
+                    return;
+                }
+                let mut key_bytes = [0u8; 32];
+                key_bytes.copy_from_slice(&pubkey_bytes);
+                let peer_vk = match ed25519_dalek::VerifyingKey::from_bytes(&key_bytes) {
+                    Ok(vk) => vk,
+                    Err(e) => {
+                        clog(&format!("[CREAM] PeerTransfer: invalid peer pubkey: {:?}", e));
+                        return;
+                    }
+                };
+                let peer_params = UserContractParameters { owner: peer_vk };
+                let peer_params_bytes = serde_json::to_vec(&peer_params).unwrap();
+                let peer_contract = make_contract(USER_CONTRACT_WASM, Parameters::from(peer_params_bytes));
+                let peer_key = peer_contract.key();
+
                 let user_name = user_state.read().moniker.clone().unwrap_or_default();
-                wallet.transfer_to_root(
+                wallet.do_transfer(
                     api,
-                    cost,
-                    "A/V usage toll".to_string(),
+                    ContractRole::User,
+                    ContractRole::ThirdParty(peer_key),
+                    amount,
+                    description,
                     user_name,
+                    "peer".to_string(),
                 ).await;
-                clog(&format!("[CREAM] AvToll: paid {} CURD", cost));
+                clog(&format!("[CREAM] PeerTransfer: paid {} CURD", amount));
             }
 
             NodeAction::SubscribeCustomerStorefront { storefront_key } => {
@@ -2296,6 +2334,42 @@ mod wasm_impl {
                     Err(e) => {
                         clog(&format!("[CREAM] ERROR: Invalid storefront key '{}': {:?}", storefront_key, e));
                     }
+                }
+            }
+
+            NodeAction::SetTollRates { rates } => {
+                clog(&format!("[CREAM] SetTollRates: {:?}", rates));
+
+                let existing = shared.read().root_user_contract.clone();
+                if let Some(mut root_state) = existing {
+                    root_state.toll_rates = rates;
+                    root_state.updated_at = chrono::Utc::now();
+                    root_state.balance_curds = root_state.derive_balance();
+
+                    // Sign via FROST (root contract requires real signature)
+                    let msg = root_state.signable_bytes();
+                    match signing_service.sign(&msg).await {
+                        Ok(sig) => root_state.signature = sig,
+                        Err(e) => {
+                            clog(&format!("[CREAM] ERROR: FROST signing failed for SetTollRates: {}", e));
+                            return;
+                        }
+                    }
+
+                    let uc_bytes = serde_json::to_vec(&root_state).unwrap();
+                    let update = ClientRequest::ContractOp(ContractRequest::Update {
+                        key: *root_contract_key,
+                        data: UpdateData::State(State::from(uc_bytes)),
+                    });
+                    shared.write().root_user_contract = Some(root_state);
+
+                    if let Err(e) = api.send(update).await {
+                        clog(&format!("[CREAM] ERROR: Failed to update root contract with toll rates: {:?}", e));
+                    } else {
+                        clog("[CREAM] SetTollRates: root contract updated successfully");
+                    }
+                } else {
+                    clog("[CREAM] SetTollRates: no root user contract available");
                 }
             }
         }
@@ -2532,7 +2606,7 @@ mod wasm_impl {
             }
 
             ContractResponse::UpdateResponse { key, .. } => {
-                tracing::debug!("Contract update OK: {:?}", key);
+                clog(&format!("[CREAM] UpdateResponse OK: {:?}", key));
             }
 
             ContractResponse::SubscribeResponse { key, subscribed } => {

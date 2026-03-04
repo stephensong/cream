@@ -23,6 +23,7 @@ pub fn SupplierDashboard() -> Element {
     let mut contact_phone = use_signal(String::new);
     let mut contact_email = use_signal(String::new);
     let mut contact_address = use_signal(String::new);
+    let node_action = use_node_action();
 
     let state = user_state.read();
     let moniker = state.moniker.clone().unwrap_or_default();
@@ -105,10 +106,7 @@ pub fn SupplierDashboard() -> Element {
                                 }
                             }
 
-                            {
-                                let node = use_node_action();
-                                node.send(NodeAction::UpdateSchedule { schedule: sched });
-                            }
+                            node_action.send(NodeAction::UpdateSchedule { schedule: sched });
                             editing_schedule.set(false);
                         },
                         on_cancel: move |_| {
@@ -188,10 +186,7 @@ pub fn SupplierDashboard() -> Element {
                                     }
                                 }
 
-                                {
-                                    let node = use_node_action();
-                                    node.send(NodeAction::UpdateContactDetails { phone, email, address });
-                                }
+                                node_action.send(NodeAction::UpdateContactDetails { phone, email, address });
                                 editing_contact.set(false);
                             }},
                             "Save Contact Details"
@@ -290,8 +285,7 @@ pub fn SupplierDashboard() -> Element {
                                                     let p = edit_price.read().trim().parse::<u64>().unwrap_or(0);
                                                     let q = edit_quantity.read().trim().parse::<u32>().unwrap_or(0);
                                                     if p > 0 {
-                                                        let node = use_node_action();
-                                                        node.send(NodeAction::UpdateProduct {
+                                                        node_action.send(NodeAction::UpdateProduct {
                                                             product_id: pid_save.clone(),
                                                             price_curd: p,
                                                             quantity_total: q,
@@ -374,8 +368,7 @@ pub fn SupplierDashboard() -> Element {
                                         button {
                                             class: "fulfill-order-btn",
                                             onclick: move |_| {
-                                                let node = use_node_action();
-                                                node.send(NodeAction::FulfillOrder {
+                                                node_action.send(NodeAction::FulfillOrder {
                                                     order_id: fulfill_oid.clone(),
                                                 });
                                             },
@@ -386,8 +379,7 @@ pub fn SupplierDashboard() -> Element {
                                         button {
                                             class: "cancel-order-btn",
                                             onclick: move |_| {
-                                                let node = use_node_action();
-                                                node.send(NodeAction::CancelOrder {
+                                                node_action.send(NodeAction::CancelOrder {
                                                     order_id: cancel_oid.clone(),
                                                 });
                                             },

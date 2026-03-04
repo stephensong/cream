@@ -22,7 +22,9 @@ pub mod wallet_router;
 pub mod lightning_mock;
 #[allow(dead_code)] // types used in WASM builds only
 pub mod lightning_remote;
+pub mod toll_rates;
 pub mod wallet_view;
 pub mod chat_client;
 pub mod chat_view;
 pub mod messages_view;
+pub mod profile_view;

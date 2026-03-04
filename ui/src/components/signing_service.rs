@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// Compile-time guardian URLs, overridable via `CREAM_GUARDIAN_URLS` env var.
 /// Comma-separated list of URLs, e.g. "http://localhost:3010,http://localhost:3011,http://localhost:3012"
 #[allow(dead_code)] // used in WASM builds
-fn guardian_urls() -> Vec<String> {
+pub(crate) fn guardian_urls() -> Vec<String> {
     option_env!("CREAM_GUARDIAN_URLS")
         .unwrap_or("")
         .split(',')

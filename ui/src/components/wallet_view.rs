@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 
 use cream_common::currency::format_amount;
 use cream_common::identity::ROOT_USER_NAME;
-use cream_common::lightning_gateway::CURD_PER_SAT;
+use super::toll_rates::use_toll_rates;
 use cream_common::wallet::TransactionKind;
 
 use super::lightning_remote::LightningClient;
@@ -45,6 +45,8 @@ enum PegInState {
 pub fn WalletView() -> Element {
     let user_state = use_user_state();
     let shared_state = use_shared_state();
+    let toll_rates = use_toll_rates();
+    let curd_per_sat = toll_rates.read().curd_per_sat;
 
     let moniker = user_state.read().moniker.clone().unwrap_or_default();
     let is_supplier = user_state.read().is_supplier;
@@ -88,6 +90,7 @@ pub fn WalletView() -> Element {
     let deposits_str = format_amount(incoming_deposits);
 
     let has_gateway = LightningClient::is_available();
+    let node_action = use_node_action();
 
     // Peg-in state
     let mut pegin_sats = use_signal(|| String::new());
@@ -119,8 +122,7 @@ pub fn WalletView() -> Element {
                                         amount_sats,
                                     });
                                     // Allocate CURD
-                                    let node = use_node_action();
-                                    node.send(NodeAction::PegInAllocate {
+                                    node_action.send(NodeAction::PegInAllocate {
                                         amount_sats,
                                         payment_hash: hash,
                                     });
@@ -170,7 +172,7 @@ pub fn WalletView() -> Element {
                 p { class: "wallet-deposits", "Includes {deposits_str} held in escrow" }
             }
 
-            p { class: "exchange-rate", "Exchange rate: 1 sat = {CURD_PER_SAT} CURD" }
+            p { class: "exchange-rate", "Exchange rate: 1 sat = {curd_per_sat} CURD" }
 
             // ── Peg-In ──
             div { class: "peg-section",
@@ -221,7 +223,7 @@ pub fn WalletView() -> Element {
                     },
                     PegInState::Accepted { amount_sats, .. } => rsx! {
                         div { class: "pegin-pending",
-                            p { class: "pegin-status pegin-accepted", "Payment received! Allocating {amount_sats * CURD_PER_SAT} CURD..." }
+                            p { class: "pegin-status pegin-accepted", "Payment received! Allocating {amount_sats * curd_per_sat} CURD..." }
                         }
                     },
                     PegInState::Complete => rsx! {
@@ -250,7 +252,7 @@ pub fn WalletView() -> Element {
                             }
                             if pegin_sats_val > 0 {
                                 {
-                                    let curd = pegin_sats_val * CURD_PER_SAT;
+                                    let curd = pegin_sats_val * curd_per_sat;
                                     rsx! { p { class: "peg-preview", "You will receive {format_amount(curd)}" } }
                                 }
                             }
@@ -290,8 +292,7 @@ pub fn WalletView() -> Element {
                                 onclick: move |_| {
                                     let sats: u64 = pegin_sats.read().parse().unwrap_or(0);
                                     if sats > 0 {
-                                        let node = use_node_action();
-                                        node.send(NodeAction::PegIn { amount_sats: sats });
+                                        node_action.send(NodeAction::PegIn { amount_sats: sats });
                                         pegin_sats.set(String::new());
                                     }
                                 },
@@ -316,7 +317,7 @@ pub fn WalletView() -> Element {
                     }
                     if pegout_curd_val > 0 {
                         {
-                            let sats = pegout_curd_val / CURD_PER_SAT;
+                            let sats = pegout_curd_val / curd_per_sat;
                             rsx! { p { class: "peg-preview", "You will withdraw {sats} sats" } }
                         }
                     }
@@ -336,11 +337,10 @@ pub fn WalletView() -> Element {
                         let curd: u64 = pegout_curd.read().parse().unwrap_or(0);
                         let bolt11 = pegout_bolt11.read().clone();
                         if curd > 0 && !bolt11.is_empty() {
-                            let node = use_node_action();
                             if has_gateway {
-                                node.send(NodeAction::PegOutViaGateway { amount_curd: curd, bolt11 });
+                                node_action.send(NodeAction::PegOutViaGateway { amount_curd: curd, bolt11 });
                             } else {
-                                node.send(NodeAction::PegOut { amount_curd: curd, bolt11 });
+                                node_action.send(NodeAction::PegOut { amount_curd: curd, bolt11 });
                             }
                             pegout_curd.set(String::new());
                             pegout_bolt11.set(String::new());
@@ -354,10 +354,27 @@ pub fn WalletView() -> Element {
             div { class: "wallet-actions",
                 button {
                     onclick: move |_| {
-                        let node = use_node_action();
-                        node.send(NodeAction::FaucetTopUp);
+                        node_action.send(NodeAction::FaucetTopUp);
                     },
                     "Faucet (+1000 CURD)"
+                }
+            }
+
+            // ── Toll Rates (read-only) ──
+            {
+                let rates = toll_rates.read();
+                let session_cost = rates.session_toll_curd;
+                let session_secs = rates.session_interval_secs;
+                let message_cost = rates.inbox_message_curd;
+                rsx! {
+                    div { class: "fee-schedule",
+                        h3 { "Toll Rates" }
+                        div { class: "toll-rates-compact",
+                            p { "Chat Session: {session_cost} CURD / {session_secs}s" }
+                            p { "Send Message: {message_cost} CURD" }
+                            p { "Exchange Rate: 1 sat = {curd_per_sat} CURD" }
+                        }
+                    }
                 }
             }
 

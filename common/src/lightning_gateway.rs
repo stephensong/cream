@@ -1,8 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// Exchange rate: 1 satoshi = 10 CURD.
-pub const CURD_PER_SAT: u64 = 10;
-
 /// Status of a Lightning payment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PaymentStatus {

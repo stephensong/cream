@@ -382,6 +382,14 @@ pub async fn timed_wait_for_get(
     Some((bytes, start.elapsed()))
 }
 
+/// Compute the "root" admin user's pubkey as a lowercase hex string.
+///
+/// Uses the same deterministic key derivation as `make_dummy_user("root")`.
+pub fn root_admin_pubkey_hex() -> String {
+    let (_id, vk) = make_dummy_user("root");
+    vk.as_bytes().iter().map(|b| format!("{:02x}", b)).collect()
+}
+
 /// Like `recv_matching`, but also returns how long it took.
 pub async fn timed_recv_matching<F>(
     api: &mut WebApi,

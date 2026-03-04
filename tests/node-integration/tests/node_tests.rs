@@ -793,11 +793,11 @@ async fn cumulative_node_tests() {
         use cream_common::user_contract::UserContractState;
         use cream_common::wallet::TransactionKind;
 
-        // GET root contract state from gateway — retry until all 5 transfers
+        // GET root contract state from gateway — retry until all 6 transfers
         // have propagated (Freenet eventual consistency means the last UPDATE
         // may not be visible immediately on a different node).
-        let expected_balance = 1_000_000 - (5 * 10_000);
-        let expected_ledger_len = 6; // genesis credit + 5 debits
+        let expected_balance = 1_000_000 - (6 * 10_000);
+        let expected_ledger_len = 7; // genesis credit + 6 debits (Gary, Emma, Iris, Alice, Bob, root)
         let mut root_state: UserContractState;
         let mut converged = false;
         for attempt in 1..=10 {
@@ -861,6 +861,8 @@ async fn cumulative_node_tests() {
                 h.emma.user_contract_key.as_ref().expect("Emma should have a user contract")
             } else if recipient_name == "Iris" {
                 h.iris.user_contract_key.as_ref().expect("Iris should have a user contract")
+            } else if recipient_name == "root" {
+                h.root_admin.user_contract_key.as_ref().expect("root should have a user contract")
             } else {
                 panic!("9: unexpected debit receiver: {}", recipient_name);
             };

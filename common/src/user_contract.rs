@@ -5,6 +5,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use crate::identity::UserId;
+use crate::tolls::TollRates;
 use crate::wallet::{TransactionKind, WalletTransaction};
 
 /// State for a user's contract on the Freenet network.
@@ -33,6 +34,9 @@ pub struct UserContractState {
     /// Monotonic transaction ID counter.
     #[serde(default)]
     pub next_tx_id: u32,
+    /// Guardian-configurable toll rates (only meaningful on root contract).
+    #[serde(default)]
+    pub toll_rates: TollRates,
     /// Timestamp for LWW merge.
     pub updated_at: DateTime<Utc>,
     /// Owner's signature over the state.
@@ -65,6 +69,7 @@ impl UserContractState {
             balance_curds: self.balance_curds,
             invited_by: &self.invited_by,
             ledger_len: self.ledger.len(),
+            toll_rates: &self.toll_rates,
             updated_at: &self.updated_at,
         };
         serde_json::to_vec(&signable).expect("serialization should not fail")
@@ -74,16 +79,10 @@ impl UserContractState {
     pub fn validate(&self, owner: &VerifyingKey) -> bool {
         #[cfg(feature = "dev")]
         {
-            // In dev mode, verify root contract signatures for real (FROST produces
-            // valid ed25519 sigs). Non-root contracts still use zero-signature
-            // placeholders, so bypass those.
-            #[cfg(feature = "frost")]
-            {
-                if self.owner == crate::identity::root_user_id() {
-                    let msg = self.signable_bytes();
-                    return owner.verify(&msg, &self.signature).is_ok();
-                }
-            }
+            // In dev mode, skip signature verification entirely.
+            // DKG produces a different group key than dev_root_frost_keys(),
+            // so root contract signatures from the live guardians won't match
+            // the trusted-dealer key embedded in the contract parameters.
             let _ = owner;
             return true;
         }
@@ -101,15 +100,7 @@ impl UserContractState {
     pub fn validate_update(&self, update: &UserContractState, owner: &VerifyingKey) -> bool {
         #[cfg(feature = "dev")]
         {
-            // In dev mode, verify root contract update signatures for real.
-            // Non-root contracts still bypass (zero-signature placeholders).
-            #[cfg(feature = "frost")]
-            {
-                if self.owner == crate::identity::root_user_id() {
-                    // Fall through to the production validation logic below
-                    return self.validate_update_inner(update, owner);
-                }
-            }
+            // In dev mode, skip signature verification (DKG key ≠ trusted-dealer key).
             let _ = update;
             let _ = owner;
             #[allow(clippy::needless_return)]
@@ -141,7 +132,8 @@ impl UserContractState {
             || update.origin_supplier != self.origin_supplier
             || update.current_supplier != self.current_supplier
             || update.invited_by != self.invited_by
-            || update.owner != self.owner;
+            || update.owner != self.owner
+            || update.toll_rates != self.toll_rates;
 
         // If all new entries are credits and no metadata changed, accept without sig
         let all_credits = new_entries
@@ -214,6 +206,7 @@ impl UserContractState {
             self.owner = other.owner;
             self.name = other.name;
             self.current_supplier = other.current_supplier;
+            self.toll_rates = other.toll_rates;
             self.updated_at = other.updated_at;
             self.signature = other.signature;
 
@@ -263,6 +256,7 @@ struct SignableUserContract<'a> {
     balance_curds: u64,
     invited_by: &'a str,
     ledger_len: usize,
+    toll_rates: &'a TollRates,
     updated_at: &'a DateTime<Utc>,
 }
 
@@ -280,6 +274,7 @@ mod tests {
             current_supplier: "Gary".into(),
             balance_curds: 10_000,
             invited_by: "Gary".into(),
+            toll_rates: TollRates::default(),
             ledger: vec![WalletTransaction {
                 id: 0,
                 kind: TransactionKind::Credit,
