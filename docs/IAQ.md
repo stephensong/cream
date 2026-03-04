@@ -919,7 +919,18 @@ The milkman takes on the visibility risk voluntarily, in exchange for the resale
 
 No special infrastructure is needed — the milkman is just another supplier in the co-op who happens to source from other suppliers rather than from their own cows. CURD flows naturally: customers pay the milkman, milkman pays the farmer, all on-network. Chat handles the scheduling. The existing order and escrow system handles the money.
 
-What CREAM deliberately does **not** support is anonymous long-distance shipping through courier networks. That would require chain-of-custody tracking, dispute resolution, and reputation systems — all the complexity of a generic marketplace. CREAM's delivery model is personal and local: the farmer or the milkman is driving past your house anyway.
+**The reseller shopfront.** The delivery person doesn't have to deliver at all. They can operate a physical shop — picking up from the farmer in bulk, then reselling through a standard CREAM storefront with published hours and a shop address. Customers browse and collect in person, just like at a farm gate, but the farmer behind the products remains completely private. The reseller cops the exposure; the farmer doesn't. No new features needed — this is a standard CREAM supplier who happens to source from other suppliers.
+
+These models form a spectrum of distribution, all supported by the same platform:
+
+| Model | Farmer visible? | Customer visits | New features needed |
+|-------|----------------|-----------------|---------------------|
+| Farm gate | Yes | Farm | None |
+| Farmer delivers | No | Home | Minimal (address on order) |
+| Milkman delivers | No | Home | None |
+| Reseller shopfront | No | Shop | None |
+
+What CREAM deliberately does **not** support is anonymous long-distance shipping through courier networks. That would require chain-of-custody tracking, dispute resolution, and reputation systems — all the complexity of a generic marketplace. CREAM's delivery model is personal and local.
 
 ### How does a customer find their local co-op?
 
