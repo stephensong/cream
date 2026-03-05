@@ -102,9 +102,11 @@ async fn setup_storefront_on_port(
             email: None,
             address: None,
             market_products: BTreeMap::new(),
+            extra: Default::default(),
         },
         products: BTreeMap::new(),
         orders: BTreeMap::new(),
+        extra: Default::default(),
     };
 
     let state_bytes = serde_json::to_vec(&sf_state).unwrap();
@@ -759,7 +761,7 @@ async fn directory_contention() {
 
             let mut entries = BTreeMap::new();
             entries.insert(supplier_id, entry);
-            let delta = DirectoryState { entries };
+            let delta = DirectoryState { entries, extra: Default::default() };
             let delta_bytes = serde_json::to_vec(&delta).unwrap();
 
             let mut api = connect_to_node_at(&node_url(dir_port)).await;

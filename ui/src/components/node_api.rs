@@ -505,6 +505,7 @@ mod wasm_impl {
                     owner: km.user_id(),
                     messages: std::collections::BTreeMap::new(),
                     updated_at: chrono::Utc::now(),
+                    extra: Default::default(),
                 };
                 let ib_state_bytes = serde_json::to_vec(&ib_state).unwrap();
 
@@ -985,6 +986,7 @@ mod wasm_impl {
                             owner: key_manager.user_id(),
                             messages: std::collections::BTreeMap::new(),
                             updated_at: chrono::Utc::now(),
+                            extra: Default::default(),
                         };
                         let ib_state_bytes = serde_json::to_vec(&ib_state).unwrap();
                         let put_inbox = ClientRequest::ContractOp(ContractRequest::Put {
@@ -1069,9 +1071,11 @@ mod wasm_impl {
                         email: None,
                         address: None,
                         market_products: BTreeMap::new(),
+                        extra: Default::default(),
                     },
                     products: BTreeMap::new(),
                     orders: BTreeMap::new(),
+                    extra: Default::default(),
                 };
                 let sf_state_bytes = serde_json::to_vec(&sf_state).unwrap();
 
@@ -1171,6 +1175,7 @@ mod wasm_impl {
                     inbox_contract_key: inbox_contract_key_ref.clone(),
                     updated_at: chrono::Utc::now(),
                     signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+                    extra: Default::default(),
                 };
                 key_manager.sign_directory_entry(&mut entry);
 
@@ -1183,7 +1188,7 @@ mod wasm_impl {
 
                 let mut entries = BTreeMap::new();
                 entries.insert(entry.supplier.clone(), entry);
-                let dir_update = DirectoryState { entries };
+                let dir_update = DirectoryState { entries, extra: Default::default() };
                 let delta_bytes = serde_json::to_vec(&dir_update).unwrap();
 
                 let update_dir =
@@ -1352,11 +1357,13 @@ mod wasm_impl {
                     expiry_date: None,
                     updated_at: now,
                     created_at: now,
+                    extra: Default::default(),
                 };
                 let signature = key_manager.sign_product(&product);
                 let signed_product = SignedProduct {
                     product,
                     signature,
+                    extra: Default::default(),
                 };
 
                 // Get the current storefront state and add the product
@@ -1473,6 +1480,7 @@ mod wasm_impl {
                     signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
                     escrow_token: None,
                     collection_point,
+                    extra: Default::default(),
                 };
 
                 // Sign the order with the customer key
@@ -2027,6 +2035,7 @@ mod wasm_impl {
                     owner: key_manager.user_id(),
                     messages: std::collections::BTreeMap::new(),
                     updated_at: now,
+                    extra: Default::default(),
                 };
                 let ib_state_bytes = serde_json::to_vec(&ib_state).unwrap();
                 let put_inbox = ClientRequest::ContractOp(ContractRequest::Put {
@@ -2362,6 +2371,7 @@ mod wasm_impl {
                     body,
                     toll_paid: cost,
                     created_at: now,
+                    extra: Default::default(),
                 };
 
                 // Build an update state with just this new message
@@ -2369,6 +2379,7 @@ mod wasm_impl {
                     owner: inbox_owner,
                     messages: std::iter::once((msg_id, message.clone())).collect(),
                     updated_at: now,
+                    extra: Default::default(),
                 };
 
                 let update_bytes = serde_json::to_vec(&update_state).unwrap();
@@ -2528,6 +2539,7 @@ mod wasm_impl {
                     suppliers: std::collections::BTreeMap::new(),
                     updated_at: chrono::Utc::now(),
                     signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+                    extra: Default::default(),
                 };
                 let msg = entry.signable_bytes();
                 let signed_entry = cream_common::market::MarketEntry {
@@ -2537,7 +2549,7 @@ mod wasm_impl {
 
                 let mut entries = std::collections::BTreeMap::new();
                 entries.insert(organizer, signed_entry.clone());
-                let delta = cream_common::market::MarketDirectoryState { entries };
+                let delta = cream_common::market::MarketDirectoryState { entries, extra: Default::default() };
                 let delta_bytes = serde_json::to_vec(&delta).unwrap();
 
                 let update = ClientRequest::ContractOp(ContractRequest::Update {
@@ -2570,7 +2582,7 @@ mod wasm_impl {
 
                     let mut entries = std::collections::BTreeMap::new();
                     entries.insert(organizer.clone(), entry.clone());
-                    let delta = cream_common::market::MarketDirectoryState { entries };
+                    let delta = cream_common::market::MarketDirectoryState { entries, extra: Default::default() };
                     let delta_bytes = serde_json::to_vec(&delta).unwrap();
 
                     let update = ClientRequest::ContractOp(ContractRequest::Update {
@@ -2610,7 +2622,7 @@ mod wasm_impl {
 
                             let mut entries = std::collections::BTreeMap::new();
                             entries.insert(organizer.clone(), entry.clone());
-                            let delta = cream_common::market::MarketDirectoryState { entries };
+                            let delta = cream_common::market::MarketDirectoryState { entries, extra: Default::default() };
                             let delta_bytes = serde_json::to_vec(&delta).unwrap();
 
                             let update = ClientRequest::ContractOp(ContractRequest::Update {
@@ -2642,7 +2654,7 @@ mod wasm_impl {
 
                     let mut entries = std::collections::BTreeMap::new();
                     entries.insert(organizer.clone(), entry.clone());
-                    let delta = cream_common::market::MarketDirectoryState { entries };
+                    let delta = cream_common::market::MarketDirectoryState { entries, extra: Default::default() };
                     let delta_bytes = serde_json::to_vec(&delta).unwrap();
 
                     let update = ClientRequest::ContractOp(ContractRequest::Update {
@@ -2686,7 +2698,7 @@ mod wasm_impl {
 
                     let mut entries = std::collections::BTreeMap::new();
                     entries.insert(organizer.clone(), entry.clone());
-                    let delta = cream_common::market::MarketDirectoryState { entries };
+                    let delta = cream_common::market::MarketDirectoryState { entries, extra: Default::default() };
                     let delta_bytes = serde_json::to_vec(&delta).unwrap();
 
                     let update = ClientRequest::ContractOp(ContractRequest::Update {
@@ -2756,7 +2768,7 @@ mod wasm_impl {
 
                     let uc_bytes = serde_json::to_vec(&uc_state).unwrap();
                     let update = ClientRequest::ContractOp(ContractRequest::Update {
-                        key: user_contract_key.copied().unwrap(),
+                        key: user_contract_key_ref.unwrap(),
                         data: UpdateData::State(State::from(uc_bytes)),
                     });
                     shared.write().user_contract = Some(uc_state);

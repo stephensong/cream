@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
+#[cfg(not(feature = "dev"))]
+use ed25519_dalek::Verifier;
 use serde::{Deserialize, Serialize};
 
 use crate::identity::UserId;
@@ -142,6 +144,7 @@ impl UserContractState {
     }
 
     /// Inner validation logic shared by dev (root-only) and production paths.
+    #[cfg(not(feature = "dev"))]
     fn validate_update_inner(&self, update: &UserContractState, owner: &VerifyingKey) -> bool {
         // Find new ledger entries (not already in self)
         let existing_keys: HashSet<(String, TransactionKind)> = self

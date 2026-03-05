@@ -361,12 +361,19 @@ script = [
             tail -30 "${LOG}"
             exit 1
         fi
-        # Check if port 8080 is responding
-        if curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080" 2>/dev/null | grep -q "200"; then
+        # Check if port 8080 is responding with a successful WASM build
+        # (dx serve returns 200 even on build failure — its error page also serves 200)
+        BODY=$(curl -s "http://localhost:8080" 2>/dev/null || true)
+        if echo "${BODY}" | grep -q "cream-ui.js"; then
             echo "dx serve ready on http://localhost:8080 (took ~${i}s)"
             echo "Log: ${LOG}"
             echo "PID: ${DX_PID} (kill with: kill $(cat /tmp/cream-dx-serve.pid))"
             exit 0
+        elif echo "${BODY}" | grep -q "The build failed"; then
+            echo "ERROR: dx serve WASM build failed. Log:"
+            tail -30 "${LOG}"
+            kill "${DX_PID}" 2>/dev/null || true
+            exit 1
         fi
         sleep 1
     done

@@ -92,7 +92,7 @@ async fn cumulative_node_tests() {
 
         let mut entries = BTreeMap::new();
         entries.insert(supplier_id, entry);
-        let delta = DirectoryState { entries };
+        let delta = DirectoryState { entries, extra: Default::default() };
         let delta_bytes = serde_json::to_vec(&delta).unwrap();
 
         client_a
@@ -141,9 +141,11 @@ async fn cumulative_node_tests() {
                 email: None,
                 address: None,
                 market_products: BTreeMap::new(),
+                extra: Default::default(),
             },
             products: BTreeMap::new(),
             orders: BTreeMap::new(),
+            extra: Default::default(),
         };
         let state_bytes = serde_json::to_vec(&initial_sf).unwrap();
 
@@ -234,9 +236,11 @@ async fn cumulative_node_tests() {
                 email: None,
                 address: None,
                 market_products: BTreeMap::new(),
+                extra: Default::default(),
             },
             products: BTreeMap::new(),
             orders: BTreeMap::new(),
+            extra: Default::default(),
         };
         let state_bytes = serde_json::to_vec(&initial_sf).unwrap();
 
@@ -353,9 +357,11 @@ async fn cumulative_node_tests() {
                 email: None,
                 address: None,
                 market_products: BTreeMap::new(),
+                extra: Default::default(),
             },
             products: BTreeMap::new(),
             orders: BTreeMap::new(),
+            extra: Default::default(),
         };
         let state_bytes = serde_json::to_vec(&initial_sf).unwrap();
 
@@ -1200,6 +1206,7 @@ async fn cumulative_node_tests() {
             body: "Hey Emma, got any milk?".to_string(),
             toll_paid: 10,
             created_at: now,
+            extra: Default::default(),
         };
 
         // Inbox uses the same user key (unified identity)
@@ -1208,6 +1215,7 @@ async fn cumulative_node_tests() {
             owner: emma_user_id,
             messages: std::iter::once((msg_id, message)).collect(),
             updated_at: now,
+            extra: Default::default(),
         };
         let update_bytes = serde_json::to_vec(&update_state).unwrap();
 
@@ -1305,7 +1313,7 @@ async fn cumulative_node_tests() {
 
         let mut entries = BTreeMap::new();
         entries.insert(h.gary.id.clone(), updated_entry);
-        let update = MarketDirectoryState { entries };
+        let update = MarketDirectoryState { entries, extra: Default::default() };
         let update_bytes = serde_json::to_vec(&update).unwrap();
 
         h.gary.api
