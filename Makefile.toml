@@ -7,7 +7,7 @@ dependencies = ["build-contracts", "build-delegate", "build-ui"]
 
 [tasks.build-contracts]
 description = "Build WASM contracts"
-dependencies = ["build-directory-contract", "build-storefront-contract", "build-user-contract", "build-inbox-contract"]
+dependencies = ["build-directory-contract", "build-storefront-contract", "build-user-contract", "build-inbox-contract", "build-market-directory-contract"]
 
 [tasks.build-directory-contract]
 description = "Build directory contract WASM"
@@ -29,9 +29,14 @@ description = "Build inbox contract WASM"
 command = "cargo"
 args = ["build", "-p", "cream-inbox-contract", "--target", "wasm32-unknown-unknown", "--release", "--features", "contract"]
 
+[tasks.build-market-directory-contract]
+description = "Build market directory contract WASM"
+command = "cargo"
+args = ["build", "-p", "cream-market-directory-contract", "--target", "wasm32-unknown-unknown", "--release", "--features", "contract"]
+
 [tasks.build-contracts-dev]
 description = "Build WASM contracts with dev feature (no signature checks)"
-dependencies = ["build-directory-contract-dev", "build-storefront-contract-dev", "build-user-contract-dev", "build-inbox-contract-dev"]
+dependencies = ["build-directory-contract-dev", "build-storefront-contract-dev", "build-user-contract-dev", "build-inbox-contract-dev", "build-market-directory-contract-dev"]
 
 [tasks.build-directory-contract-dev]
 description = "Build directory contract WASM with dev feature"
@@ -52,6 +57,11 @@ args = ["build", "-p", "cream-user-contract", "--target", "wasm32-unknown-unknow
 description = "Build inbox contract WASM with dev feature"
 command = "cargo"
 args = ["build", "-p", "cream-inbox-contract", "--target", "wasm32-unknown-unknown", "--release", "--features", "contract,dev"]
+
+[tasks.build-market-directory-contract-dev]
+description = "Build market directory contract WASM with dev feature"
+command = "cargo"
+args = ["build", "-p", "cream-market-directory-contract", "--target", "wasm32-unknown-unknown", "--release", "--features", "contract,dev"]
 
 [tasks.build-delegate]
 description = "Build CREAM delegate"

@@ -108,6 +108,7 @@ pub fn OrderForm(supplier_name: String, product_id: String, product_name: String
                                 quantity: qty,
                                 deposit_tier: tier,
                                 price_per_unit,
+                                collection_point: None,
                             });
 
                             submitted_id.set(Some(id));

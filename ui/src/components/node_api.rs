@@ -37,6 +37,7 @@ pub enum NodeAction {
         quantity: u32,
         deposit_tier: String,
         price_per_unit: u64,
+        collection_point: Option<cream_common::order::CollectionPoint>,
     },
     /// Subscribe to a specific storefront's updates.
     #[allow(dead_code)] // auto-subscribed via directory; kept for manual use
@@ -105,6 +106,21 @@ pub enum NodeAction {
     /// Update toll rates on the root user contract (admin only, FROST-signed).
     SetTollRates {
         rates: cream_common::tolls::TollRates,
+    },
+    /// Register a new market in the market directory.
+    RegisterMarket {
+        name: String,
+        description: String,
+        venue_address: String,
+        postcode: String,
+        locality: Option<String>,
+        schedule: cream_common::storefront::WeeklySchedule,
+        timezone: Option<String>,
+        suppliers: std::collections::BTreeSet<String>,
+    },
+    /// Update a market's supplier list.
+    UpdateMarketSuppliers {
+        suppliers: std::collections::BTreeSet<String>,
     },
 }
 
@@ -202,6 +218,11 @@ mod wasm_impl {
     /// Embedded inbox contract WASM (built with `cargo make build-contracts-dev`).
     const INBOX_CONTRACT_WASM: &[u8] = include_bytes!(
         "../../../target/wasm32-unknown-unknown/release/cream_inbox_contract.wasm"
+    );
+
+    /// Embedded market directory contract WASM (built with `cargo make build-contracts-dev`).
+    const MARKET_DIRECTORY_CONTRACT_WASM: &[u8] = include_bytes!(
+        "../../../target/wasm32-unknown-unknown/release/cream_market_directory_contract.wasm"
     );
 
     /// Build a ContractContainer from raw WASM bytes and parameters.
@@ -346,6 +367,41 @@ mod wasm_impl {
             tracing::info!("Subscribing to directory contract...");
             if let Err(e) = api.send(subscribe_dir).await {
                 tracing::error!("Failed to subscribe to directory: {:?}", e);
+            }
+
+            id
+        };
+
+        // ── Set up market directory contract ───────────────────────────
+        let market_directory_contract =
+            make_contract(MARKET_DIRECTORY_CONTRACT_WASM, Parameters::from(vec![]));
+        let market_directory_key = market_directory_contract.key();
+
+        let market_directory_instance_id = if is_customer {
+            ContractInstanceId::new([0u8; 32])
+        } else {
+            let id = *market_directory_key.id();
+
+            tracing::info!("Market directory contract key: {:?}", market_directory_key);
+            shared.write().market_directory_key =
+                Some(format!("{}", market_directory_key));
+
+            let get_request = ClientRequest::ContractOp(ContractRequest::Get {
+                key: id,
+                return_contract_code: false,
+                subscribe: false,
+                blocking_subscribe: false,
+            });
+            if let Err(e) = api.send(get_request).await {
+                tracing::error!("Failed to GET market directory contract: {:?}", e);
+            }
+
+            let subscribe_mkt = ClientRequest::ContractOp(ContractRequest::Subscribe {
+                key: id,
+                summary: None,
+            });
+            if let Err(e) = api.send(subscribe_mkt).await {
+                tracing::error!("Failed to subscribe to market directory: {:?}", e);
             }
 
             id
@@ -509,6 +565,7 @@ mod wasm_impl {
                         &mut inbox_contract_instance_id,
                         &mut inbox_contract_key,
                         &toll_rates,
+                        &market_directory_key,
                     ).await;
                 }
 
@@ -526,6 +583,7 @@ mod wasm_impl {
                                 user_contract_instance_id,
                                 root_contract_instance_id,
                                 inbox_contract_instance_id,
+                                market_directory_instance_id,
                             );
                             for follow_up in follow_ups {
                                 if let Err(e) = api.send(follow_up).await {
@@ -550,6 +608,14 @@ mod wasm_impl {
                                     )
                                 ) if *key == directory_instance_id
                             );
+                            let is_missing_market_directory = matches!(
+                                e.kind(),
+                                freenet_stdlib::client_api::ErrorKind::RequestError(
+                                    freenet_stdlib::client_api::RequestError::ContractError(
+                                        freenet_stdlib::client_api::ContractError::MissingContract { key }
+                                    )
+                                ) if *key == market_directory_instance_id
+                            );
                             if is_missing_directory {
                                 tracing::info!("Directory contract missing, creating it...");
                                 let dir_contract = make_contract(
@@ -570,6 +636,27 @@ mod wasm_impl {
                                 );
                                 if let Err(e) = api.send(put_req).await {
                                     tracing::error!("Failed to PUT directory: {:?}", e);
+                                }
+                            } else if is_missing_market_directory {
+                                tracing::info!("Market directory contract missing, creating it...");
+                                let mkt_contract = make_contract(
+                                    MARKET_DIRECTORY_CONTRACT_WASM,
+                                    Parameters::from(vec![]),
+                                );
+                                let empty_mkt = cream_common::market::MarketDirectoryState::default();
+                                let initial_state =
+                                    serde_json::to_vec(&empty_mkt).unwrap();
+                                let put_req = ClientRequest::ContractOp(
+                                    ContractRequest::Put {
+                                        contract: mkt_contract,
+                                        state: WrappedState::new(initial_state),
+                                        related_contracts: RelatedContracts::default(),
+                                        subscribe: true,
+                                        blocking_subscribe: false,
+                                    },
+                                );
+                                if let Err(e) = api.send(put_req).await {
+                                    tracing::error!("Failed to PUT market directory: {:?}", e);
                                 }
                             } else {
                                 clog(&format!("[CREAM] Node error: {:?}", e));
@@ -796,6 +883,7 @@ mod wasm_impl {
         inbox_contract_instance_id: &mut Option<ContractInstanceId>,
         inbox_contract_key_ref: &mut Option<ContractKey>,
         toll_rates: &Signal<cream_common::tolls::TollRates>,
+        market_directory_key: &ContractKey,
     ) {
         // Construct wallet backend for this action dispatch
         let mut wallet = CreamNativeWallet::new(
@@ -1272,6 +1360,7 @@ mod wasm_impl {
                 quantity,
                 deposit_tier,
                 price_per_unit,
+                collection_point,
             } => {
                 clog(&format!("[CREAM] PlaceOrder on {}: {} x{} ({})",
                     storefront_name, product_id, quantity, deposit_tier));
@@ -1340,6 +1429,7 @@ mod wasm_impl {
                     created_at: now,
                     signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
                     escrow_token: None,
+                    collection_point,
                 };
 
                 // Sign the order with the customer key
@@ -2337,6 +2427,94 @@ mod wasm_impl {
                 }
             }
 
+            NodeAction::RegisterMarket {
+                name,
+                description,
+                venue_address,
+                postcode,
+                locality,
+                schedule,
+                timezone,
+                suppliers,
+            } => {
+                clog(&format!("[CREAM] RegisterMarket: '{}'", name));
+                let organizer = key_manager.user_id();
+                let location = cream_common::postcode::lookup_au_postcode(&postcode)
+                    .unwrap_or(cream_common::location::GeoLocation::new(0.0, 0.0));
+
+                let entry = cream_common::market::MarketEntry {
+                    organizer: organizer.clone(),
+                    name,
+                    description,
+                    venue_address,
+                    location,
+                    postcode: Some(postcode),
+                    locality,
+                    schedule,
+                    timezone,
+                    suppliers,
+                    updated_at: chrono::Utc::now(),
+                    signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+                };
+                // Sign the entry
+                let msg = entry.signable_bytes();
+                let signed_entry = cream_common::market::MarketEntry {
+                    signature: ed25519_dalek::Signature::from_bytes(&key_manager.sign_raw(&msg)),
+                    ..entry
+                };
+
+                let mut entries = std::collections::BTreeMap::new();
+                entries.insert(organizer, signed_entry.clone());
+                let delta = cream_common::market::MarketDirectoryState { entries };
+                let delta_bytes = serde_json::to_vec(&delta).unwrap();
+
+                let update = ClientRequest::ContractOp(ContractRequest::Update {
+                    key: *market_directory_key,
+                    data: UpdateData::Delta(StateDelta::from(delta_bytes)),
+                });
+                if let Err(e) = api.send(update).await {
+                    clog(&format!("[CREAM] ERROR: Failed to update market directory: {:?}", e));
+                } else {
+                    // Update local state immediately
+                    let organizer_clone = key_manager.user_id();
+                    shared.write().market_directory.entries.insert(organizer_clone, signed_entry);
+                    clog("[CREAM] RegisterMarket: sent to network");
+                }
+            }
+
+            NodeAction::UpdateMarketSuppliers { suppliers } => {
+                clog(&format!("[CREAM] UpdateMarketSuppliers: {:?}", suppliers));
+                let organizer = key_manager.user_id();
+
+                // Get existing market entry
+                let existing = shared.read().market_directory.entries.get(&organizer).cloned();
+                if let Some(mut entry) = existing {
+                    entry.suppliers = suppliers;
+                    entry.updated_at = chrono::Utc::now();
+
+                    let msg = entry.signable_bytes();
+                    entry.signature = ed25519_dalek::Signature::from_bytes(&key_manager.sign_raw(&msg));
+
+                    let mut entries = std::collections::BTreeMap::new();
+                    entries.insert(organizer.clone(), entry.clone());
+                    let delta = cream_common::market::MarketDirectoryState { entries };
+                    let delta_bytes = serde_json::to_vec(&delta).unwrap();
+
+                    let update = ClientRequest::ContractOp(ContractRequest::Update {
+                        key: *market_directory_key,
+                        data: UpdateData::Delta(StateDelta::from(delta_bytes)),
+                    });
+                    if let Err(e) = api.send(update).await {
+                        clog(&format!("[CREAM] ERROR: Failed to update market suppliers: {:?}", e));
+                    } else {
+                        shared.write().market_directory.entries.insert(organizer, entry);
+                        clog("[CREAM] UpdateMarketSuppliers: sent to network");
+                    }
+                } else {
+                    clog("[CREAM] UpdateMarketSuppliers: no existing market entry found for this organizer");
+                }
+            }
+
             NodeAction::SetTollRates { rates } => {
                 clog(&format!("[CREAM] SetTollRates: {:?}", rates));
 
@@ -2389,6 +2567,7 @@ mod wasm_impl {
         user_contract_instance_id: Option<ContractInstanceId>,
         root_contract_instance_id: Option<ContractInstanceId>,
         inbox_contract_instance_id: Option<ContractInstanceId>,
+        market_directory_instance_id: ContractInstanceId,
     ) -> Vec<ClientRequest<'static>> {
         match response {
             ContractResponse::GetResponse { key, state, .. } => {
@@ -2406,9 +2585,21 @@ mod wasm_impl {
                 let is_inbox = inbox_contract_instance_id
                     .map(|id| *key.id() == id)
                     .unwrap_or(false);
-                clog(&format!("[CREAM] GetResponse: is_directory={}, is_user_contract={}, is_root={}, is_inbox={}, bytes_len={}",
-                    is_directory, is_user_contract, is_root_contract, is_inbox, bytes.len()));
-                if is_inbox {
+                let is_market_directory = *key.id() == market_directory_instance_id;
+                clog(&format!("[CREAM] GetResponse: is_directory={}, is_user_contract={}, is_root={}, is_inbox={}, is_market_dir={}, bytes_len={}",
+                    is_directory, is_user_contract, is_root_contract, is_inbox, is_market_directory, bytes.len()));
+                if is_market_directory {
+                    match serde_json::from_slice::<cream_common::market::MarketDirectoryState>(bytes) {
+                        Ok(mkt_state) => {
+                            clog(&format!("[CREAM] Market directory GET: {} markets",
+                                mkt_state.entries.len()));
+                            shared.write().market_directory = mkt_state;
+                        }
+                        Err(e) => {
+                            clog(&format!("[CREAM] ERROR: Failed to parse market directory GetResponse: {e}"));
+                        }
+                    }
+                } else if is_inbox {
                     match serde_json::from_slice::<cream_common::inbox::InboxState>(bytes) {
                         Ok(inbox_state) => {
                             clog(&format!("[CREAM] Inbox contract GET: {} messages",
@@ -2509,9 +2700,21 @@ mod wasm_impl {
                 let is_inbox = inbox_contract_instance_id
                     .map(|id| *key.id() == id)
                     .unwrap_or(false);
-                clog(&format!("[CREAM] UpdateNotification: is_directory={}, is_user_contract={}, is_root={}, is_inbox={}, bytes_len={}",
-                    is_directory, is_user_contract, is_root_contract, is_inbox, bytes.len()));
-                if is_inbox {
+                let is_market_directory = *key.id() == market_directory_instance_id;
+                clog(&format!("[CREAM] UpdateNotification: is_directory={}, is_user_contract={}, is_root={}, is_inbox={}, is_market_dir={}, bytes_len={}",
+                    is_directory, is_user_contract, is_root_contract, is_inbox, is_market_directory, bytes.len()));
+                if is_market_directory {
+                    match serde_json::from_slice::<cream_common::market::MarketDirectoryState>(bytes) {
+                        Ok(mkt_update) => {
+                            clog(&format!("[CREAM] Market directory notification: {} markets",
+                                mkt_update.entries.len()));
+                            shared.write().market_directory.merge(mkt_update);
+                        }
+                        Err(e) => {
+                            clog(&format!("[CREAM] ERROR: Failed to parse market directory notification: {e}"));
+                        }
+                    }
+                } else if is_inbox {
                     match serde_json::from_slice::<cream_common::inbox::InboxState>(bytes) {
                         Ok(inbox_update) => {
                             clog(&format!("[CREAM] Inbox notification: {} messages",

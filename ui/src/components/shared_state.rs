@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 
 use cream_common::directory::{DirectoryEntry, DirectoryState};
 use cream_common::inbox::{InboxMessage, InboxState};
+use cream_common::market::MarketDirectoryState;
 use cream_common::storefront::StorefrontState;
 use cream_common::user_contract::UserContractState;
 
@@ -50,6 +51,12 @@ pub struct SharedState {
     pub inbox_contract_key: Option<String>,
     /// Locally-tracked sent messages (not stored on-chain, for UI display).
     pub sent_messages: Vec<SentMessage>,
+    /// Market directory state from the market directory contract.
+    #[allow(dead_code)] // populated in WASM builds
+    pub market_directory: MarketDirectoryState,
+    /// The market directory contract key (Base58).
+    #[allow(dead_code)] // used in WASM builds only
+    pub market_directory_key: Option<String>,
 }
 
 /// A message the current user sent, tracked locally for display in the Messages view.

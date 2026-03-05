@@ -10,6 +10,8 @@ use super::faq_view::FaqView;
 use super::guardian_admin::GuardianAdmin;
 use super::iaq_view::IaqView;
 use super::key_manager::KeyManager;
+use super::market_dashboard::MarketDashboard;
+use super::market_view::MarketView;
 use super::my_orders::MyOrders;
 use super::node_api::{use_node_action, use_node_coroutine, NodeAction};
 use super::shared_state::{use_shared_state, SharedState};
@@ -109,6 +111,10 @@ pub enum Route {
     Messages {},
     #[route("/my_storefront")]
     Dashboard {},
+    #[route("/market/:market_organizer")]
+    Market { market_organizer: String },
+    #[route("/my_market")]
+    MyMarket {},
     #[route("/wallet")]
     Wallet {},
     #[route("/faq")]
@@ -241,6 +247,10 @@ fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_su
                     button {
                         onclick: move |_| { nav.push(Route::Dashboard {}); },
                         "My Storefront"
+                    }
+                    button {
+                        onclick: move |_| { nav.push(Route::MyMarket {}); },
+                        "My Market"
                     }
                 }
                 button {
@@ -720,6 +730,18 @@ fn Dashboard() -> Element {
             rsx! { DirectoryView {} }
         }
     }
+}
+
+/// Route component: renders a market detail view.
+#[component]
+fn Market(market_organizer: String) -> Element {
+    rsx! { MarketView { market_organizer } }
+}
+
+/// Route component: renders the organizer's market dashboard.
+#[component]
+fn MyMarket() -> Element {
+    rsx! { MarketDashboard {} }
 }
 
 /// Route component: renders the wallet view.

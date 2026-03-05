@@ -18,9 +18,9 @@ use cream_common::wallet::{TransactionKind, WalletTransaction};
 use crate::{
     connect_to_node_at, extract_get_response_state, extract_notification_bytes, is_get_response,
     is_put_response, is_subscribe_success, is_update_notification, is_update_response,
-    make_directory_contract, make_directory_entry, make_dummy_user,
-    make_inbox_contract, make_storefront_contract, make_user_contract, node_url, recv_matching,
-    wait_for_get, wait_for_put,
+    make_directory_contract, make_directory_entry, make_dummy_market_entry, make_dummy_user,
+    make_inbox_contract, make_market_directory_contract, make_storefront_contract,
+    make_user_contract, node_url, recv_matching, wait_for_get, wait_for_put,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -321,6 +321,7 @@ pub struct TestHarness {
     pub root_admin: Customer,
     pub directory_key: ContractKey,
     pub root_contract_key: ContractKey,
+    pub market_directory_key: ContractKey,
 }
 
 impl TestHarness {
@@ -560,6 +561,49 @@ impl TestHarness {
         register_supplier_in_directory(&mut iris, &dir_key).await;
         register_supplier_in_directory(&mut emma, &dir_key).await;
 
+        // Deploy market directory contract (via Gary's connection).
+        let (mkt_dir_contract, mkt_dir_key) = make_market_directory_contract();
+        let empty_mkt_dir = cream_common::market::MarketDirectoryState::default();
+        let mkt_dir_bytes = serde_json::to_vec(&empty_mkt_dir).unwrap();
+        gary.api
+            .send(ClientRequest::ContractOp(ContractRequest::Put {
+                contract: mkt_dir_contract,
+                state: WrappedState::new(mkt_dir_bytes),
+                related_contracts: RelatedContracts::default(),
+                subscribe: false,
+                blocking_subscribe: false,
+            }))
+            .await
+            .unwrap();
+        let mkt_put = recv_matching(&mut gary.api, is_put_response, Duration::from_secs(2)).await;
+        if mkt_put.is_none() {
+            tracing::info!("Market directory contract already exists, continuing");
+        }
+
+        // Register a test market with Gary and Emma as suppliers.
+        let market_entry = make_dummy_market_entry(
+            &gary.id,
+            "Coffs Harbour Farmers Market",
+            "Coffs Harbour Showground, Stadium Dr",
+            GeoLocation::new(-30.2986, 153.1094),
+            std::collections::BTreeSet::from(["Gary".to_string(), "Emma".to_string()]),
+        );
+        let mut mkt_entries = BTreeMap::new();
+        mkt_entries.insert(gary.id.clone(), market_entry);
+        let mkt_delta = cream_common::market::MarketDirectoryState { entries: mkt_entries };
+        let mkt_delta_bytes = serde_json::to_vec(&mkt_delta).unwrap();
+
+        gary.api
+            .send(ClientRequest::ContractOp(ContractRequest::Update {
+                key: mkt_dir_key,
+                data: UpdateData::Delta(StateDelta::from(mkt_delta_bytes)),
+            }))
+            .await
+            .unwrap();
+        recv_matching(&mut gary.api, is_update_response, TIMEOUT)
+            .await
+            .expect("UpdateResponse for market directory registration");
+
         TestHarness {
             gary,
             emma,
@@ -569,6 +613,7 @@ impl TestHarness {
             root_admin,
             directory_key: dir_key,
             root_contract_key: root_key,
+            market_directory_key: mkt_dir_key,
         }
     }
 }

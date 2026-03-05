@@ -7,6 +7,15 @@ use serde::{Deserialize, Serialize};
 use crate::identity::UserId;
 use crate::product::ProductId;
 
+/// Where the customer will collect the order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CollectionPoint {
+    /// Direct pickup from the farm.
+    FarmGate,
+    /// Pickup at a farmer's market venue.
+    Market { market_name: String },
+}
+
 /// Unique order identifier.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct OrderId(pub String);
@@ -133,6 +142,10 @@ pub struct Order {
     /// None for CREAM-native orders where escrow is implicit via root account.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub escrow_token: Option<String>,
+    /// Where the customer will collect the order.
+    /// Not included in SignableOrder so existing signatures remain valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_point: Option<CollectionPoint>,
 }
 
 #[cfg(test)]

@@ -393,6 +393,30 @@ pub fn SupplierDashboard() -> Element {
                 }
             }
 
+            // Markets listing this supplier
+            {
+                let moniker = user_state.read().moniker.clone().unwrap_or_default();
+                let shared = shared_state.read();
+                let my_markets: Vec<String> = shared.market_directory.entries.values()
+                    .filter(|m| m.suppliers.contains(&moniker))
+                    .map(|m| m.name.clone())
+                    .collect();
+                if !my_markets.is_empty() {
+                    rsx! {
+                        div { class: "supplier-markets",
+                            h3 { "Listed at Markets" }
+                            ul {
+                                {my_markets.iter().map(|m| {
+                                    rsx! { li { key: "{m}", "{m}" } }
+                                })}
+                            }
+                        }
+                    }
+                } else {
+                    rsx! {}
+                }
+            }
+
         }
     }
 }

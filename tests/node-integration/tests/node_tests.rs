@@ -1248,5 +1248,96 @@ async fn cumulative_node_tests() {
     }
     println!("   PASSED");
 
+    // ═══════════════════════════════════════════════════════════════════
+    // Step 12: Market directory — deploy, update, cross-node propagation
+    // ═══════════════════════════════════════════════════════════════════
+    println!("── Step 12: market_directory_propagation ──");
+    {
+        use cream_common::market::MarketDirectoryState;
+        use cream_node_integration::{connect_to_node_at, node_url};
+
+        // Use a fresh connection to node-2 (Bob's main API is backlogged with notifications)
+        let url_n2 = node_url(3003);
+        let mut mkt_probe = connect_to_node_at(&url_n2).await;
+
+        // Verify market directory deployed by harness is readable from node-2 (cross-node)
+        let mkt_bytes = wait_for_get(
+            &mut mkt_probe,
+            *h.market_directory_key.id(),
+            TIMEOUT,
+        )
+        .await
+        .expect("Market directory should propagate to node-2");
+
+        let mkt_state: MarketDirectoryState = serde_json::from_slice(&mkt_bytes).unwrap();
+        assert_eq!(mkt_state.entries.len(), 1, "Should have 1 market from harness setup");
+
+        let market = mkt_state.entries.values().next().unwrap();
+        assert_eq!(market.name, "Coffs Harbour Farmers Market");
+        assert!(market.suppliers.contains("Gary"));
+        assert!(market.suppliers.contains("Emma"));
+        assert_eq!(market.suppliers.len(), 2);
+        println!("   Market directory readable from node-2 with correct data");
+
+        // Subscribe on the fresh connection
+        mkt_probe
+            .send(ClientRequest::ContractOp(ContractRequest::Subscribe {
+                key: *h.market_directory_key.id(),
+                summary: None,
+            }))
+            .await
+            .unwrap();
+        recv_matching(&mut mkt_probe, is_subscribe_success, TIMEOUT)
+            .await
+            .expect("Fresh probe subscribes to market directory");
+
+        // Gary updates the market (add Iris as supplier)
+        let mut updated_entry = market.clone();
+        updated_entry.suppliers.insert("Iris".to_string());
+        updated_entry.updated_at = chrono::Utc::now();
+
+        let mut entries = BTreeMap::new();
+        entries.insert(h.gary.id.clone(), updated_entry);
+        let update = MarketDirectoryState { entries };
+        let update_bytes = serde_json::to_vec(&update).unwrap();
+
+        h.gary.api
+            .send(ClientRequest::ContractOp(ContractRequest::Update {
+                key: h.market_directory_key,
+                data: UpdateData::Delta(StateDelta::from(update_bytes)),
+            }))
+            .await
+            .unwrap();
+
+        recv_matching(
+            &mut h.gary.api,
+            cream_node_integration::is_update_response,
+            TIMEOUT,
+        )
+        .await
+        .expect("UpdateResponse for market update");
+
+        // Fresh probe should receive notification with the updated market
+        let notif = recv_matching(
+            &mut mkt_probe,
+            cream_node_integration::is_update_notification,
+            TIMEOUT,
+        )
+        .await
+        .expect("Probe should receive market directory update notification");
+
+        let notif_bytes = extract_notification_bytes(&notif)
+            .expect("notification should have state bytes");
+        let notif_state: MarketDirectoryState = serde_json::from_slice(&notif_bytes).unwrap();
+        let updated_market = notif_state.entries.values().next().unwrap();
+        assert!(
+            updated_market.suppliers.contains("Iris"),
+            "Updated market should include Iris"
+        );
+        assert_eq!(updated_market.suppliers.len(), 3);
+        println!("   Probe received market update notification with Iris added");
+    }
+    println!("   PASSED");
+
     println!("\n══ All node-integration steps passed ══");
 }

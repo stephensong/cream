@@ -5,6 +5,8 @@ pub mod faq_view;
 pub mod guardian_admin;
 pub mod iaq_view;
 pub mod key_manager;
+pub mod market_dashboard;
+pub mod market_view;
 pub mod my_orders;
 pub mod node_api;
 pub mod order_form;

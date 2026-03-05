@@ -6,6 +6,7 @@ use super::app::Route;
 use super::shared_state::use_shared_state;
 use super::user_state::use_user_state;
 
+
 /// A supplier entry for display in the directory.
 #[derive(Clone, Debug)]
 struct SupplierEntry {
@@ -90,8 +91,48 @@ pub fn DirectoryView() -> Element {
         })
         .collect();
 
+    // Build market list
+    let mut markets: Vec<(String, String, String, usize)> = Vec::new(); // (name, location, description, supplier_count)
+    {
+        let shared = shared_state.read();
+        for market in shared.market_directory.entries.values() {
+            let location = format_postcode(
+                &market.postcode.clone().unwrap_or_default(),
+                market.locality.as_deref(),
+            );
+            markets.push((
+                market.name.clone(),
+                location,
+                market.description.clone(),
+                market.suppliers.len(),
+            ));
+        }
+    }
+
     rsx! {
         div { class: "directory-view",
+            // Markets section
+            if !markets.is_empty() {
+                h2 { "Farmer's Markets" }
+                div { class: "market-list",
+                    {markets.into_iter().map(|(name, location, desc, supplier_count)| {
+                        let market_name = name.clone();
+                        rsx! {
+                            div { class: "market-card", key: "{name}",
+                                h3 { "{name}" }
+                                p { "{desc}" }
+                                p { class: "location", "{location}" }
+                                p { class: "supplier-count", "{supplier_count} suppliers" }
+                                Link {
+                                    to: Route::Market { market_organizer: market_name },
+                                    "View Market"
+                                }
+                            }
+                        }
+                    })}
+                }
+            }
+
             h2 { "Supplier Directory" }
 
             // Show connection status

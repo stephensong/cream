@@ -1451,6 +1451,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cream-market-directory-contract"
+version = "0.1.0"
+dependencies = [
+ "cream-common",
+ "freenet-stdlib",
+ "serde_json",
+]
+
+[[package]]
 name = "cream-node-integration"
 version = "0.1.0"
 dependencies = [

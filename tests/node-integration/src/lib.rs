@@ -45,6 +45,8 @@ const USER_CONTRACT_WASM: &[u8] =
     include_bytes!("../../../target/wasm32-unknown-unknown/release/cream_user_contract.wasm");
 const INBOX_CONTRACT_WASM: &[u8] =
     include_bytes!("../../../target/wasm32-unknown-unknown/release/cream_inbox_contract.wasm");
+const MARKET_DIRECTORY_WASM: &[u8] =
+    include_bytes!("../../../target/wasm32-unknown-unknown/release/cream_market_directory_contract.wasm");
 
 /// Create a directory contract container + its key.
 pub fn make_directory_contract() -> (ContractContainer, ContractKey) {
@@ -71,6 +73,13 @@ pub fn make_user_contract(
     let params = cream_common::user_contract::UserContractParameters { owner: *owner };
     let params_bytes = serde_json::to_vec(&params).unwrap();
     let contract = make_contract(USER_CONTRACT_WASM, Parameters::from(params_bytes));
+    let key = contract.key();
+    (contract, key)
+}
+
+/// Create a market directory contract container + its key.
+pub fn make_market_directory_contract() -> (ContractContainer, ContractKey) {
+    let contract = make_contract(MARKET_DIRECTORY_WASM, Parameters::from(vec![]));
     let key = contract.key();
     (contract, key)
 }
@@ -121,6 +130,30 @@ pub fn make_directory_entry(
         storefront_key,
         user_contract_key,
         inbox_contract_key,
+        updated_at: chrono::Utc::now(),
+        signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+    }
+}
+
+/// Create a dummy market entry.
+pub fn make_dummy_market_entry(
+    organizer: &UserId,
+    name: &str,
+    venue_address: &str,
+    location: GeoLocation,
+    suppliers: std::collections::BTreeSet<String>,
+) -> cream_common::market::MarketEntry {
+    cream_common::market::MarketEntry {
+        organizer: organizer.clone(),
+        name: name.to_string(),
+        description: format!("{name} — fresh produce from local farmers"),
+        venue_address: venue_address.to_string(),
+        location,
+        postcode: Some("2450".to_string()),
+        locality: Some("Coffs Harbour".to_string()),
+        schedule: cream_common::storefront::WeeklySchedule::default(),
+        timezone: Some("Australia/Sydney".to_string()),
+        suppliers,
         updated_at: chrono::Utc::now(),
         signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
     }
@@ -177,6 +210,7 @@ pub fn make_dummy_order(
         created_at,
         signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
         escrow_token: None,
+        collection_point: None,
     }
 }
 

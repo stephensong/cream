@@ -4,6 +4,7 @@ pub mod directory;
 pub mod identity;
 pub mod location;
 pub mod inbox;
+pub mod market;
 pub mod order;
 pub mod postcode;
 pub mod product;
