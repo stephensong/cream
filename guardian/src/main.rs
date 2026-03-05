@@ -740,6 +740,47 @@ async fn ln_history_handler(
     Ok(Json(history.clone()))
 }
 
+// ─── Reconciliation ────────────────────────────────────────────────────────
+
+async fn reconciliation_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<lightning::ReconciliationReport>, (axum::http::StatusCode, Json<ErrorResponse>)> {
+    let ln = require_lightning(&state)?;
+
+    // Get the root user contract to read toll_rates.curd_per_sat
+    // We need the node connection to GET user contracts. For now, use
+    // the root contract state if available, otherwise use a default rate.
+    // In a full implementation, we'd fetch all user contracts via the node.
+    // For the MVP, report what we can: LND balance + known pegin history.
+    let curd_per_sat = 100u64; // TODO: fetch from root contract toll_rates
+
+    // For MVP: sum up all peg-in/peg-out activity from the history to estimate CURD in circulation
+    let history = ln.peg_history.read().await;
+    let mut total_pegged_in_sats: u64 = 0;
+    let mut total_pegged_out_sats: u64 = 0;
+    for tx in history.iter() {
+        match tx.kind.as_str() {
+            "peg-in" if tx.status == "settled" => total_pegged_in_sats += tx.amount_sats,
+            "peg-out" if tx.status == "success" => total_pegged_out_sats += tx.amount_sats,
+            _ => {}
+        }
+    }
+    let net_sats = total_pegged_in_sats.saturating_sub(total_pegged_out_sats);
+    let estimated_curd = net_sats * curd_per_sat;
+
+    let user_balances = vec![("__estimated_from_pegs__".to_string(), estimated_curd)];
+
+    match ln.reconcile(&user_balances, curd_per_sat).await {
+        Ok(report) => Ok(Json(report)),
+        Err(e) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Reconciliation failed: {}", e),
+            }),
+        )),
+    }
+}
+
 // ─── Health ─────────────────────────────────────────────────────────────────
 
 async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
@@ -1790,7 +1831,8 @@ async fn main() {
             .route("/lightning/info", get(ln_info_handler))
             .route("/lightning/channels/open", post(ln_open_channel_handler))
             .route("/lightning/channels/close", post(ln_close_channel_handler))
-            .route("/lightning/history", get(ln_history_handler));
+            .route("/lightning/history", get(ln_history_handler))
+            .route("/reconciliation/report", get(reconciliation_handler));
         println!("Lightning gateway routes registered");
     }
 

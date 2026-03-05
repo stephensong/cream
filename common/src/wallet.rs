@@ -17,6 +17,9 @@ pub struct WalletTransaction {
     /// Used for contract-level deduplication to prevent double-minting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lightning_payment_hash: Option<String>,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

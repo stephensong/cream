@@ -972,3 +972,399 @@ Initially, word of mouth — the same way people find their local farmer's marke
 In future, a lightweight discovery layer could let co-ops advertise their existence (postcode range + rendezvous URL) so new customers can find the nearest one. But that's a trivial addition, not an architectural commitment.
 
 ---
+
+## Contract Permanence and the Soft-Fork Model
+
+### The constraint
+
+A Freenet contract's identity is `BLAKE3(WASM bytecode || Parameters)`. Change one byte of contract code and you get a completely different contract on the network. The old contract continues to exist with its state. There is no update-in-place, no redirect, no migration protocol. This is by design — the contract key is a cryptographic commitment to exact behavior.
+
+This means: **once a CREAM contract is deployed to production, its code is permanent.** A "new version" is a new contract with a new key, and all existing state (directory listings, storefronts, orders, wallets, CURD balances) lives on the old one.
+
+### The analogy: Bitcoin soft forks and safe schema migrations
+
+This is equivalent to a Bitcoin soft fork — old nodes still validate, new nodes understand more. Or in relational database terms: the only safe migration is `ALTER TABLE ADD COLUMN ... DEFAULT ...`. You can enhance, you cannot break.
+
+The contract is a constitution. Its laws will not change, although they may be enhanced to deal with new situations they couldn't previously deal with.
+
+### What this means in practice
+
+**Things we CAN do after launch (additive, backward-compatible):**
+
+- Add new optional fields to state structs (via `#[serde(default)]`) — old contract code deserializes new state safely, ignoring unknown fields
+- Add new enum variants that old code falls through to a default case
+- Add new interpretation of existing data in the UI (the UI evolves freely — it's just a web app)
+- Extend the `extra` / extension fields if we design them in from the start
+
+**Things we CANNOT do after launch (require new WASM = new contract):**
+
+- Fix a bug in `merge()` logic
+- Change the conflict resolution strategy
+- Add new validation rules to contract code
+- Remove or rename existing state fields
+- Change the meaning of existing fields
+- Add fundamentally new contract-enforced capabilities (e.g. multi-sig orders, new escrow rules)
+
+### Design rules that follow
+
+These rules are **non-negotiable** for any contract code that ships to production:
+
+1. **`#[serde(default)]` on every struct field.** Old contract code must deserialize state written by future UI versions that added fields. This is the mechanism that makes soft-fork evolution possible.
+
+2. **`#[serde(flatten)]` or `extra: HashMap<String, Value>` extension points.** Where we can anticipate future needs, provide generic extension fields that contract code passes through without interpreting.
+
+3. **Merge rules must be as generic as possible.** LWW-by-timestamp is good — it works regardless of what fields exist. Monotonic status ordinals are good — new statuses can be appended. Avoid merge logic that depends on exhaustive knowledge of the schema.
+
+4. **Keep validation loose in contract code.** The contract validates structural integrity (signatures are valid, timestamps are monotonic, status transitions are forward-only). It does NOT validate business rules that might change (price limits, product categories, order policies). Business rules live in the UI.
+
+5. **Push business logic to the UI.** The contract is a CRDT store with access control and merge rules. The UI interprets what the data means. If the UI changes its interpretation, no contract change is needed.
+
+6. **Test merge logic to destruction before launch.** This is the one thing we cannot patch. Fuzz it, property-test it, run adversarial scenarios. A merge bug in production is permanent.
+
+7. **Treat contract code review as a cryptographic ceremony.** The same seriousness as reviewing a Bitcoin consensus change. Multiple reviewers, formal reasoning about edge cases, explicit sign-off. Once deployed, it's carved in stone.
+
+### The upgrade story for breaking changes
+
+If a breaking change is ever truly necessary (critical security fix, fundamental protocol change), the path is a hard fork:
+
+1. Deploy new contracts with new WASM
+2. Guardian federation signs a "successor pointer" in old contract state (quorum required — no unilateral takeover)
+3. UI reads the successor pointer and switches to new contracts
+4. During transition, UI reads from both old and new contracts
+5. Users re-register on new contracts (UI automates this)
+6. Guardians re-allocate CURD balances on new user contracts
+
+This is expensive, disruptive, and should be treated as a last resort — the same way a Bitcoin hard fork is treated. The goal is to never need it.
+
+### What about the UI?
+
+The UI is a normal web application served by `dx serve` or bundled into a Freenet web container. It can be updated freely — new versions just need to maintain backward compatibility with the deployed contract state format (which `#[serde(default)]` guarantees).
+
+The UI is where most "feature releases" happen. New screens, new workflows, new interpretations of existing data, new business rules — all UI changes, no contract changes needed.
+
+### Summary
+
+| Layer | Mutability | Release cadence |
+|-------|-----------|-----------------|
+| Contract WASM | Immutable forever | Ship once, get it right |
+| Contract state schema | Additive only (soft fork) | Rare, carefully planned |
+| UI application | Freely updatable | Normal release cadence |
+| Guardian federation | Coordinated upgrade | Rare, ceremony required |
+
+The CREAM contract is a promise: "this logic will always work, and future state may contain fields you don't understand, but you can safely ignore them." Every node on the network can verify that promise because the WASM is immutable. This is the price of decentralization — and the benefit is that no one, including us, can unilaterally change the rules after deployment.
+
+---
+
+## Why can't CREAM delete data?
+
+### The fundamental asymmetry
+
+In a traditional database, deletion is a first-class operation: `DELETE FROM orders WHERE order_id = ?`. Data has a lifecycle — it's created, it lives, it's archived or destroyed. The database is a living thing that forgets.
+
+In Freenet, contract state is append-only by nature. All our merge functions are monotonic — they only grow. This isn't a limitation we chose; it's inherent to decentralized state replication. If node A deletes a record while node B updates it, what happens when they sync? In a centralized database, the transaction log resolves this. In a CRDT, the update wins — because merge must be commutative, associative, and idempotent, and deletion breaks all three unless you add tombstone protocols.
+
+### How CREAM handles "deletion" today
+
+Every "deletion" in CREAM is really a status transition or a soft flag:
+
+| Relational operation | CREAM equivalent |
+|---------------------|-----------------|
+| `DELETE FROM orders` | `status: Cancelled` or `status: Expired` — the order row stays forever |
+| `DELETE FROM products` | Set `quantity_total: 0` or add a `deleted` flag — the product row stays forever |
+| `DELETE FROM users` | Not possible — a user contract exists permanently once deployed |
+| `DELETE FROM inbox_messages WHERE age > 30d` | `prune_old_messages()` — but this is local only; other nodes may still hold the messages |
+| `DROP TABLE storefronts` | Not possible — the contract and its state persist on the network indefinitely |
+
+### Consequences
+
+**State grows forever.** Every order, every wallet transaction, every inbox message is permanent. A storefront contract accumulates its entire lifetime of activity. Freenet imposes a 50 MiB per-contract state limit — this is effectively a hard ceiling on how much business a single storefront can do before it hits the wall.
+
+**The 50 MiB wall is a real design constraint.** Consider: each order is roughly 500 bytes of JSON. A busy supplier processing 50 orders per week would accumulate ~1.3 MB per year of order data alone. Add products, wallet transactions, and the overhead of JSON encoding, and a storefront contract has maybe 10-20 years before it approaches the limit. That sounds comfortable, but it means we cannot be wasteful with state — every field we add, every status transition we record, consumes a non-renewable resource.
+
+**GDPR right to erasure is impossible.** You cannot delete data from a decentralized network. Once state is replicated across nodes, there is no mechanism to ensure all copies are destroyed. This is a fundamental tension between decentralized systems and privacy regulation. For CREAM this is mitigated by the fact that user identity is pseudonymous (ed25519 keys, not real names), but it's worth being honest about.
+
+**No archival strategy.** In a relational system, you'd move completed orders to a history table, archive old transactions, compress cold data. In CREAM, active and historical data share the same contract state, and every `summarize()` and `delta()` call processes all of it. As state grows, sync gets slower.
+
+**Merge conflicts on "deletion" require tombstones.** If we ever implement true deletion (e.g., a supplier removing a product listing), we'd need tombstone records — markers that say "this record was intentionally deleted, don't re-add it on merge." Tombstones themselves are permanent (you can never delete the deletion marker), adding ironic overhead.
+
+### The inbox exception
+
+The inbox contract's `prune_old_messages()` is the one place we fight the append-only nature. It works because:
+
+1. Inbox messages have no cross-references — no other contract state points to a message ID
+2. The pruning is deterministic (age > 30 days) so all nodes converge on the same result
+3. Messages are keyed by random u64, so there's no risk of ID reuse after pruning
+
+This pattern could theoretically extend to other contracts (e.g., pruning fulfilled orders older than 90 days), but only if we can guarantee no dangling references. An order is referenced by wallet transactions on both sides of the exchange — pruning it would leave orphaned ledger entries pointing at a ghost.
+
+### What the relational model makes obvious
+
+If you model CREAM as a normalized relational database (13 tables, third normal form), deletion is trivial. `CASCADE` handles referential integrity, transactions handle concurrency, and storage is bounded by retention policy. The entire append-only constraint, the tombstone complexity, the 50 MiB wall — all of it exists solely because there is no trusted central server to adjudicate "this record is gone."
+
+This is the most tangible cost of decentralization: your data model loses an entire dimension of expressiveness. INSERT, UPDATE, and SELECT survive the transition to CRDTs. DELETE does not.
+
+---
+
+## What does CREAM's domain model look like in third normal form?
+
+A useful exercise: strip away all the decentralization machinery (contracts, signatures, CRDTs, sync protocol) and model CREAM as a single relational database per co-op. This exposes the pure domain and makes obvious how much of our code exists solely to compensate for not having a trusted server.
+
+### The schema (13 tables, 3NF)
+
+```sql
+-- ============================================================
+-- CREAM Co-op Database — Third Normal Form
+-- ============================================================
+
+-- ----- IDENTITY & USERS -----
+
+CREATE TABLE users (
+    user_id         CHAR(64) PRIMARY KEY,       -- ed25519 pubkey hex
+    name            TEXT NOT NULL,
+    origin_supplier CHAR(64) NOT NULL            -- immutable after first set
+                    REFERENCES users(user_id),
+    current_supplier CHAR(64) NOT NULL
+                    REFERENCES users(user_id),
+    invited_by      CHAR(64)
+                    REFERENCES users(user_id),
+    is_admin        BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at      TIMESTAMPTZ NOT NULL,
+    updated_at      TIMESTAMPTZ NOT NULL
+);
+-- balance_curds is NOT stored — it's derived:
+--   SELECT COALESCE(SUM(CASE kind WHEN 'credit' THEN amount
+--                                  WHEN 'debit'  THEN -amount END), 0)
+--   FROM wallet_transactions WHERE user_id = ?
+
+
+-- ----- STOREFRONTS -----
+-- 1:1 with supplier users. The "directory" is just a view over this.
+
+CREATE TABLE storefronts (
+    storefront_id   SERIAL PRIMARY KEY,
+    owner_id        CHAR(64) NOT NULL UNIQUE
+                    REFERENCES users(user_id),
+    name            TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    latitude        DOUBLE PRECISION NOT NULL,
+    longitude       DOUBLE PRECISION NOT NULL,
+    postcode        TEXT,
+    locality        TEXT,
+    timezone        TEXT,                        -- IANA, e.g. 'Australia/Sydney'
+    phone           TEXT,
+    email           TEXT,
+    address         TEXT,
+    updated_at      TIMESTAMPTZ NOT NULL
+);
+
+-- The current DirectoryEntry.categories is denormalized —
+-- it's derivable from the products table:
+--
+-- CREATE VIEW supplier_categories AS
+--   SELECT DISTINCT s.storefront_id, p.category
+--   FROM storefronts s
+--   JOIN products p ON p.storefront_id = s.storefront_id;
+
+
+-- ----- OPENING HOURS -----
+-- WeeklySchedule bitfield (336 bits) normalized to time ranges.
+
+CREATE TABLE opening_hours (
+    storefront_id   INTEGER NOT NULL
+                    REFERENCES storefronts(storefront_id),
+    day_of_week     SMALLINT NOT NULL CHECK (day_of_week BETWEEN 0 AND 6),
+                    -- 0=Monday, 6=Sunday
+    open_time       TIME NOT NULL,
+    close_time      TIME NOT NULL,
+    CHECK (close_time > open_time),
+    PRIMARY KEY (storefront_id, day_of_week, open_time)
+);
+
+
+-- ----- PRODUCTS -----
+
+CREATE TABLE product_categories (
+    category_id     SERIAL PRIMARY KEY,
+    name            TEXT NOT NULL UNIQUE          -- 'Milk','Cheese',...,'Other: xyz'
+);
+
+CREATE TABLE products (
+    product_id      TEXT PRIMARY KEY,             -- timestamp-based monotonic ID
+    storefront_id   INTEGER NOT NULL
+                    REFERENCES storefronts(storefront_id),
+    name            TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    category_id     INTEGER NOT NULL
+                    REFERENCES product_categories(category_id),
+    price_curd      BIGINT NOT NULL,              -- smallest CURD unit
+    quantity_total  INTEGER NOT NULL,
+    expiry_date     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL,
+    updated_at      TIMESTAMPTZ NOT NULL
+);
+-- quantity_available is NOT stored — it's derived:
+--   quantity_total - SUM(quantity) FROM orders
+--     WHERE product_id = ? AND status IN ('reserved','paid')
+
+
+-- ----- ORDERS -----
+
+CREATE TABLE orders (
+    order_id        TEXT PRIMARY KEY,
+    product_id      TEXT NOT NULL
+                    REFERENCES products(product_id),
+    customer_id     CHAR(64) NOT NULL
+                    REFERENCES users(user_id),
+    quantity        INTEGER NOT NULL,
+    deposit_tier    TEXT NOT NULL
+                    CHECK (deposit_tier IN ('reserve_2d','reserve_1w','full')),
+    deposit_amount  BIGINT NOT NULL,              -- recorded fact, not derived
+    total_price     BIGINT NOT NULL,
+    status          TEXT NOT NULL
+                    CHECK (status IN ('reserved','paid','fulfilled',
+                                      'cancelled','expired')),
+    expires_at      TIMESTAMPTZ,                  -- only for status='reserved'
+    collection_type TEXT
+                    CHECK (collection_type IN ('farm_gate','market')),
+    collection_market TEXT,                       -- market name if type='market'
+    created_at      TIMESTAMPTZ NOT NULL
+);
+-- deposit_amount: yes it depends on (deposit_tier, total_price), so it's
+-- technically a 3NF violation. But it's a recorded fact — what was actually
+-- charged — not a derivable attribute. Changing the tier formula later
+-- shouldn't retroactively alter historical orders.
+
+
+-- ----- WALLET -----
+
+CREATE TABLE wallet_transactions (
+    user_id         CHAR(64) NOT NULL
+                    REFERENCES users(user_id),
+    tx_seq          INTEGER NOT NULL,             -- per-user monotonic sequence
+    kind            TEXT NOT NULL
+                    CHECK (kind IN ('credit','debit')),
+    amount          BIGINT NOT NULL,
+    description     TEXT NOT NULL,
+    counterparty    TEXT NOT NULL,                 -- user name or '__cream_root__'
+    tx_ref          TEXT NOT NULL,                 -- links both sides of a transfer
+    lightning_hash  TEXT UNIQUE,                   -- prevents double-mint
+    created_at      TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (user_id, tx_seq),
+    UNIQUE (user_id, tx_ref, kind)                -- dedup rule from merge()
+);
+
+
+-- ----- INBOX -----
+
+CREATE TABLE inbox_messages (
+    message_id      BIGINT PRIMARY KEY,           -- random u64
+    recipient_id    CHAR(64) NOT NULL
+                    REFERENCES users(user_id),
+    kind            TEXT NOT NULL
+                    CHECK (kind IN ('direct','chat_invite',
+                                    'market_invite','market_accept')),
+    kind_ref        TEXT,                         -- session_id or market_name
+    from_name       TEXT NOT NULL,
+    from_user_id    CHAR(64)
+                    REFERENCES users(user_id),
+    body            TEXT NOT NULL,
+    toll_paid       BIGINT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX idx_inbox_recipient ON inbox_messages(recipient_id, created_at DESC);
+
+
+-- ----- FARMER'S MARKETS -----
+
+CREATE TABLE markets (
+    market_id       SERIAL PRIMARY KEY,
+    organizer_id    CHAR(64) NOT NULL
+                    REFERENCES users(user_id),
+    name            TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    venue_address   TEXT NOT NULL,
+    latitude        DOUBLE PRECISION NOT NULL,
+    longitude       DOUBLE PRECISION NOT NULL,
+    postcode        TEXT,
+    locality        TEXT,
+    timezone        TEXT,
+    updated_at      TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE market_events (
+    market_id       INTEGER NOT NULL
+                    REFERENCES markets(market_id),
+    event_date      DATE NOT NULL,
+    start_time      TIME NOT NULL,
+    end_time        TIME NOT NULL,
+    PRIMARY KEY (market_id, event_date)
+);
+
+CREATE TABLE market_suppliers (
+    market_id       INTEGER NOT NULL
+                    REFERENCES markets(market_id),
+    supplier_id     CHAR(64) NOT NULL
+                    REFERENCES users(user_id),
+    status          TEXT NOT NULL
+                    CHECK (status IN ('invited','accepted')),
+    PRIMARY KEY (market_id, supplier_id)
+);
+
+-- Per-market product selection (which products a supplier brings)
+CREATE TABLE market_product_selections (
+    market_id       INTEGER NOT NULL,
+    supplier_id     CHAR(64) NOT NULL,
+    product_id      TEXT NOT NULL
+                    REFERENCES products(product_id),
+    PRIMARY KEY (market_id, supplier_id, product_id),
+    FOREIGN KEY (market_id, supplier_id)
+                    REFERENCES market_suppliers(market_id, supplier_id)
+);
+
+
+-- ----- SYSTEM CONFIG -----
+
+CREATE TABLE toll_rates (
+    id              INTEGER PRIMARY KEY DEFAULT 1
+                    CHECK (id = 1),               -- singleton row
+    session_toll_curd     BIGINT NOT NULL DEFAULT 1,
+    session_interval_secs INTEGER NOT NULL DEFAULT 10,
+    inbox_message_curd    BIGINT NOT NULL DEFAULT 1,
+    curd_per_sat          BIGINT NOT NULL DEFAULT 10
+);
+```
+
+### 3NF violations identified and resolved
+
+| Current CREAM model | Violation | Resolution |
+|---|---|---|
+| `balance_curds` on UserContractState | Derived from ledger | Computed via `SUM()` |
+| `quantity_available` (computed in code) | Derived from orders | Computed via `SUM()` |
+| `categories[]` on DirectoryEntry | Derived from products | View with `DISTINCT` |
+| `deposit_amount` on Order | Depends on tier + price | Kept — recorded historical fact |
+
+### Structural changes from normalization
+
+- `WeeklySchedule` bitfield → `opening_hours` table with proper time ranges
+- `MessageKind` enum with variant data → `kind` column + `kind_ref` for the associated ID/name
+- `CollectionPoint` enum → two columns (`collection_type`, `collection_market`)
+- `market_products` map nested in StorefrontInfo → junction table `market_product_selections`
+- `OrderStatus::Reserved { expires_at }` → separate `status` and `expires_at` columns
+- `DirectoryEntry` → just a view over `storefronts` + `products`
+
+### What disappears in the relational model
+
+| CREAM concept | Why it exists | Relational equivalent |
+|---|---|---|
+| Signatures (ed25519) | No trusted server to authenticate writes | `GRANT`/`REVOKE` + connection auth |
+| CRDT merge logic | No central transaction coordinator | SQL transactions with SERIALIZABLE isolation |
+| Summarize/delta protocol | Bandwidth-efficient sync between untrusted peers | SQL queries |
+| Contract keys (BLAKE3 hashes) | Content-addressed identity on untrusted network | Foreign keys |
+| `extra {}` fields (`serde(flatten)`) | Future-proof against immutable contract code | `ALTER TABLE ADD COLUMN` |
+| `WeeklySchedule` bitfield | Compact binary for network transfer | Proper time-range table |
+| `balance_curds` cached field | Avoid scanning full ledger on every read | `SUM()` or materialized view |
+
+The entire signing infrastructure, the CRDT merge functions, the sync protocol, the `extra` extension fields — all of it exists solely because there is no trusted central server. The actual business logic is just these 13 tables.
+
+---

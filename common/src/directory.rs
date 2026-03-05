@@ -30,6 +30,9 @@ pub struct DirectoryEntry {
     pub inbox_contract_key: Option<ContractKey>,
     pub updated_at: DateTime<Utc>,
     pub signature: Signature,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl DirectoryEntry {
@@ -85,6 +88,9 @@ struct SignableDirectoryEntry<'a> {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DirectoryState {
     pub entries: BTreeMap<UserId, DirectoryEntry>,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl DirectoryState {
@@ -113,6 +119,9 @@ impl DirectoryState {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DirectorySummary {
     pub timestamps: BTreeMap<UserId, DateTime<Utc>>,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl DirectoryState {
@@ -123,6 +132,7 @@ impl DirectoryState {
                 .iter()
                 .map(|(id, entry)| (id.clone(), entry.updated_at))
                 .collect(),
+            extra: Default::default(),
         }
     }
 
@@ -139,6 +149,9 @@ impl DirectoryState {
             })
             .map(|(id, entry)| (id.clone(), entry.clone()))
             .collect();
-        DirectoryState { entries }
+        DirectoryState {
+            entries,
+            extra: Default::default(),
+        }
     }
 }

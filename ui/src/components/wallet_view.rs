@@ -48,8 +48,26 @@ pub fn WalletView() -> Element {
     let toll_rates = use_toll_rates();
     let curd_per_sat = toll_rates.read().curd_per_sat;
 
+    let node_action = use_node_action();
     let moniker = user_state.read().moniker.clone().unwrap_or_default();
     let is_supplier = user_state.read().is_supplier;
+
+    // Auto-checkpoint when ledger exceeds threshold
+    {
+        let shared_state = shared_state.clone();
+        let node_action = node_action.clone();
+        use_effect(move || {
+            let ledger_len = shared_state
+                .read()
+                .user_contract
+                .as_ref()
+                .map(|uc| uc.ledger.len())
+                .unwrap_or(0);
+            if ledger_len > cream_common::user_contract::PRUNE_THRESHOLD {
+                node_action.send(NodeAction::CheckpointLedger);
+            }
+        });
+    }
 
     // Read balance and transactions from the on-network user contract
     let shared = shared_state.read();
@@ -90,7 +108,6 @@ pub fn WalletView() -> Element {
     let deposits_str = format_amount(incoming_deposits);
 
     let has_gateway = LightningClient::is_available();
-    let node_action = use_node_action();
 
     // Peg-in state
     let mut pegin_sats = use_signal(|| String::new());

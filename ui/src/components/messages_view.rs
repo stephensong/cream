@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use dioxus::prelude::*;
 
 use cream_common::inbox::{InboxMessage, MessageKind};
@@ -10,6 +12,18 @@ use super::node_api::{use_node_action, NodeAction};
 use super::shared_state::use_shared_state;
 use super::user_state::use_user_state;
 
+/// A recipient entry: display name + pubkey hex.
+/// `from_directory` is true for suppliers in the directory (no need to pass pubkey to SendInboxMessage).
+#[derive(Clone, Debug)]
+struct RecipientEntry {
+    /// Name shown in the dropdown (may include " (admin)" suffix).
+    display_name: String,
+    /// Name sent to the handler for directory lookup (without suffix).
+    recipient_name: String,
+    pubkey_hex: String,
+    from_directory: bool,
+}
+
 #[component]
 pub fn MessagesView() -> Element {
     let shared_state = use_shared_state();
@@ -20,6 +34,7 @@ pub fn MessagesView() -> Element {
     let mut compose_to = use_signal(String::new);
     let mut compose_body = use_signal(String::new);
     let mut send_error = use_signal(|| None::<String>);
+    let mut admin_pubkeys = use_signal(Vec::<String>::new);
 
     let balance = shared_state
         .read()
@@ -30,6 +45,25 @@ pub fn MessagesView() -> Element {
     let toll_rates = super::toll_rates::use_toll_rates();
     let cost = toll_rates.read().inbox_message_curd;
     let my_name = user_state.read().moniker.clone().unwrap_or_default();
+
+    // Fetch admin list once on mount
+    let _admin_fetch = use_resource(move || {
+        async move {
+            let km_signal: Signal<Option<crate::components::key_manager::KeyManager>> =
+                use_context();
+            let pubkey_hex = {
+                let km = km_signal.read();
+                match km.as_ref() {
+                    Some(km) => km.pubkey_hex(),
+                    None => return,
+                }
+            };
+            match super::toll_rates::fetch_admin_list(&pubkey_hex).await {
+                Ok(list) => admin_pubkeys.set(list),
+                Err(_) => {} // Silently ignore — non-admins can't fetch admin list
+            }
+        }
+    });
 
     // Combine received inbox messages and locally-tracked sent messages
     let messages: Vec<(InboxMessage, Option<String>)> = {
@@ -55,41 +89,108 @@ pub fn MessagesView() -> Element {
         all
     };
 
-    // Get directory names for the compose recipient picker
-    let directory_names: Vec<String> = {
+    // Build recipient list: directory suppliers + admin/root entries
+    let recipients: Vec<RecipientEntry> = {
         let shared = shared_state.read();
-        shared
-            .directory
-            .entries
-            .values()
-            .map(|e| e.name.clone())
-            .filter(|n| *n != my_name)
-            .collect()
+        let admin_list = admin_pubkeys.read();
+        let admin_set: std::collections::HashSet<&str> =
+            admin_list.iter().map(|s| s.as_str()).collect();
+        let mut by_name: BTreeMap<String, RecipientEntry> = BTreeMap::new();
+
+        // Add directory suppliers, tagging admins
+        for entry in shared.directory.entries.values() {
+            if entry.name == my_name {
+                continue;
+            }
+            let pubkey_hex = entry
+                .supplier
+                .0
+                .to_bytes()
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>();
+            let is_admin = admin_set.contains(pubkey_hex.as_str());
+            let display_name = if is_admin {
+                format!("{} (admin)", entry.name)
+            } else {
+                entry.name.clone()
+            };
+            by_name.insert(
+                entry.name.clone(),
+                RecipientEntry {
+                    display_name,
+                    recipient_name: entry.name.clone(),
+                    pubkey_hex,
+                    from_directory: true,
+                },
+            );
+        }
+
+        // Add root
+        {
+            let root_id = cream_common::identity::root_user_id();
+            let root_hex = root_id
+                .0
+                .to_bytes()
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>();
+            let my_km: Signal<Option<crate::components::key_manager::KeyManager>> = use_context();
+            let is_me_root = my_km
+                .read()
+                .as_ref()
+                .map(|km| km.pubkey_hex() == root_hex)
+                .unwrap_or(false);
+            if !is_me_root {
+                by_name
+                    .entry("Root".to_string())
+                    .or_insert(RecipientEntry {
+                        display_name: "Root".to_string(),
+                        recipient_name: "Root".to_string(),
+                        pubkey_hex: root_hex,
+                        from_directory: false,
+                    });
+            }
+        }
+
+        // Add non-directory admins from the fetched admin list
+        let directory_pubkeys: std::collections::HashSet<String> =
+            by_name.values().map(|r| r.pubkey_hex.clone()).collect();
+        for (i, pk) in admin_list.iter().enumerate() {
+            if i == 0 {
+                continue; // Root already added above
+            }
+            if directory_pubkeys.contains(pk) {
+                continue; // Already in list (supplier who is also admin)
+            }
+            let short = if pk.len() > 16 {
+                format!("Admin ({}...{})", &pk[..6], &pk[pk.len() - 6..])
+            } else {
+                format!("Admin ({})", pk)
+            };
+            by_name.entry(short.clone()).or_insert(RecipientEntry {
+                display_name: short.clone(),
+                recipient_name: short,
+                pubkey_hex: pk.clone(),
+                from_directory: false,
+            });
+        }
+
+        by_name.into_values().collect()
     };
 
     let connected = chat.read().connected;
 
-    // Find recipient's public key (needed for chat requests)
-    let recipient_pubkey: Option<String> = {
+    // Find recipient's public key (needed for chat requests and non-directory sends)
+    let selected_recipient: Option<RecipientEntry> = {
         let to = compose_to.read().clone();
         if to.is_empty() {
             None
         } else {
-            let shared_read = shared_state.read();
-            shared_read
-                .directory
-                .entries
-                .values()
-                .find(|e| e.name == to)
-                .map(|e| {
-                    let bytes = e.supplier.0.to_bytes();
-                    bytes
-                        .iter()
-                        .map(|b| format!("{:02x}", b))
-                        .collect::<String>()
-                })
+            recipients.iter().find(|r| r.display_name == to).cloned()
         }
     };
+    let recipient_pubkey: Option<String> = selected_recipient.as_ref().map(|r| r.pubkey_hex.clone());
 
     let peer_online = use_peer_presence(&recipient_pubkey);
 
@@ -112,8 +213,8 @@ pub fn MessagesView() -> Element {
                         value: "{compose_to}",
                         onchange: move |evt| compose_to.set(evt.value()),
                         option { value: "", "Select recipient..." }
-                        for name in directory_names.iter() {
-                            option { value: "{name}", "{name}" }
+                        for r in recipients.iter() {
+                            option { value: "{r.display_name}", "{r.display_name}" }
                         }
                     }
                 }
@@ -134,26 +235,37 @@ pub fn MessagesView() -> Element {
                     }
                     button {
                         disabled: send_disabled,
-                        onclick: move |_| {
-                            let to = compose_to.read().clone();
-                            let body = compose_body.read().trim().to_string();
-                            if to.is_empty() || body.is_empty() {
-                                return;
+                        onclick: {
+                            let selected = selected_recipient.clone();
+                            move |_| {
+                                let to = compose_to.read().clone();
+                                let body = compose_body.read().trim().to_string();
+                                if to.is_empty() || body.is_empty() {
+                                    return;
+                                }
+                                if balance < cost {
+                                    send_error.set(Some(format!(
+                                        "Insufficient balance (need {} CURD)",
+                                        cost
+                                    )));
+                                    return;
+                                }
+                                let (name, pubkey_hex) = match selected.as_ref() {
+                                    Some(r) => (
+                                        r.recipient_name.clone(),
+                                        if r.from_directory { None } else { Some(r.pubkey_hex.clone()) },
+                                    ),
+                                    None => (to, None),
+                                };
+                                node_action.send(NodeAction::SendInboxMessage {
+                                    recipient_name: name,
+                                    body,
+                                    kind: MessageKind::DirectMessage,
+                                    recipient_pubkey_hex: pubkey_hex,
+                                });
+                                compose_to.set(String::new());
+                                compose_body.set(String::new());
                             }
-                            if balance < cost {
-                                send_error.set(Some(format!(
-                                    "Insufficient balance (need {} CURD)",
-                                    cost
-                                )));
-                                return;
-                            }
-                            node_action.send(NodeAction::SendInboxMessage {
-                                recipient_name: to,
-                                body,
-                                kind: MessageKind::DirectMessage,
-                            });
-                            compose_to.set(String::new());
-                            compose_body.set(String::new());
                         },
                         "Send Message"
                     }
@@ -162,6 +274,7 @@ pub fn MessagesView() -> Element {
                         disabled: chat_disabled,
                         onclick: {
                             let my_name = my_name.clone();
+                            let selected = selected_recipient.clone();
                             move |_| {
                                 let to = compose_to.read().clone();
                                 let body = compose_body.read().trim().to_string();
@@ -180,12 +293,20 @@ pub fn MessagesView() -> Element {
                                         "chat-{}",
                                         chrono::Utc::now().timestamp_millis()
                                     );
+                                    let (name, pk_hex) = match selected.as_ref() {
+                                        Some(r) => (
+                                            r.recipient_name.clone(),
+                                            if r.from_directory { None } else { Some(r.pubkey_hex.clone()) },
+                                        ),
+                                        None => (to.clone(), None),
+                                    };
                                     node_action.send(NodeAction::SendInboxMessage {
-                                        recipient_name: to.clone(),
+                                        recipient_name: name,
                                         body: body.clone(),
                                         kind: MessageKind::ChatInvite {
                                             session_id: session_id.clone(),
                                         },
+                                        recipient_pubkey_hex: pk_hex,
                                     });
 
                                     let session = ChatSession {
@@ -244,6 +365,8 @@ pub fn MessagesView() -> Element {
                                 (_, true) => "Sent",
                                 (MessageKind::DirectMessage, false) => "DM",
                                 (MessageKind::ChatInvite { .. }, false) => "Chat Invite",
+                                (MessageKind::MarketInvite { .. }, false) => "Market Invite",
+                                (MessageKind::MarketAccept { .. }, false) => "Market Accept",
                             };
                             let peer_label = if let Some(to) = to_name {
                                 format!("To: {to}")
@@ -278,6 +401,18 @@ pub fn MessagesView() -> Element {
                                                     ChatInviteAction {
                                                         session_id: session_id,
                                                         peer_name: peer_name,
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if let MessageKind::MarketInvite { market_name } = &msg.kind {
+                                            {
+                                                let market_name = market_name.clone();
+                                                let organizer_name = msg.from_name.clone();
+                                                rsx! {
+                                                    MarketInviteAction {
+                                                        market_name: market_name,
+                                                        organizer_name: organizer_name,
                                                     }
                                                 }
                                             }
@@ -380,6 +515,56 @@ fn ChatInviteAction(session_id: String, peer_name: String) -> Element {
     } else {
         rsx! {
             span { class: "messages-item-offline", "Chat relay offline" }
+        }
+    }
+}
+
+/// Action buttons for market invite messages: Accept or Decline.
+#[component]
+fn MarketInviteAction(market_name: String, organizer_name: String) -> Element {
+    let node_action = use_node_action();
+    let shared_state = use_shared_state();
+    let user_state = use_user_state();
+
+    // Check if we've already accepted (our name appears as Accepted in the market)
+    let my_name = user_state.read().moniker.clone().unwrap_or_default();
+    let already_accepted = {
+        let shared = shared_state.read();
+        shared.market_directory.entries.values()
+            .find(|m| m.name == market_name)
+            .and_then(|m| m.suppliers.get(&my_name))
+            .map(|s| *s == cream_common::market::SupplierStatus::Accepted)
+            .unwrap_or(false)
+    };
+
+    if already_accepted {
+        rsx! {
+            span { class: "market-invite-accepted", "Accepted" }
+        }
+    } else {
+        rsx! {
+            div { class: "market-invite-actions",
+                button {
+                    class: "accept-btn",
+                    onclick: {
+                        let market_name = market_name.clone();
+                        let organizer_name = organizer_name.clone();
+                        move |_| {
+                            // Send MarketAccept inbox to organizer
+                            node_action.send(NodeAction::SendInboxMessage {
+                                recipient_name: organizer_name.clone(),
+                                body: format!("I accept the invitation to '{}'", market_name),
+                                kind: MessageKind::MarketAccept {
+                                    market_name: market_name.clone(),
+                                },
+                                recipient_pubkey_hex: None,
+                            });
+                        }
+                    },
+                    "Accept"
+                }
+                span { class: "market-invite-pending", "Pending" }
+            }
         }
     }
 }

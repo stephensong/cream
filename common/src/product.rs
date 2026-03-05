@@ -30,4 +30,7 @@ pub struct Product {
     pub expiry_date: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }

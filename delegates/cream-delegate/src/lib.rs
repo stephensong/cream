@@ -97,7 +97,11 @@ impl DelegateState {
         let key = signing_key_from_bytes(key_bytes);
         let msg = serde_json::to_vec(&product).expect("serialization should not fail");
         let signature = key.sign(&msg);
-        CreamResponse::SignedProduct(SignedProduct { product, signature })
+        CreamResponse::SignedProduct(SignedProduct {
+            product,
+            signature,
+            extra: Default::default(),
+        })
     }
 
     fn sign_order(&self, order: &mut Order) -> CreamResponse {

@@ -92,7 +92,8 @@ pub fn DirectoryView() -> Element {
         .collect();
 
     // Build market list
-    let mut markets: Vec<(String, String, String, usize)> = Vec::new(); // (name, location, description, supplier_count)
+    let today = chrono::Utc::now().date_naive();
+    let mut markets: Vec<(String, String, String, usize, Option<String>)> = Vec::new(); // (name, location, description, accepted_count, next_event)
     {
         let shared = shared_state.read();
         for market in shared.market_directory.entries.values() {
@@ -100,11 +101,15 @@ pub fn DirectoryView() -> Element {
                 &market.postcode.clone().unwrap_or_default(),
                 market.locality.as_deref(),
             );
+            let accepted_count = market.accepted_suppliers().len();
+            let next_event = market.next_event(today)
+                .map(|e| format!("{} ({} – {})", e.date.format("%d %b"), e.start_time, e.end_time));
             markets.push((
                 market.name.clone(),
                 location,
                 market.description.clone(),
-                market.suppliers.len(),
+                accepted_count,
+                next_event,
             ));
         }
     }
@@ -115,14 +120,17 @@ pub fn DirectoryView() -> Element {
             if !markets.is_empty() {
                 h2 { "Farmer's Markets" }
                 div { class: "market-list",
-                    {markets.into_iter().map(|(name, location, desc, supplier_count)| {
+                    {markets.into_iter().map(|(name, location, desc, accepted_count, next_event)| {
                         let market_name = name.clone();
                         rsx! {
                             div { class: "market-card", key: "{name}",
                                 h3 { "{name}" }
                                 p { "{desc}" }
                                 p { class: "location", "{location}" }
-                                p { class: "supplier-count", "{supplier_count} suppliers" }
+                                p { class: "supplier-count", "{accepted_count} suppliers" }
+                                if let Some(ref evt) = next_event {
+                                    p { class: "next-event", "Next: {evt}" }
+                                }
                                 Link {
                                     to: Route::Market { market_organizer: market_name },
                                     "View Market"

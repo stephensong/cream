@@ -4,20 +4,18 @@ use cream_common::currency::format_amount;
 use cream_common::postcode::format_postcode;
 
 use super::app::Route;
-use super::schedule_editor::ScheduleSummary;
 use super::shared_state::use_shared_state;
 
-/// Market detail view — venue, schedule, aggregated products from participating suppliers.
+/// Market detail view — next event, accepted suppliers, aggregated products.
 #[component]
 pub fn MarketView(market_organizer: String) -> Element {
     let shared_state = use_shared_state();
 
     let shared = shared_state.read();
 
-    // Find the market by organizer key (hex encoded in the URL)
+    // Find the market by name (case-insensitive)
     let market = shared.market_directory.entries.values()
         .find(|m| {
-            // Match by market name (case-insensitive)
             m.name.to_lowercase() == market_organizer.to_lowercase()
         });
 
@@ -38,11 +36,26 @@ pub fn MarketView(market_organizer: String) -> Element {
         &market.postcode.clone().unwrap_or_default(),
         market.locality.as_deref(),
     );
-    let schedule = market.schedule.clone();
     let timezone = market.timezone.clone();
-    let supplier_names: Vec<String> = market.suppliers.iter().cloned().collect();
 
-    // Aggregate products from participating suppliers
+    // Only show accepted suppliers
+    let accepted_names: Vec<String> = market.accepted_suppliers()
+        .into_iter().cloned().collect();
+
+    // Next upcoming event
+    let today = chrono::Utc::now().date_naive();
+    let next_event = market.next_event(today);
+    let next_event_str = next_event
+        .map(|e| format!("{} ({} – {})", e.date.format("%a %d %b %Y"), e.start_time, e.end_time))
+        .unwrap_or_else(|| "No upcoming events scheduled".to_string());
+
+    // Future events (all on or after today)
+    let future_events: Vec<cream_common::market::MarketEvent> = market.events.iter()
+        .filter(|e| e.date >= today)
+        .cloned()
+        .collect();
+
+    // Aggregate products from accepted suppliers, filtered by market_products selection
     struct MarketProduct {
         supplier_name: String,
         product_name: String,
@@ -53,9 +66,17 @@ pub fn MarketView(market_organizer: String) -> Element {
     }
 
     let mut products: Vec<MarketProduct> = Vec::new();
-    for supplier_name in &supplier_names {
+    for supplier_name in &accepted_names {
         if let Some(sf) = shared.storefronts.get(supplier_name) {
+            // Check if supplier has a product selection for this market
+            let selected = sf.info.market_products.get(&market_name);
             for sp in sf.products.values() {
+                // Filter: if supplier has a selection and it's non-empty, only include those products
+                if let Some(ids) = selected {
+                    if !ids.is_empty() && !ids.contains(&sp.product.id) {
+                        continue;
+                    }
+                }
                 let available = sf.available_quantity(&sp.product.id);
                 products.push(MarketProduct {
                     supplier_name: supplier_name.clone(),
@@ -85,15 +106,30 @@ pub fn MarketView(market_organizer: String) -> Element {
                 }
             }
 
-            div { class: "market-schedule",
-                h3 { "Opening Hours" }
-                ScheduleSummary { schedule: schedule }
+            div { class: "market-next-event",
+                h3 { "Next Event" }
+                p { class: "next-event-date", "{next_event_str}" }
+            }
+
+            if future_events.len() > 1 {
+                div { class: "market-upcoming-events",
+                    h3 { "Upcoming Events" }
+                    for event in future_events.iter() {
+                        {
+                            let date_str = event.date.format("%a %d %b %Y").to_string();
+                            let time_str = format!("{} – {}", event.start_time, event.end_time);
+                            rsx! {
+                                p { key: "{event.date}", "{date_str}  {time_str}" }
+                            }
+                        }
+                    }
+                }
             }
 
             div { class: "market-suppliers",
-                h3 { "Participating Suppliers ({supplier_names.len()})" }
+                h3 { "Participating Suppliers ({accepted_names.len()})" }
                 div { class: "supplier-chips",
-                    {supplier_names.iter().map(|name| {
+                    {accepted_names.iter().map(|name| {
                         rsx! {
                             Link {
                                 key: "{name}",

@@ -1,13 +1,14 @@
-use crate::au_postcodes::AU_POSTCODE_CENTROIDS;
+use crate::postcodes_data::POSTCODE_DATA;
 use crate::location::GeoLocation;
 
-/// Result of a postcode lookup: location + place name + state.
+/// Result of a postcode lookup: location + place name + state + timezone.
 #[derive(Debug, Clone)]
 pub struct PostcodeInfo {
     pub postcode: String,
     pub location: GeoLocation,
     pub place_name: String,
     pub state: String,
+    pub timezone: String,
 }
 
 impl PostcodeInfo {
@@ -22,23 +23,24 @@ impl PostcodeInfo {
     }
 }
 
-fn entry_to_info((pc, lat, lon, name, state): &(&str, f64, f64, &str, &str)) -> PostcodeInfo {
+fn entry_to_info((pc, lat, lon, name, state, tz): &(&str, f64, f64, &str, &str, &str)) -> PostcodeInfo {
     PostcodeInfo {
         postcode: pc.to_string(),
         location: GeoLocation::new(*lat, *lon),
         place_name: name.to_string(),
         state: state.to_string(),
+        timezone: tz.to_string(),
     }
 }
 
 /// Find the index of the first entry for a given postcode using binary search.
 fn find_first_index(postcode: &str) -> Option<usize> {
-    let idx = AU_POSTCODE_CENTROIDS
-        .binary_search_by_key(&postcode, |(pc, _, _, _, _)| pc)
+    let idx = POSTCODE_DATA
+        .binary_search_by_key(&postcode, |(pc, _, _, _, _, _)| pc)
         .ok()?;
     // Walk backwards to find the first entry for this postcode
     let mut first = idx;
-    while first > 0 && AU_POSTCODE_CENTROIDS[first - 1].0 == postcode {
+    while first > 0 && POSTCODE_DATA[first - 1].0 == postcode {
         first -= 1;
     }
     Some(first)
@@ -50,7 +52,7 @@ pub fn lookup_all_localities(postcode: &str) -> Vec<PostcodeInfo> {
         return Vec::new();
     };
     let mut results = Vec::new();
-    for entry in &AU_POSTCODE_CENTROIDS[first..] {
+    for entry in &POSTCODE_DATA[first..] {
         if entry.0 != postcode {
             break;
         }
@@ -63,7 +65,7 @@ pub fn lookup_all_localities(postcode: &str) -> Vec<PostcodeInfo> {
 pub fn lookup_locality(postcode: &str, locality: &str) -> Option<PostcodeInfo> {
     let first = find_first_index(postcode)?;
     let locality_lower = locality.to_lowercase();
-    for entry in &AU_POSTCODE_CENTROIDS[first..] {
+    for entry in &POSTCODE_DATA[first..] {
         if entry.0 != postcode {
             break;
         }
@@ -76,7 +78,7 @@ pub fn lookup_locality(postcode: &str, locality: &str) -> Option<PostcodeInfo> {
 
 /// Find the nearest postcode entry to a given location (brute-force).
 pub fn nearest_postcode(location: &GeoLocation) -> Option<PostcodeInfo> {
-    AU_POSTCODE_CENTROIDS
+    POSTCODE_DATA
         .iter()
         .min_by(|a, b| {
             let da = location.distance_km(&GeoLocation::new(a.1, a.2));
@@ -86,50 +88,35 @@ pub fn nearest_postcode(location: &GeoLocation) -> Option<PostcodeInfo> {
         .map(|e| entry_to_info(e))
 }
 
-/// Look up full info for an Australian postcode (first locality match).
-pub fn lookup_au_postcode_info(postcode: &str) -> Option<PostcodeInfo> {
-    find_first_index(postcode).map(|idx| entry_to_info(&AU_POSTCODE_CENTROIDS[idx]))
+/// Look up full info for a postcode (first locality match).
+pub fn lookup_postcode_info(postcode: &str) -> Option<PostcodeInfo> {
+    find_first_index(postcode).map(|idx| entry_to_info(&POSTCODE_DATA[idx]))
 }
 
-/// Look up the geographic centroid for an Australian postcode (first match).
-pub fn lookup_au_postcode(postcode: &str) -> Option<GeoLocation> {
+/// Look up the geographic centroid for a postcode (first match).
+pub fn lookup_postcode(postcode: &str) -> Option<GeoLocation> {
     find_first_index(postcode).map(|idx| {
-        let (_, lat, lon, _, _) = AU_POSTCODE_CENTROIDS[idx];
+        let (_, lat, lon, _, _, _) = POSTCODE_DATA[idx];
         GeoLocation::new(lat, lon)
     })
 }
 
-/// Check if an Australian postcode is valid (exists in our dataset).
-pub fn is_valid_au_postcode(postcode: &str) -> bool {
+/// Check if a postcode is valid (exists in our dataset).
+pub fn is_valid_postcode(postcode: &str) -> bool {
     find_first_index(postcode).is_some()
 }
 
-/// Calculate distance in km between two Australian postcodes.
+/// Calculate distance in km between two postcodes.
 /// Returns None if either postcode is not found.
 pub fn distance_between_postcodes(a: &str, b: &str) -> Option<f64> {
-    let loc_a = lookup_au_postcode(a)?;
-    let loc_b = lookup_au_postcode(b)?;
+    let loc_a = lookup_postcode(a)?;
+    let loc_b = lookup_postcode(b)?;
     Some(loc_a.distance_km(&loc_b))
 }
 
-/// Return the IANA timezone for an Australian state abbreviation.
-pub fn timezone_for_state(state: &str) -> Option<&'static str> {
-    match state {
-        "NSW" | "ACT" => Some("Australia/Sydney"),
-        "VIC" => Some("Australia/Melbourne"),
-        "QLD" => Some("Australia/Brisbane"),
-        "TAS" => Some("Australia/Hobart"),
-        "SA" => Some("Australia/Adelaide"),
-        "NT" => Some("Australia/Darwin"),
-        "WA" => Some("Australia/Perth"),
-        _ => None,
-    }
-}
-
-/// Derive IANA timezone from an Australian postcode using the state of the first locality match.
-pub fn timezone_for_postcode(postcode: &str) -> Option<&'static str> {
-    let info = lookup_au_postcode_info(postcode)?;
-    timezone_for_state(&info.state)
+/// Derive IANA timezone from a postcode using the timezone of the first locality match.
+pub fn timezone_for_postcode(postcode: &str) -> Option<String> {
+    lookup_postcode_info(postcode).map(|info| info.timezone)
 }
 
 /// Format a postcode for display, showing the locality name.
@@ -143,7 +130,7 @@ pub fn format_postcode(postcode: &str, locality: Option<&str>) -> String {
         // Locality didn't match dataset — show it anyway
         return format!("{loc} ({postcode})");
     }
-    lookup_au_postcode_info(postcode)
+    lookup_postcode_info(postcode)
         .map(|info| info.short_name())
         .unwrap_or_else(|| postcode.to_string())
 }
@@ -154,7 +141,7 @@ mod tests {
 
     #[test]
     fn test_lookup_sydney_cbd() {
-        let info = lookup_au_postcode_info("2000").expect("2000 should exist");
+        let info = lookup_postcode_info("2000").expect("2000 should exist");
         assert_eq!(info.state, "NSW");
         assert!((info.location.latitude - (-33.86)).abs() < 0.1);
         assert!((info.location.longitude - 151.21).abs() < 0.1);
@@ -162,7 +149,7 @@ mod tests {
 
     #[test]
     fn test_lookup_melbourne_cbd() {
-        let info = lookup_au_postcode_info("3000").expect("3000 should exist");
+        let info = lookup_postcode_info("3000").expect("3000 should exist");
         assert_eq!(info.state, "VIC");
     }
 
@@ -219,28 +206,18 @@ mod tests {
     }
 
     #[test]
-    fn test_timezone_for_state() {
-        assert_eq!(timezone_for_state("NSW"), Some("Australia/Sydney"));
-        assert_eq!(timezone_for_state("ACT"), Some("Australia/Sydney"));
-        assert_eq!(timezone_for_state("VIC"), Some("Australia/Melbourne"));
-        assert_eq!(timezone_for_state("QLD"), Some("Australia/Brisbane"));
-        assert_eq!(timezone_for_state("WA"), Some("Australia/Perth"));
-        assert_eq!(timezone_for_state("XX"), None);
-    }
-
-    #[test]
     fn test_timezone_for_postcode() {
-        assert_eq!(timezone_for_postcode("2000"), Some("Australia/Sydney"));
-        assert_eq!(timezone_for_postcode("3000"), Some("Australia/Melbourne"));
-        assert_eq!(timezone_for_postcode("4000"), Some("Australia/Brisbane"));
+        assert_eq!(timezone_for_postcode("2000").as_deref(), Some("Australia/Sydney"));
+        assert_eq!(timezone_for_postcode("3000").as_deref(), Some("Australia/Melbourne"));
+        assert_eq!(timezone_for_postcode("4000").as_deref(), Some("Australia/Brisbane"));
         assert_eq!(timezone_for_postcode("0000"), None);
     }
 
     #[test]
     fn test_invalid_postcode() {
-        assert!(lookup_au_postcode("0000").is_none());
-        assert!(lookup_au_postcode("99999").is_none());
-        assert!(lookup_au_postcode("abc").is_none());
+        assert!(lookup_postcode("0000").is_none());
+        assert!(lookup_postcode("99999").is_none());
+        assert!(lookup_postcode("abc").is_none());
     }
 
     #[test]

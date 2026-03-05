@@ -97,8 +97,7 @@ pub fn SupplierDashboard() -> Element {
                             // the saved schedule without waiting for the coroutine.
                             {
                                 let tz = user_state.read().postcode.as_deref()
-                                    .and_then(cream_common::postcode::timezone_for_postcode)
-                                    .map(|s: &str| s.to_string());
+                                    .and_then(cream_common::postcode::timezone_for_postcode);
                                 let mut shared = shared_state.write();
                                 if let Some(sf) = shared.storefronts.get_mut(&moniker) {
                                     sf.info.schedule = Some(sched.clone());
@@ -397,18 +396,91 @@ pub fn SupplierDashboard() -> Element {
             {
                 let moniker = user_state.read().moniker.clone().unwrap_or_default();
                 let shared = shared_state.read();
-                let my_markets: Vec<String> = shared.market_directory.entries.values()
-                    .filter(|m| m.suppliers.contains(&moniker))
-                    .map(|m| m.name.clone())
+                let my_markets: Vec<(String, cream_common::market::SupplierStatus)> = shared.market_directory.entries.values()
+                    .filter_map(|m| {
+                        m.suppliers.get(&moniker).map(|s| (m.name.clone(), s.clone()))
+                    })
                     .collect();
+                // Get current market_products for this supplier
+                let market_products_map = shared.storefronts.get(&moniker)
+                    .map(|sf| sf.info.market_products.clone())
+                    .unwrap_or_default();
+                let all_products: Vec<(String, String)> = shared.storefronts.get(&moniker)
+                    .map(|sf| sf.products.values()
+                        .map(|sp| (sp.product.id.0.clone(), sp.product.name.clone()))
+                        .collect())
+                    .unwrap_or_default();
+                drop(shared);
                 if !my_markets.is_empty() {
                     rsx! {
                         div { class: "supplier-markets",
                             h3 { "Listed at Markets" }
-                            ul {
-                                {my_markets.iter().map(|m| {
-                                    rsx! { li { key: "{m}", "{m}" } }
-                                })}
+                            for (market_name, status) in my_markets.iter() {
+                                {
+                                    let status_label = match status {
+                                        cream_common::market::SupplierStatus::Invited => "Invited",
+                                        cream_common::market::SupplierStatus::Accepted => "Accepted",
+                                    };
+                                    let status_class = match status {
+                                        cream_common::market::SupplierStatus::Invited => "status-invited",
+                                        cream_common::market::SupplierStatus::Accepted => "status-accepted",
+                                    };
+                                    let selected_ids: std::collections::BTreeSet<String> = market_products_map
+                                        .get(market_name)
+                                        .map(|ids| ids.iter().map(|id| id.0.clone()).collect())
+                                        .unwrap_or_default();
+                                    rsx! {
+                                        div { class: "market-item", key: "{market_name}",
+                                            div { class: "market-item-header",
+                                                span { "{market_name}" }
+                                                span { class: "supplier-status {status_class}", "{status_label}" }
+                                            }
+                                            if *status == cream_common::market::SupplierStatus::Accepted && !all_products.is_empty() {
+                                                div { class: "market-product-selection",
+                                                    p { class: "selection-label",
+                                                        if selected_ids.is_empty() {
+                                                            "All products shown at this market"
+                                                        } else {
+                                                            "{selected_ids.len()} products selected"
+                                                        }
+                                                    }
+                                                    for (pid, pname) in all_products.iter() {
+                                                        {
+                                                            let checked = selected_ids.is_empty() || selected_ids.contains(pid);
+                                                            let pid_clone = pid.clone();
+                                                            let market_name_clone = market_name.clone();
+                                                            let mut current_selected = selected_ids.clone();
+                                                            rsx! {
+                                                                label { class: "product-checkbox", key: "{pid}",
+                                                                    input {
+                                                                        r#type: "checkbox",
+                                                                        checked: checked,
+                                                                        onchange: {
+                                                                            let pid_clone = pid_clone.clone();
+                                                                            let market_name_clone = market_name_clone.clone();
+                                                                            move |evt: Event<FormData>| {
+                                                                                if evt.checked() {
+                                                                                    current_selected.insert(pid_clone.clone());
+                                                                                } else {
+                                                                                    current_selected.remove(&pid_clone);
+                                                                                }
+                                                                                node_action.send(NodeAction::UpdateMarketProducts {
+                                                                                    market_name: market_name_clone.clone(),
+                                                                                    product_ids: current_selected.clone(),
+                                                                                });
+                                                                            }
+                                                                        },
+                                                                    }
+                                                                    " {pname}"
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

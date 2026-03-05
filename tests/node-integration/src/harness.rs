@@ -65,8 +65,10 @@ impl Supplier {
                 expiry_date: None,
                 updated_at: now,
                 created_at: now,
+                extra: Default::default(),
             },
             signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+            extra: Default::default(),
         };
 
         let pid = product.product.id.clone();
@@ -508,6 +510,7 @@ impl TestHarness {
             tx_ref: "genesis:0:0".to_string(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             lightning_payment_hash: None,
+            extra: Default::default(),
         };
 
         let mut root_state = UserContractState {
@@ -518,10 +521,15 @@ impl TestHarness {
             balance_curds: 1_000_000,
             invited_by: String::new(),
             toll_rates: Default::default(),
+            checkpoint_balance: 0,
+            checkpoint_tx_count: 0,
+            checkpoint_at: None,
+            pruned_lightning_hashes: Default::default(),
             ledger: vec![genesis_tx],
             next_tx_id: 1,
             updated_at: chrono::Utc::now(),
             signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+            extra: Default::default(),
         };
         root_state.signature = cream_common::identity::root_sign(&root_state.signable_bytes());
         let root_state_bytes = serde_json::to_vec(&root_state).unwrap();
@@ -586,11 +594,14 @@ impl TestHarness {
             "Coffs Harbour Farmers Market",
             "Coffs Harbour Showground, Stadium Dr",
             GeoLocation::new(-30.2986, 153.1094),
-            std::collections::BTreeSet::from(["Gary".to_string(), "Emma".to_string()]),
+            std::collections::BTreeMap::from([
+                ("Gary".to_string(), cream_common::market::SupplierStatus::Accepted),
+                ("Emma".to_string(), cream_common::market::SupplierStatus::Accepted),
+            ]),
         );
         let mut mkt_entries = BTreeMap::new();
         mkt_entries.insert(gary.id.clone(), market_entry);
-        let mkt_delta = cream_common::market::MarketDirectoryState { entries: mkt_entries };
+        let mkt_delta = cream_common::market::MarketDirectoryState { entries: mkt_entries, extra: Default::default() };
         let mkt_delta_bytes = serde_json::to_vec(&mkt_delta).unwrap();
 
         gary.api
@@ -636,9 +647,12 @@ fn make_initial_storefront(
             phone: None,
             email: None,
             address: None,
+            market_products: BTreeMap::new(),
+            extra: Default::default(),
         },
         products: BTreeMap::new(),
         orders: BTreeMap::new(),
+        extra: Default::default(),
     }
 }
 
@@ -670,7 +684,7 @@ async fn register_supplier_in_directory(supplier: &mut Supplier, dir_key: &Contr
     );
     let mut entries = BTreeMap::new();
     entries.insert(supplier.id.clone(), entry);
-    let delta = DirectoryState { entries };
+    let delta = DirectoryState { entries, extra: Default::default() };
     let delta_bytes = serde_json::to_vec(&delta).unwrap();
 
     supplier
@@ -714,6 +728,7 @@ async fn deploy_supplier_user_contract(
         tx_ref: tx_ref.clone(),
         timestamp: now_str.clone(),
         lightning_payment_hash: None,
+        extra: Default::default(),
     };
 
     let uc_state = UserContractState {
@@ -724,10 +739,15 @@ async fn deploy_supplier_user_contract(
         balance_curds: 10_000,
         invited_by: String::new(),
         toll_rates: Default::default(),
+        checkpoint_balance: 0,
+        checkpoint_tx_count: 0,
+        checkpoint_at: None,
+        pruned_lightning_hashes: Default::default(),
         ledger: vec![initial_credit],
         next_tx_id: 1,
         updated_at: chrono::Utc::now(),
         signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+        extra: Default::default(),
     };
 
     let uc_state_bytes = serde_json::to_vec(&uc_state).unwrap();
@@ -756,6 +776,7 @@ async fn deploy_supplier_user_contract(
         tx_ref,
         timestamp: now_str,
         lightning_payment_hash: None,
+        extra: Default::default(),
     };
 
     // GET root state, append debit, Update
@@ -808,6 +829,7 @@ async fn deploy_user_contract(
         tx_ref: tx_ref.clone(),
         timestamp: now_str.clone(),
         lightning_payment_hash: None,
+        extra: Default::default(),
     };
 
     let uc_state = UserContractState {
@@ -818,10 +840,15 @@ async fn deploy_user_contract(
         balance_curds: 10_000,
         invited_by: invited_by.to_string(),
         toll_rates: Default::default(),
+        checkpoint_balance: 0,
+        checkpoint_tx_count: 0,
+        checkpoint_at: None,
+        pruned_lightning_hashes: Default::default(),
         ledger: vec![initial_credit],
         next_tx_id: 1,
         updated_at: chrono::Utc::now(),
         signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+        extra: Default::default(),
     };
 
     let uc_state_bytes = serde_json::to_vec(&uc_state).unwrap();
@@ -850,6 +877,7 @@ async fn deploy_user_contract(
         tx_ref,
         timestamp: now_str,
         lightning_payment_hash: None,
+        extra: Default::default(),
     };
 
     // GET root state, append debit, Update
@@ -894,6 +922,7 @@ async fn deploy_inbox(
         owner: UserId(*owner_vk),
         messages: std::collections::BTreeMap::new(),
         updated_at: chrono::Utc::now(),
+        extra: Default::default(),
     };
     let ib_state_bytes = serde_json::to_vec(&ib_state).unwrap();
 

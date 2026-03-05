@@ -1,4 +1,4 @@
-mod au_postcodes;
+mod postcodes_data;
 pub mod currency;
 pub mod directory;
 pub mod identity;

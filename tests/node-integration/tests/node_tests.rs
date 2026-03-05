@@ -140,6 +140,7 @@ async fn cumulative_node_tests() {
                 phone: None,
                 email: None,
                 address: None,
+                market_products: BTreeMap::new(),
             },
             products: BTreeMap::new(),
             orders: BTreeMap::new(),
@@ -232,6 +233,7 @@ async fn cumulative_node_tests() {
                 phone: None,
                 email: None,
                 address: None,
+                market_products: BTreeMap::new(),
             },
             products: BTreeMap::new(),
             orders: BTreeMap::new(),
@@ -350,6 +352,7 @@ async fn cumulative_node_tests() {
                 phone: None,
                 email: None,
                 address: None,
+                market_products: BTreeMap::new(),
             },
             products: BTreeMap::new(),
             orders: BTreeMap::new(),
@@ -987,6 +990,7 @@ async fn cumulative_node_tests() {
             tx_ref: tx_ref.clone(),
             timestamp: now_str.clone(),
             lightning_payment_hash: None,
+            extra: Default::default(),
         };
 
         let mut probe = connect_to_node_at(&node_url(3002)).await;
@@ -1017,6 +1021,7 @@ async fn cumulative_node_tests() {
             tx_ref: tx_ref.clone(),
             timestamp: now_str.clone(),
             lightning_payment_hash: None,
+            extra: Default::default(),
         };
 
         let root_bytes = cream_node_integration::wait_for_get(&mut probe, *h.root_contract_key.id(), TIMEOUT)
@@ -1064,6 +1069,7 @@ async fn cumulative_node_tests() {
             tx_ref: settle_tx_ref.clone(),
             timestamp: settle_now_str.clone(),
             lightning_payment_hash: None,
+            extra: Default::default(),
         };
 
         let root_bytes = cream_node_integration::wait_for_get(&mut probe, *h.root_contract_key.id(), TIMEOUT)
@@ -1094,6 +1100,7 @@ async fn cumulative_node_tests() {
             tx_ref: settle_tx_ref.clone(),
             timestamp: settle_now_str.clone(),
             lightning_payment_hash: None,
+            extra: Default::default(),
         };
 
         let gary_bytes = cream_node_integration::wait_for_get(&mut probe, *gary_uc_key.id(), TIMEOUT)
@@ -1274,8 +1281,8 @@ async fn cumulative_node_tests() {
 
         let market = mkt_state.entries.values().next().unwrap();
         assert_eq!(market.name, "Coffs Harbour Farmers Market");
-        assert!(market.suppliers.contains("Gary"));
-        assert!(market.suppliers.contains("Emma"));
+        assert!(market.suppliers.contains_key("Gary"));
+        assert!(market.suppliers.contains_key("Emma"));
         assert_eq!(market.suppliers.len(), 2);
         println!("   Market directory readable from node-2 with correct data");
 
@@ -1293,7 +1300,7 @@ async fn cumulative_node_tests() {
 
         // Gary updates the market (add Iris as supplier)
         let mut updated_entry = market.clone();
-        updated_entry.suppliers.insert("Iris".to_string());
+        updated_entry.suppliers.insert("Iris".to_string(), cream_common::market::SupplierStatus::Accepted);
         updated_entry.updated_at = chrono::Utc::now();
 
         let mut entries = BTreeMap::new();
@@ -1331,7 +1338,7 @@ async fn cumulative_node_tests() {
         let notif_state: MarketDirectoryState = serde_json::from_slice(&notif_bytes).unwrap();
         let updated_market = notif_state.entries.values().next().unwrap();
         assert!(
-            updated_market.suppliers.contains("Iris"),
+            updated_market.suppliers.contains_key("Iris"),
             "Updated market should include Iris"
         );
         assert_eq!(updated_market.suppliers.len(), 3);

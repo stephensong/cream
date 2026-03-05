@@ -132,6 +132,7 @@ pub fn make_directory_entry(
         inbox_contract_key,
         updated_at: chrono::Utc::now(),
         signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+        extra: Default::default(),
     }
 }
 
@@ -141,8 +142,9 @@ pub fn make_dummy_market_entry(
     name: &str,
     venue_address: &str,
     location: GeoLocation,
-    suppliers: std::collections::BTreeSet<String>,
+    suppliers: std::collections::BTreeMap<String, cream_common::market::SupplierStatus>,
 ) -> cream_common::market::MarketEntry {
+    use chrono::NaiveDate;
     cream_common::market::MarketEntry {
         organizer: organizer.clone(),
         name: name.to_string(),
@@ -151,11 +153,25 @@ pub fn make_dummy_market_entry(
         location,
         postcode: Some("2450".to_string()),
         locality: Some("Coffs Harbour".to_string()),
-        schedule: cream_common::storefront::WeeklySchedule::default(),
+        events: vec![
+            cream_common::market::MarketEvent {
+                date: NaiveDate::from_ymd_opt(2026, 4, 5).unwrap(),
+                start_time: "07:00".to_string(),
+                end_time: "13:00".to_string(),
+                extra: Default::default(),
+            },
+            cream_common::market::MarketEvent {
+                date: NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
+                start_time: "07:00".to_string(),
+                end_time: "13:00".to_string(),
+                extra: Default::default(),
+            },
+        ],
         timezone: Some("Australia/Sydney".to_string()),
         suppliers,
         updated_at: chrono::Utc::now(),
         signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+        extra: Default::default(),
     }
 }
 
@@ -173,8 +189,10 @@ pub fn make_dummy_product(name: &str) -> SignedProduct {
             expiry_date: None,
             updated_at: now,
             created_at: now,
+            extra: Default::default(),
         },
         signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+        extra: Default::default(),
     }
 }
 
@@ -211,6 +229,7 @@ pub fn make_dummy_order(
         signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
         escrow_token: None,
         collection_point: None,
+        extra: Default::default(),
     }
 }
 

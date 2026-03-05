@@ -28,7 +28,12 @@ pub fn directory_contract_key() -> ContractKey {
 /// Root user contract key derived from the FROST group verifying key.
 pub fn root_user_contract_key(pubkey_package: &frost::keys::PublicKeyPackage) -> ContractKey {
     let vk = cream_common::frost::group_verifying_key(pubkey_package);
-    let params = cream_common::user_contract::UserContractParameters { owner: vk };
+    user_contract_key_for_verifying_key(&vk)
+}
+
+/// Derive a user contract key from an arbitrary ed25519 verifying key.
+pub fn user_contract_key_for_verifying_key(vk: &ed25519_dalek::VerifyingKey) -> ContractKey {
+    let params = cream_common::user_contract::UserContractParameters { owner: *vk };
     let params_bytes = serde_json::to_vec(&params).unwrap();
     let contract = make_contract(USER_CONTRACT_WASM, Parameters::from(params_bytes));
     contract.key()

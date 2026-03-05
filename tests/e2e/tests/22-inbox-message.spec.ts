@@ -32,7 +32,7 @@ test.describe('Inbox Message', () => {
     await waitForSupplierCount(garyPage, 2);
 
     // Gary navigates to Messages
-    await garyPage.click('button:has-text("Messages")');
+    await garyPage.click('button:has-text("Inbox")');
     await expect(garyPage.locator('.messages-compose')).toBeVisible({ timeout: 15_000 });
 
     // Select Emma as recipient and verify selection took effect
@@ -64,7 +64,7 @@ test.describe('Inbox Message', () => {
     await expect(garyPage.locator('.messages-compose textarea')).toHaveValue('');
 
     // Emma navigates to Messages and waits for the inbox message
-    await emmaPage.click('button:has-text("Messages")');
+    await emmaPage.click('button:has-text("Inbox")');
     await expect(emmaPage.locator('.messages-view')).toBeVisible({ timeout: 15_000 });
 
     // Wait for Emma to receive the message via inbox contract subscription

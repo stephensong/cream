@@ -53,35 +53,11 @@ impl CreamNativeWallet {
         sender_name: String,
         receiver_name: String,
     ) -> TransferReceipt {
-        let tx_ref = generate_tx_ref(&sender_name);
-        let timestamp = now_iso8601();
-
-        record_transfer(
-            api,
-            &mut self.shared,
-            sender,
-            receiver,
-            &self.root_contract_key,
-            self.user_contract_key.as_ref(),
-            amount,
-            description,
-            sender_name,
-            receiver_name,
-            None,
-            &self.signing_service,
-        )
-        .await;
-
-        TransferReceipt {
-            tx_ref,
-            amount,
-            timestamp,
-            bearer_token: None, // CREAM-native has no bearer tokens
-        }
+        self.do_transfer_inner(api, sender, receiver, amount, description, sender_name, receiver_name, None, None).await
     }
 
-    /// Execute a transfer with a caller-supplied tx_ref (for idempotency).
-    pub async fn do_transfer_with_ref(
+    /// Inner transfer method supporting optional tx_ref and lightning_payment_hash.
+    async fn do_transfer_inner(
         &mut self,
         api: &mut freenet_stdlib::client_api::WebApi,
         sender: ContractRole,
@@ -90,8 +66,10 @@ impl CreamNativeWallet {
         description: String,
         sender_name: String,
         receiver_name: String,
-        tx_ref: String,
+        override_tx_ref: Option<String>,
+        lightning_payment_hash: Option<String>,
     ) -> TransferReceipt {
+        let tx_ref = override_tx_ref.unwrap_or_else(|| generate_tx_ref(&sender_name));
         let timestamp = now_iso8601();
 
         record_transfer(
@@ -107,6 +85,7 @@ impl CreamNativeWallet {
             receiver_name,
             Some(tx_ref.clone()),
             &self.signing_service,
+            lightning_payment_hash,
         )
         .await;
 
@@ -118,6 +97,21 @@ impl CreamNativeWallet {
         }
     }
 
+    /// Execute a transfer with a caller-supplied tx_ref (for idempotency).
+    pub async fn do_transfer_with_ref(
+        &mut self,
+        api: &mut freenet_stdlib::client_api::WebApi,
+        sender: ContractRole,
+        receiver: ContractRole,
+        amount: u64,
+        description: String,
+        sender_name: String,
+        receiver_name: String,
+        tx_ref: String,
+    ) -> TransferReceipt {
+        self.do_transfer_inner(api, sender, receiver, amount, description, sender_name, receiver_name, Some(tx_ref), None).await
+    }
+
     /// Transfer from root to user (e.g. registration bonus, faucet, escrow release).
     pub async fn transfer_from_root(
         &mut self,
@@ -126,7 +120,7 @@ impl CreamNativeWallet {
         description: String,
         recipient_name: String,
     ) -> TransferReceipt {
-        self.do_transfer(
+        self.do_transfer_inner(
             api,
             ContractRole::Root,
             ContractRole::User,
@@ -134,6 +128,31 @@ impl CreamNativeWallet {
             description,
             cream_common::identity::ROOT_USER_NAME.to_string(),
             recipient_name,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Transfer from root to user with a lightning payment hash (for peg-in dedup).
+    pub async fn transfer_from_root_with_lightning_hash(
+        &mut self,
+        api: &mut freenet_stdlib::client_api::WebApi,
+        amount: u64,
+        description: String,
+        recipient_name: String,
+        payment_hash: String,
+    ) -> TransferReceipt {
+        self.do_transfer_inner(
+            api,
+            ContractRole::Root,
+            ContractRole::User,
+            amount,
+            description,
+            cream_common::identity::ROOT_USER_NAME.to_string(),
+            recipient_name,
+            None,
+            Some(payment_hash),
         )
         .await
     }
@@ -213,7 +232,7 @@ impl CreamNativeWallet {
         description: String,
         sender_name: String,
     ) -> TransferReceipt {
-        self.do_transfer(
+        self.do_transfer_inner(
             api,
             ContractRole::User,
             ContractRole::Root,
@@ -221,6 +240,31 @@ impl CreamNativeWallet {
             description,
             sender_name,
             cream_common::identity::ROOT_USER_NAME.to_string(),
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Transfer from user to root with a lightning payment hash (for peg-out dedup).
+    pub async fn transfer_to_root_with_lightning_hash(
+        &mut self,
+        api: &mut freenet_stdlib::client_api::WebApi,
+        amount: u64,
+        description: String,
+        sender_name: String,
+        payment_hash: String,
+    ) -> TransferReceipt {
+        self.do_transfer_inner(
+            api,
+            ContractRole::User,
+            ContractRole::Root,
+            amount,
+            description,
+            sender_name,
+            cream_common::identity::ROOT_USER_NAME.to_string(),
+            None,
+            Some(payment_hash),
         )
         .await
     }

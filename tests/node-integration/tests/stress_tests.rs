@@ -101,6 +101,7 @@ async fn setup_storefront_on_port(
             phone: None,
             email: None,
             address: None,
+            market_products: BTreeMap::new(),
         },
         products: BTreeMap::new(),
         orders: BTreeMap::new(),

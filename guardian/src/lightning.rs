@@ -496,6 +496,79 @@ pub struct ChannelInfo {
     pub active: bool,
 }
 
+// ─── Reconciliation ─────────────────────────────────────────────────────────
+
+/// Report comparing total CURD in circulation vs Lightning backing.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReconciliationReport {
+    pub total_curd_in_circulation: u64,
+    pub total_sats_backing: u64,
+    pub expected_sats: u64,
+    pub discrepancy_sats: i64,
+    pub curd_per_sat: u64,
+    pub user_count: usize,
+    pub checked_at: String,
+    pub warnings: Vec<String>,
+}
+
+impl LightningState {
+    /// Run reconciliation against a set of user contract balances.
+    ///
+    /// `user_balances` is a list of (user_name, balance) pairs from all discovered user contracts.
+    /// `curd_per_sat` is the current exchange rate.
+    pub async fn reconcile(
+        &self,
+        user_balances: &[(String, u64)],
+        curd_per_sat: u64,
+    ) -> Result<ReconciliationReport, String> {
+        let total_curd: u64 = user_balances.iter().map(|(_, b)| b).sum();
+        let user_count = user_balances.len();
+
+        // Query LND channel balance
+        let channel_bal = {
+            let mut gw = self.gateway.lock().await;
+            gw.channel_balance().await?
+        };
+        let total_sats = channel_bal.local_balance_sat;
+
+        let expected_sats = if curd_per_sat > 0 {
+            total_curd / curd_per_sat
+        } else {
+            0
+        };
+        let discrepancy = total_sats as i64 - expected_sats as i64;
+
+        let mut warnings = Vec::new();
+        // Warn if discrepancy exceeds 5% of expected
+        if expected_sats > 0 && discrepancy.unsigned_abs() > expected_sats / 20 {
+            warnings.push(format!(
+                "Discrepancy of {} sats ({:.1}% of expected) detected",
+                discrepancy,
+                (discrepancy as f64 / expected_sats as f64) * 100.0
+            ));
+        }
+
+        let now = {
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            format!("{}", secs)
+        };
+
+        Ok(ReconciliationReport {
+            total_curd_in_circulation: total_curd,
+            total_sats_backing: total_sats,
+            expected_sats,
+            discrepancy_sats: discrepancy,
+            curd_per_sat,
+            user_count,
+            checked_at: now,
+            warnings,
+        })
+    }
+}
+
 // ─── Persistence ─────────────────────────────────────────────────────────────
 
 fn load_used_hashes(path: &PathBuf) -> HashSet<String> {

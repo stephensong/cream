@@ -10,7 +10,7 @@ use cream_common::tolls::TollRates;
 
 use super::key_manager::KeyManager;
 use super::lightning_remote::{
-    BalanceResponse, ChannelInfo, LightningClient, LndInfo, PegTransaction,
+    BalanceResponse, ChannelInfo, LightningClient, LndInfo, PegTransaction, ReconciliationReport,
 };
 use super::node_api::{use_node_action, NodeAction};
 use super::toll_rates::AdminStatus;
@@ -79,6 +79,10 @@ pub fn GuardianAdmin() -> Element {
     let mut open_pubkey = use_signal(String::new);
     let mut open_amount = use_signal(String::new);
 
+    // Reconciliation state
+    let mut reconciliation = use_signal(|| None::<ReconciliationReport>);
+    let mut recon_error = use_signal(|| None::<String>);
+
     let has_lightning = LightningClient::is_available();
 
     // Initial Lightning data fetch
@@ -104,6 +108,10 @@ pub fn GuardianAdmin() -> Element {
                     }
                     if let Ok(hist) = client.get_history().await {
                         history.set(hist);
+                    }
+                    match client.get_reconciliation().await {
+                        Ok(report) => reconciliation.set(Some(report)),
+                        Err(e) => recon_error.set(Some(e)),
                     }
                 }
             }
@@ -165,6 +173,7 @@ pub fn GuardianAdmin() -> Element {
                                 session_interval_secs: session_interval.read().parse().unwrap_or(10),
                                 inbox_message_curd: inbox_message.read().parse().unwrap_or(1),
                                 curd_per_sat: curd_per_sat.read().parse().unwrap_or(10),
+                                extra: Default::default(),
                             };
                             node_action.send(NodeAction::SetTollRates { rates: new_rates });
                             toll_feedback.set(Some("Toll rates saved".to_string()));
@@ -523,6 +532,60 @@ pub fn GuardianAdmin() -> Element {
                                 }
                             }
                         }
+                    }
+                }
+
+                // ── Reconciliation ──
+                div { class: "card",
+                    h3 { "Reconciliation" }
+                    if let Some(ref err) = *recon_error.read() {
+                        div { class: "alert alert-warning", "{err}" }
+                    }
+                    if let Some(ref report) = *reconciliation.read() {
+                        table {
+                            tbody {
+                                tr { td { "Total CURD in circulation" } td { "{report.total_curd_in_circulation}" } }
+                                tr { td { "Total sats backing (local channel)" } td { "{report.total_sats_backing}" } }
+                                tr { td { "Expected sats (CURD / rate)" } td { "{report.expected_sats}" } }
+                                tr { td { "CURD per sat" } td { "{report.curd_per_sat}" } }
+                                tr {
+                                    td { "Discrepancy" }
+                                    td {
+                                        class: if report.discrepancy_sats.abs() > 0 { "alert-text" } else { "" },
+                                        "{report.discrepancy_sats} sats"
+                                    }
+                                }
+                                tr { td { "User contracts checked" } td { "{report.user_count}" } }
+                                tr { td { "Checked at" } td { "{report.checked_at}" } }
+                            }
+                        }
+                        if !report.warnings.is_empty() {
+                            div { class: "alert alert-warning",
+                                h4 { "Warnings" }
+                                for w in report.warnings.iter() {
+                                    p { "{w}" }
+                                }
+                            }
+                        }
+                        button {
+                            class: "btn-secondary",
+                            onclick: move |_| {
+                                spawn(async move {
+                                    if let Some(client) = LightningClient::from_env() {
+                                        match client.get_reconciliation().await {
+                                            Ok(r) => {
+                                                reconciliation.set(Some(r));
+                                                recon_error.set(None);
+                                            }
+                                            Err(e) => recon_error.set(Some(e)),
+                                        }
+                                    }
+                                });
+                            },
+                            "Refresh"
+                        }
+                    } else if recon_error.read().is_none() {
+                        p { "Loading..." }
                     }
                 }
             }

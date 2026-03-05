@@ -146,6 +146,9 @@ pub struct Order {
     /// Not included in SignableOrder so existing signatures remain valid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collection_point: Option<CollectionPoint>,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[cfg(test)]

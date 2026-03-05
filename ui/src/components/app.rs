@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use dioxus_router::Navigator;
 
 use cream_common::postcode::{
-    format_postcode, is_valid_au_postcode, lookup_all_localities, lookup_au_postcode, PostcodeInfo,
+    format_postcode, is_valid_postcode, lookup_all_localities, lookup_postcode, PostcodeInfo,
 };
 
 use super::directory_view::DirectoryView;
@@ -213,7 +213,7 @@ fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_su
                 }
                 button {
                     onclick: move |_| { nav.push(Route::Messages {}); },
-                    if inbox_count > 0 { "Messages ({inbox_count})" } else { "Messages" }
+                    if inbox_count > 0 { "Inbox ({inbox_count})" } else { "Inbox" }
                 }
                 button {
                     onclick: move |_| { nav.push(Route::Wallet {}); },
@@ -241,17 +241,17 @@ fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_su
                 }
                 button {
                     onclick: move |_| { nav.push(Route::Messages {}); },
-                    if inbox_count > 0 { "Messages ({inbox_count})" } else { "Messages" }
+                    if inbox_count > 0 { "Inbox ({inbox_count})" } else { "Inbox" }
                 }
                 if is_supplier {
                     button {
                         onclick: move |_| { nav.push(Route::Dashboard {}); },
                         "My Storefront"
                     }
-                    button {
-                        onclick: move |_| { nav.push(Route::MyMarket {}); },
-                        "My Market"
-                    }
+                }
+                button {
+                    onclick: move |_| { nav.push(Route::MyMarket {}); },
+                    "My Market"
                 }
                 button {
                     onclick: move |_| { nav.push(Route::Wallet {}); },
@@ -855,7 +855,7 @@ fn SetupScreen() -> Element {
 
     let can_submit = {
                 let name_ok = !name_input.read().trim().is_empty();
-                let postcode_ok = is_valid_au_postcode(postcode_input.read().trim());
+                let postcode_ok = is_valid_postcode(postcode_input.read().trim());
                 let locality_ok = localities.read().len() <= 1
                     || selected_locality.read().is_some();
                 let supplier_ok = if auto_connect_mode {
@@ -946,7 +946,7 @@ fn SetupScreen() -> Element {
                                         postcode_error.set(None);
                                         localities.set(Vec::new());
                                         selected_locality.set(None);
-                                    } else if is_valid_au_postcode(trimmed) {
+                                    } else if is_valid_postcode(trimmed) {
                                         postcode_error.set(None);
                                         let locs = lookup_all_localities(trimmed);
                                         if locs.len() == 1 {
@@ -1088,7 +1088,7 @@ fn SetupScreen() -> Element {
                             if !*is_supplier.read() {
                                 // Nearby suppliers from directory
                                 {
-                                    let nearby: Vec<(String, f64)> = lookup_au_postcode(postcode_input.read().trim())
+                                    let nearby: Vec<(String, f64)> = lookup_postcode(postcode_input.read().trim())
                                         .map(|loc| {
                                             let dir_entries = &_shared_state.read().directory.entries;
                                             let mut list: Vec<_> = dir_entries.values()
@@ -1138,7 +1138,7 @@ fn SetupScreen() -> Element {
                                                         }
                                                     }
                                                 }
-                                            } else if is_valid_au_postcode(postcode_input.read().trim()) {
+                                            } else if is_valid_postcode(postcode_input.read().trim()) {
                                                 p { class: "lookup-status", "No suppliers found nearby" }
                                             }
                                             if *supplier_lookup_loading.read() {

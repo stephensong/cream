@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 pub struct GeoLocation {
     pub latitude: f64,
     pub longitude: f64,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl GeoLocation {
@@ -12,6 +15,7 @@ impl GeoLocation {
         Self {
             latitude,
             longitude,
+            extra: Default::default(),
         }
     }
 

@@ -794,6 +794,7 @@ pub fn ChatWithSupplierButton(supplier_name: String) -> Element {
                                 recipient_name: supplier_name.clone(),
                                 body,
                                 kind: cream_common::inbox::MessageKind::DirectMessage,
+                                recipient_pubkey_hex: None,
                             });
                             invite_msg.set(String::new());
                         }
@@ -818,6 +819,7 @@ pub fn ChatWithSupplierButton(supplier_name: String) -> Element {
                                     kind: cream_common::inbox::MessageKind::ChatInvite {
                                         session_id: session_id.clone(),
                                     },
+                                    recipient_pubkey_hex: None,
                                 });
 
                                 let session = ChatSession {

@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use ed25519_dalek::Signature;
 #[cfg(not(feature = "dev"))]
 use ed25519_dalek::Verifier;
@@ -8,7 +8,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::identity::UserId;
 use crate::location::GeoLocation;
-use crate::storefront::WeeklySchedule;
+
+/// A single scheduled market event (one day).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketEvent {
+    pub date: NaiveDate,
+    pub start_time: String, // "07:00" (24h)
+    pub end_time: String,   // "13:00" (24h)
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Invitation status for a supplier at a market.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum SupplierStatus {
+    Invited,
+    Accepted,
+}
 
 /// A single market listing in the market directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,13 +39,19 @@ pub struct MarketEntry {
     pub postcode: Option<String>,
     #[serde(default)]
     pub locality: Option<String>,
-    pub schedule: WeeklySchedule,
+    /// Scheduled event dates for this market.
+    #[serde(default)]
+    pub events: Vec<MarketEvent>,
     #[serde(default)]
     pub timezone: Option<String>,
-    /// Supplier names (matching DirectoryEntry.name) participating in this market.
-    pub suppliers: BTreeSet<String>,
+    /// Supplier names → invite/accept status.
+    #[serde(default)]
+    pub suppliers: BTreeMap<String, SupplierStatus>,
     pub updated_at: DateTime<Utc>,
     pub signature: Signature,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl MarketEntry {
@@ -42,7 +65,7 @@ impl MarketEntry {
             location: &self.location,
             postcode: self.postcode.as_deref(),
             locality: self.locality.as_deref(),
-            schedule: &self.schedule,
+            events: &self.events,
             timezone: self.timezone.as_deref(),
             suppliers: &self.suppliers,
             updated_at: &self.updated_at,
@@ -63,6 +86,23 @@ impl MarketEntry {
             self.organizer.0.verify(&msg, &self.signature).is_ok()
         }
     }
+
+    /// Return the next upcoming event on or after `today`, if any.
+    pub fn next_event(&self, today: NaiveDate) -> Option<&MarketEvent> {
+        self.events
+            .iter()
+            .filter(|e| e.date >= today)
+            .min_by_key(|e| e.date)
+    }
+
+    /// Return names of suppliers who have accepted the invitation.
+    pub fn accepted_suppliers(&self) -> Vec<&String> {
+        self.suppliers
+            .iter()
+            .filter(|(_, status)| **status == SupplierStatus::Accepted)
+            .map(|(name, _)| name)
+            .collect()
+    }
 }
 
 #[derive(Serialize)]
@@ -74,9 +114,9 @@ struct SignableMarketEntry<'a> {
     location: &'a GeoLocation,
     postcode: Option<&'a str>,
     locality: Option<&'a str>,
-    schedule: &'a WeeklySchedule,
+    events: &'a Vec<MarketEvent>,
     timezone: Option<&'a str>,
-    suppliers: &'a BTreeSet<String>,
+    suppliers: &'a BTreeMap<String, SupplierStatus>,
     updated_at: &'a DateTime<Utc>,
 }
 
@@ -84,6 +124,9 @@ struct SignableMarketEntry<'a> {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MarketDirectoryState {
     pub entries: BTreeMap<UserId, MarketEntry>,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl MarketDirectoryState {
@@ -110,6 +153,9 @@ impl MarketDirectoryState {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MarketDirectorySummary {
     pub timestamps: BTreeMap<UserId, DateTime<Utc>>,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl MarketDirectoryState {
@@ -120,6 +166,7 @@ impl MarketDirectoryState {
                 .iter()
                 .map(|(id, entry)| (id.clone(), entry.updated_at))
                 .collect(),
+            extra: Default::default(),
         }
     }
 
@@ -136,14 +183,16 @@ impl MarketDirectoryState {
             })
             .map(|(id, entry)| (id.clone(), entry.clone()))
             .collect();
-        MarketDirectoryState { entries }
+        MarketDirectoryState {
+            entries,
+            extra: Default::default(),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storefront::WeeklySchedule;
 
     fn dummy_market(name: &str, ts: DateTime<Utc>) -> MarketEntry {
         use ed25519_dalek::Signature;
@@ -157,11 +206,22 @@ mod tests {
             location: GeoLocation::new(-33.8688, 151.2093),
             postcode: Some("2000".to_string()),
             locality: Some("Sydney".to_string()),
-            schedule: WeeklySchedule::default(),
+            events: vec![
+                MarketEvent {
+                    date: NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
+                    start_time: "07:00".to_string(),
+                    end_time: "13:00".to_string(),
+                    extra: Default::default(),
+                },
+            ],
             timezone: Some("Australia/Sydney".to_string()),
-            suppliers: BTreeSet::from(["Gary".to_string(), "Emma".to_string()]),
+            suppliers: BTreeMap::from([
+                ("Gary".to_string(), SupplierStatus::Accepted),
+                ("Emma".to_string(), SupplierStatus::Invited),
+            ]),
             updated_at: ts,
             signature: Signature::from_bytes(&[0u8; 64]),
+            extra: Default::default(),
         }
     }
 
@@ -223,5 +283,26 @@ mod tests {
         summary.timestamps.insert(user_id.clone(), t2);
         let delta = state.delta(&summary);
         assert_eq!(delta.entries.len(), 0);
+    }
+
+    #[test]
+    fn test_next_event() {
+        let market = dummy_market("Test", Utc::now());
+        let today = NaiveDate::from_ymd_opt(2026, 3, 10).unwrap();
+        let next = market.next_event(today);
+        assert!(next.is_some());
+        assert_eq!(next.unwrap().date, NaiveDate::from_ymd_opt(2026, 3, 15).unwrap());
+
+        // After all events
+        let future = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+        assert!(market.next_event(future).is_none());
+    }
+
+    #[test]
+    fn test_accepted_suppliers() {
+        let market = dummy_market("Test", Utc::now());
+        let accepted = market.accepted_suppliers();
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(*accepted[0], "Gary");
     }
 }

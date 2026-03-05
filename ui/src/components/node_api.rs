@@ -94,6 +94,9 @@ pub enum NodeAction {
         recipient_name: String,
         body: String,
         kind: cream_common::inbox::MessageKind,
+        /// For non-directory recipients (root, admins): their ed25519 pubkey hex.
+        /// When set, the inbox contract key is computed from this instead of directory lookup.
+        recipient_pubkey_hex: Option<String>,
     },
     /// Session toll: initiator pays per interval to root/guardians.
     SessionToll,
@@ -114,14 +117,40 @@ pub enum NodeAction {
         venue_address: String,
         postcode: String,
         locality: Option<String>,
-        schedule: cream_common::storefront::WeeklySchedule,
         timezone: Option<String>,
-        suppliers: std::collections::BTreeSet<String>,
     },
-    /// Update a market's supplier list.
-    UpdateMarketSuppliers {
-        suppliers: std::collections::BTreeSet<String>,
+    /// Invite a supplier to participate in the organizer's market.
+    InviteMarketSupplier {
+        supplier_name: String,
     },
+    /// Supplier accepts a market invitation (sends MarketAccept inbox to organizer).
+    AcceptMarketInvite {
+        market_name: String,
+    },
+    /// Auto-confirm: flip Invited → Accepted for a supplier (organizer-side).
+    ConfirmMarketAcceptance {
+        supplier_name: String,
+    },
+    /// Update market event dates.
+    UpdateMarketEvents {
+        events: Vec<cream_common::market::MarketEvent>,
+    },
+    /// Update market details (name, description, venue, location, timezone).
+    UpdateMarketDetails {
+        name: String,
+        description: String,
+        venue_address: String,
+        postcode: String,
+        locality: Option<String>,
+        timezone: Option<String>,
+    },
+    /// Supplier sets which of their products are available at a specific market.
+    UpdateMarketProducts {
+        market_name: String,
+        product_ids: std::collections::BTreeSet<String>,
+    },
+    /// Checkpoint the user's ledger: fold old transactions into checkpoint_balance.
+    CheckpointLedger,
 }
 
 /// Get a handle to send actions to the node communication coroutine.
@@ -716,6 +745,7 @@ mod wasm_impl {
         receiver_name: String,
         override_tx_ref: Option<String>,
         signing_service: &crate::components::signing_service::SigningService,
+        lightning_payment_hash: Option<String>,
     ) {
         let tx_ref = override_tx_ref.unwrap_or_else(|| generate_tx_ref(&sender_name));
         let timestamp = now_iso8601();
@@ -730,7 +760,8 @@ mod wasm_impl {
             receiver: receiver_name.clone(),
             tx_ref: tx_ref.clone(),
             timestamp: timestamp.clone(),
-            lightning_payment_hash: None,
+            lightning_payment_hash: lightning_payment_hash.clone(),
+            extra: Default::default(),
         };
 
         // Build credit entry (for receiver's contract)
@@ -743,7 +774,8 @@ mod wasm_impl {
             receiver: receiver_name.clone(),
             tx_ref: tx_ref.clone(),
             timestamp,
-            lightning_payment_hash: None,
+            lightning_payment_hash,
+            extra: Default::default(),
         };
 
         // Resolve sender key
@@ -798,10 +830,15 @@ mod wasm_impl {
                 balance_curds: 0,
                 invited_by: String::new(),
                 toll_rates: Default::default(),
+                checkpoint_balance: 0,
+                checkpoint_tx_count: 0,
+                checkpoint_at: None,
+                pruned_lightning_hashes: Default::default(),
                 ledger: vec![tx],
                 next_tx_id: 0,
                 updated_at: chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap(),
                 signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+                extra: Default::default(),
             };
             let uc_bytes = serde_json::to_vec(&minimal_state).unwrap();
             let update = ClientRequest::ContractOp(ContractRequest::Update {
@@ -1008,7 +1045,7 @@ mod wasm_impl {
                     .as_deref()
                     .and_then(|loc| cream_common::postcode::lookup_locality(&postcode, loc))
                     .map(|info| info.location)
-                    .or_else(|| cream_common::postcode::lookup_au_postcode(&postcode))
+                    .or_else(|| cream_common::postcode::lookup_postcode(&postcode))
                     .unwrap_or(GeoLocation::new(-33.87, 151.21)); // Default to Sydney
 
                 let storefront_params = StorefrontParameters { owner: owner_key };
@@ -1031,6 +1068,7 @@ mod wasm_impl {
                         phone: None,
                         email: None,
                         address: None,
+                        market_products: BTreeMap::new(),
                     },
                     products: BTreeMap::new(),
                     orders: BTreeMap::new(),
@@ -1079,10 +1117,15 @@ mod wasm_impl {
                     balance_curds: 0,
                     invited_by: String::new(),
                     toll_rates: Default::default(),
+                    checkpoint_balance: 0,
+                    checkpoint_tx_count: 0,
+                    checkpoint_at: None,
+                    pruned_lightning_hashes: Default::default(),
                     ledger: Vec::new(),
                     next_tx_id: 0,
                     updated_at: chrono::Utc::now(),
                     signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+                    extra: Default::default(),
                 };
                 let supplier_uc_state_bytes = serde_json::to_vec(&supplier_uc_state).unwrap();
 
@@ -1536,7 +1579,6 @@ mod wasm_impl {
                         us.postcode
                             .as_deref()
                             .and_then(cream_common::postcode::timezone_for_postcode)
-                            .map(|s: &str| s.to_string())
                     };
                     sf.info.schedule = Some(schedule);
                     sf.info.timezone = tz;
@@ -1916,10 +1958,15 @@ mod wasm_impl {
                     balance_curds: 0,
                     invited_by,
                     toll_rates: Default::default(),
+                    checkpoint_balance: 0,
+                    checkpoint_tx_count: 0,
+                    checkpoint_at: None,
+                    pruned_lightning_hashes: Default::default(),
                     ledger: Vec::new(),
                     next_tx_id: 0,
                     updated_at: now,
                     signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
+                    extra: Default::default(),
                 };
                 let uc_state_bytes = serde_json::to_vec(&uc_state).unwrap();
 
@@ -2080,11 +2127,12 @@ mod wasm_impl {
                 clog(&format!("[CREAM] PegInAllocate: {} sats → {} CURD (hash: {})", amount_sats, curd_amount, payment_hash));
 
                 let user_name = user_state.read().moniker.clone().unwrap_or_default();
-                wallet.transfer_from_root(
+                wallet.transfer_from_root_with_lightning_hash(
                     api,
                     curd_amount,
                     format!("Lightning peg-in ({} sats)", amount_sats),
                     user_name,
+                    payment_hash.clone(),
                 ).await;
                 clog(&format!("[CREAM] PegInAllocate: credited {} CURD, settling invoice", curd_amount));
 
@@ -2158,13 +2206,17 @@ mod wasm_impl {
                     return;
                 }
 
+                // Use a hash of the bolt11 as the lightning_payment_hash for dedup
+                let pegout_hash = format!("pegout:{}", &bolt11[..bolt11.len().min(32)]);
+
                 // Debit CURD from user → root
                 let user_name = user_state.read().moniker.clone().unwrap_or_default();
-                wallet.transfer_to_root(
+                wallet.transfer_to_root_with_lightning_hash(
                     api,
                     amount_curd,
                     format!("Lightning peg-out ({} sats)", sats_out),
                     user_name.clone(),
+                    pegout_hash,
                 ).await;
 
                 // Pay via gateway
@@ -2218,6 +2270,7 @@ mod wasm_impl {
                 recipient_name,
                 body,
                 kind,
+                recipient_pubkey_hex,
             } => {
                 clog(&format!("[CREAM] SendInboxMessage to {}: {} chars", recipient_name, body.len()));
 
@@ -2240,8 +2293,8 @@ mod wasm_impl {
                     sender_name.clone(),
                 ).await;
 
-                // Look up the recipient's inbox contract key and owner from the directory.
-                // With unified keys, the directory entry's `supplier` field IS the inbox owner.
+                // Look up the recipient's inbox contract key and owner.
+                // First try the directory; if not found, fall back to computing from pubkey hex.
                 let (recipient_inbox_key, inbox_owner) = {
                     let state = shared.read();
                     let entry = state.directory.entries.values()
@@ -2251,8 +2304,30 @@ mod wasm_impl {
                             (e.inbox_contract_key.clone().unwrap(), e.supplier.clone())
                         }
                         _ => {
-                            clog(&format!("[CREAM] ERROR: Recipient {} not found in directory or has no inbox", recipient_name));
-                            return;
+                            drop(state);
+                            // Fall back: compute inbox key from pubkey hex (for root/admin recipients)
+                            if let Some(ref hex) = recipient_pubkey_hex {
+                                let bytes = (0..hex.len())
+                                    .step_by(2)
+                                    .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0))
+                                    .collect::<Vec<u8>>();
+                                if bytes.len() == 32 {
+                                    let mut arr = [0u8; 32];
+                                    arr.copy_from_slice(&bytes);
+                                    let vk = ed25519_dalek::VerifyingKey::from_bytes(&arr).unwrap();
+                                    let owner = cream_common::identity::UserId(vk);
+                                    let inbox_params = cream_common::inbox::InboxParameters { owner: vk };
+                                    let params_bytes = serde_json::to_vec(&inbox_params).unwrap();
+                                    let inbox_container = make_contract(INBOX_CONTRACT_WASM, Parameters::from(params_bytes));
+                                    (inbox_container.key(), owner)
+                                } else {
+                                    clog(&format!("[CREAM] ERROR: Invalid pubkey hex for {}", recipient_name));
+                                    return;
+                                }
+                            } else {
+                                clog(&format!("[CREAM] ERROR: Recipient {} not found in directory or has no inbox", recipient_name));
+                                return;
+                            }
                         }
                     }
                 };
@@ -2433,13 +2508,11 @@ mod wasm_impl {
                 venue_address,
                 postcode,
                 locality,
-                schedule,
                 timezone,
-                suppliers,
             } => {
                 clog(&format!("[CREAM] RegisterMarket: '{}'", name));
                 let organizer = key_manager.user_id();
-                let location = cream_common::postcode::lookup_au_postcode(&postcode)
+                let location = cream_common::postcode::lookup_postcode(&postcode)
                     .unwrap_or(cream_common::location::GeoLocation::new(0.0, 0.0));
 
                 let entry = cream_common::market::MarketEntry {
@@ -2450,13 +2523,12 @@ mod wasm_impl {
                     location,
                     postcode: Some(postcode),
                     locality,
-                    schedule,
+                    events: Vec::new(),
                     timezone,
-                    suppliers,
+                    suppliers: std::collections::BTreeMap::new(),
                     updated_at: chrono::Utc::now(),
                     signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]),
                 };
-                // Sign the entry
                 let msg = entry.signable_bytes();
                 let signed_entry = cream_common::market::MarketEntry {
                     signature: ed25519_dalek::Signature::from_bytes(&key_manager.sign_raw(&msg)),
@@ -2475,21 +2547,22 @@ mod wasm_impl {
                 if let Err(e) = api.send(update).await {
                     clog(&format!("[CREAM] ERROR: Failed to update market directory: {:?}", e));
                 } else {
-                    // Update local state immediately
                     let organizer_clone = key_manager.user_id();
                     shared.write().market_directory.entries.insert(organizer_clone, signed_entry);
                     clog("[CREAM] RegisterMarket: sent to network");
                 }
             }
 
-            NodeAction::UpdateMarketSuppliers { suppliers } => {
-                clog(&format!("[CREAM] UpdateMarketSuppliers: {:?}", suppliers));
+            NodeAction::InviteMarketSupplier { supplier_name } => {
+                clog(&format!("[CREAM] InviteMarketSupplier: '{}'", supplier_name));
                 let organizer = key_manager.user_id();
 
-                // Get existing market entry
                 let existing = shared.read().market_directory.entries.get(&organizer).cloned();
                 if let Some(mut entry) = existing {
-                    entry.suppliers = suppliers;
+                    entry.suppliers.insert(
+                        supplier_name.clone(),
+                        cream_common::market::SupplierStatus::Invited,
+                    );
                     entry.updated_at = chrono::Utc::now();
 
                     let msg = entry.signable_bytes();
@@ -2505,13 +2578,197 @@ mod wasm_impl {
                         data: UpdateData::Delta(StateDelta::from(delta_bytes)),
                     });
                     if let Err(e) = api.send(update).await {
-                        clog(&format!("[CREAM] ERROR: Failed to update market suppliers: {:?}", e));
+                        clog(&format!("[CREAM] ERROR: Failed to invite market supplier: {:?}", e));
                     } else {
                         shared.write().market_directory.entries.insert(organizer, entry);
-                        clog("[CREAM] UpdateMarketSuppliers: sent to network");
+                        clog("[CREAM] InviteMarketSupplier: updated directory (UI sends inbox separately)");
                     }
                 } else {
-                    clog("[CREAM] UpdateMarketSuppliers: no existing market entry found for this organizer");
+                    clog("[CREAM] InviteMarketSupplier: no existing market entry");
+                }
+            }
+
+            NodeAction::AcceptMarketInvite { market_name } => {
+                // This is a no-op at the directory level — the organizer confirms acceptance.
+                // The UI sends a SendInboxMessage(MarketAccept) separately.
+                clog(&format!("[CREAM] AcceptMarketInvite: '{}' (inbox sent by UI)", market_name));
+            }
+
+            NodeAction::ConfirmMarketAcceptance { supplier_name } => {
+                clog(&format!("[CREAM] ConfirmMarketAcceptance: '{}'", supplier_name));
+                let organizer = key_manager.user_id();
+
+                let existing = shared.read().market_directory.entries.get(&organizer).cloned();
+                if let Some(mut entry) = existing {
+                    if let Some(status) = entry.suppliers.get_mut(&supplier_name) {
+                        if *status == cream_common::market::SupplierStatus::Invited {
+                            *status = cream_common::market::SupplierStatus::Accepted;
+                            entry.updated_at = chrono::Utc::now();
+
+                            let msg = entry.signable_bytes();
+                            entry.signature = ed25519_dalek::Signature::from_bytes(&key_manager.sign_raw(&msg));
+
+                            let mut entries = std::collections::BTreeMap::new();
+                            entries.insert(organizer.clone(), entry.clone());
+                            let delta = cream_common::market::MarketDirectoryState { entries };
+                            let delta_bytes = serde_json::to_vec(&delta).unwrap();
+
+                            let update = ClientRequest::ContractOp(ContractRequest::Update {
+                                key: *market_directory_key,
+                                data: UpdateData::Delta(StateDelta::from(delta_bytes)),
+                            });
+                            if let Err(e) = api.send(update).await {
+                                clog(&format!("[CREAM] ERROR: Failed to confirm acceptance: {:?}", e));
+                            } else {
+                                shared.write().market_directory.entries.insert(organizer, entry);
+                                clog("[CREAM] ConfirmMarketAcceptance: sent to network");
+                            }
+                        }
+                    }
+                }
+            }
+
+            NodeAction::UpdateMarketEvents { events } => {
+                clog(&format!("[CREAM] UpdateMarketEvents: {} events", events.len()));
+                let organizer = key_manager.user_id();
+
+                let existing = shared.read().market_directory.entries.get(&organizer).cloned();
+                if let Some(mut entry) = existing {
+                    entry.events = events;
+                    entry.updated_at = chrono::Utc::now();
+
+                    let msg = entry.signable_bytes();
+                    entry.signature = ed25519_dalek::Signature::from_bytes(&key_manager.sign_raw(&msg));
+
+                    let mut entries = std::collections::BTreeMap::new();
+                    entries.insert(organizer.clone(), entry.clone());
+                    let delta = cream_common::market::MarketDirectoryState { entries };
+                    let delta_bytes = serde_json::to_vec(&delta).unwrap();
+
+                    let update = ClientRequest::ContractOp(ContractRequest::Update {
+                        key: *market_directory_key,
+                        data: UpdateData::Delta(StateDelta::from(delta_bytes)),
+                    });
+                    if let Err(e) = api.send(update).await {
+                        clog(&format!("[CREAM] ERROR: Failed to update market events: {:?}", e));
+                    } else {
+                        shared.write().market_directory.entries.insert(organizer, entry);
+                        clog("[CREAM] UpdateMarketEvents: sent to network");
+                    }
+                }
+            }
+
+            NodeAction::UpdateMarketDetails {
+                name,
+                description,
+                venue_address,
+                postcode,
+                locality,
+                timezone,
+            } => {
+                clog(&format!("[CREAM] UpdateMarketDetails: '{}'", name));
+                let organizer = key_manager.user_id();
+
+                let existing = shared.read().market_directory.entries.get(&organizer).cloned();
+                if let Some(mut entry) = existing {
+                    entry.name = name;
+                    entry.description = description;
+                    entry.venue_address = venue_address;
+                    entry.location = cream_common::postcode::lookup_postcode(&postcode)
+                        .unwrap_or(cream_common::location::GeoLocation::new(0.0, 0.0));
+                    entry.postcode = Some(postcode);
+                    entry.locality = locality;
+                    entry.timezone = timezone;
+                    entry.updated_at = chrono::Utc::now();
+
+                    let msg = entry.signable_bytes();
+                    entry.signature = ed25519_dalek::Signature::from_bytes(&key_manager.sign_raw(&msg));
+
+                    let mut entries = std::collections::BTreeMap::new();
+                    entries.insert(organizer.clone(), entry.clone());
+                    let delta = cream_common::market::MarketDirectoryState { entries };
+                    let delta_bytes = serde_json::to_vec(&delta).unwrap();
+
+                    let update = ClientRequest::ContractOp(ContractRequest::Update {
+                        key: *market_directory_key,
+                        data: UpdateData::Delta(StateDelta::from(delta_bytes)),
+                    });
+                    if let Err(e) = api.send(update).await {
+                        clog(&format!("[CREAM] ERROR: Failed to update market details: {:?}", e));
+                    } else {
+                        shared.write().market_directory.entries.insert(organizer, entry);
+                        clog("[CREAM] UpdateMarketDetails: sent to network");
+                    }
+                }
+            }
+
+            NodeAction::UpdateMarketProducts { market_name, product_ids } => {
+                clog(&format!("[CREAM] UpdateMarketProducts: '{}' with {} products", market_name, product_ids.len()));
+                let my_supplier_id = key_manager.user_id();
+                let moniker = user_state.read().moniker.clone().unwrap_or_default();
+
+                let sf_key = {
+                    let state = shared.read();
+                    state.directory.entries.get(&my_supplier_id)
+                        .map(|entry| entry.storefront_key)
+                        .or_else(|| sf_contract_keys.get(&moniker).copied())
+                };
+
+                let existing = shared.read().storefronts.get(&moniker).cloned();
+                if let (Some(mut sf), Some(key)) = (existing, sf_key) {
+                    let product_id_set: std::collections::BTreeSet<cream_common::product::ProductId> =
+                        product_ids.into_iter().map(cream_common::product::ProductId).collect();
+                    sf.info.market_products.insert(market_name, product_id_set);
+
+                    let sf_bytes = serde_json::to_vec(&sf).unwrap();
+                    let update = ClientRequest::ContractOp(ContractRequest::Update {
+                        key,
+                        data: UpdateData::State(State::from(sf_bytes)),
+                    });
+                    if let Err(e) = api.send(update).await {
+                        clog(&format!("[CREAM] ERROR: Failed to update market products: {:?}", e));
+                    } else {
+                        shared.write().storefronts.insert(moniker, sf);
+                        clog("[CREAM] UpdateMarketProducts: sent to network");
+                    }
+                }
+            }
+
+            NodeAction::CheckpointLedger => {
+                clog("[CREAM] CheckpointLedger: starting checkpoint");
+                let existing = shared.read().user_contract.clone();
+                if let Some(mut uc_state) = existing {
+                    let ledger_len = uc_state.ledger.len();
+                    if ledger_len == 0 {
+                        clog("[CREAM] CheckpointLedger: no transactions to checkpoint");
+                        return;
+                    }
+                    let pruned = uc_state.checkpoint(cream_common::user_contract::PRUNE_KEEP_RECENT);
+                    uc_state.updated_at = chrono::Utc::now();
+                    uc_state.balance_curds = uc_state.derive_balance();
+
+                    // Sign the updated state
+                    let msg = uc_state.signable_bytes();
+                    let key_manager: Signal<Option<crate::components::key_manager::KeyManager>> = use_context();
+                    if let Some(ref km) = *key_manager.read() {
+                        uc_state.signature = km.sign_user_contract(&msg);
+                    }
+
+                    let uc_bytes = serde_json::to_vec(&uc_state).unwrap();
+                    let update = ClientRequest::ContractOp(ContractRequest::Update {
+                        key: user_contract_key.copied().unwrap(),
+                        data: UpdateData::State(State::from(uc_bytes)),
+                    });
+                    shared.write().user_contract = Some(uc_state);
+
+                    if let Err(e) = api.send(update).await {
+                        clog(&format!("[CREAM] ERROR: CheckpointLedger update failed: {:?}", e));
+                    } else {
+                        clog(&format!("[CREAM] CheckpointLedger: pruned {} entries, {} remain",
+                            pruned, cream_common::user_contract::PRUNE_KEEP_RECENT.min(ledger_len)));
+                    }
+                } else {
+                    clog("[CREAM] CheckpointLedger: no user contract available");
                 }
             }
 

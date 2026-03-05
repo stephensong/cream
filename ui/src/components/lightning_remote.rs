@@ -118,6 +118,18 @@ pub struct PegTransaction {
     pub timestamp: u64,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct ReconciliationReport {
+    pub total_curd_in_circulation: u64,
+    pub total_sats_backing: u64,
+    pub expected_sats: u64,
+    pub discrepancy_sats: i64,
+    pub curd_per_sat: u64,
+    pub user_count: usize,
+    pub checked_at: String,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Serialize)]
 struct OpenChannelRequest {
     node_pubkey: String,
@@ -253,6 +265,12 @@ impl LightningClient {
         let r: Resp =
             serde_json::from_str(&resp).map_err(|e| format!("Parse open channel: {}", e))?;
         Ok(r.channel_point)
+    }
+
+    /// Get reconciliation report (gateway operator).
+    pub async fn get_reconciliation(&self) -> Result<ReconciliationReport, String> {
+        let resp = get_json(&self.base_url, "/reconciliation/report").await?;
+        serde_json::from_str(&resp).map_err(|e| format!("Parse reconciliation: {}", e))
     }
 
     /// Close a channel (operator action).

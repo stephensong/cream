@@ -1,16 +1,14 @@
-use std::collections::BTreeSet;
-
 use dioxus::prelude::*;
 
-use cream_common::postcode::{is_valid_au_postcode, lookup_all_localities};
-use cream_common::storefront::WeeklySchedule;
+use cream_common::inbox::MessageKind;
+use cream_common::market::{MarketEvent, SupplierStatus};
+use cream_common::postcode::{is_valid_postcode, lookup_all_localities};
 
 use super::node_api::{use_node_action, NodeAction};
-use super::schedule_editor::ScheduleSummary;
 use super::shared_state::use_shared_state;
 use super::user_state::use_user_state;
 
-/// Organizer dashboard — edit market details, manage supplier list.
+/// Organizer dashboard — edit market details, manage events and supplier invites.
 #[component]
 pub fn MarketDashboard() -> Element {
     let shared_state = use_shared_state();
@@ -27,12 +25,36 @@ pub fn MarketDashboard() -> Element {
     let existing_market = my_id.as_ref().and_then(|id| shared.market_directory.entries.get(id));
 
     if let Some(market) = existing_market {
-        // ── Existing market: show details + management ──
+        // ── Auto-confirm: scan inbox for MarketAccept messages ──
+        let market_name = market.name.clone();
+        let pending_invites: Vec<String> = market.suppliers.iter()
+            .filter(|(_, s)| **s == SupplierStatus::Invited)
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        if !pending_invites.is_empty() {
+            if let Some(inbox) = &shared.inbox {
+                for msg in inbox.messages.values() {
+                    if let MessageKind::MarketAccept { market_name: ref mn } = msg.kind {
+                        if *mn == market_name && pending_invites.contains(&msg.from_name) {
+                            // Auto-confirm this supplier
+                            node_action.send(NodeAction::ConfirmMarketAcceptance {
+                                supplier_name: msg.from_name.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         let market = market.clone();
         drop(shared);
 
-        let mut editing_suppliers = use_signal(|| false);
-        let mut new_supplier_name = use_signal(String::new);
+        let mut editing_events = use_signal(|| false);
+        let mut new_event_date = use_signal(String::new);
+        let mut new_event_start = use_signal(|| "07:00".to_string());
+        let mut new_event_end = use_signal(|| "13:00".to_string());
+        let mut invite_name = use_signal(String::new);
 
         let market_name = market.name.clone();
         let description = market.description.clone();
@@ -41,15 +63,27 @@ pub fn MarketDashboard() -> Element {
             &market.postcode.clone().unwrap_or_default(),
             market.locality.as_deref(),
         );
-        let schedule = market.schedule.clone();
-        let _timezone = market.timezone.clone().unwrap_or_default();
-        let suppliers: Vec<String> = market.suppliers.iter().cloned().collect();
+        let events = market.events.clone();
+        let suppliers: Vec<(String, SupplierStatus)> = market.suppliers.iter()
+            .map(|(n, s)| (n.clone(), s.clone()))
+            .collect();
+        let accepted_count = suppliers.iter().filter(|(_, s)| *s == SupplierStatus::Accepted).count();
 
-        // Aggregate order counts from participating suppliers
+        // Next event
+        let today = chrono::Utc::now().date_naive();
+        let next_event = market.next_event(today);
+        let next_event_str = next_event
+            .map(|e| format!("{} ({} – {})", e.date.format("%a %d %b %Y"), e.start_time, e.end_time))
+            .unwrap_or_else(|| "No upcoming events".to_string());
+
+        // Aggregate order counts from accepted suppliers
         let shared = shared_state.read();
         let mut total_orders = 0usize;
         let mut total_reserved = 0usize;
-        for supplier_name in &suppliers {
+        for (supplier_name, status) in &suppliers {
+            if *status != SupplierStatus::Accepted {
+                continue;
+            }
             if let Some(sf) = shared.storefronts.get(supplier_name) {
                 total_orders += sf.orders.len();
                 total_reserved += sf.orders.values()
@@ -66,83 +100,154 @@ pub fn MarketDashboard() -> Element {
                 p { class: "market-venue", "Venue: {venue}" }
                 p { class: "market-location", "{location_str}" }
 
-                div { class: "market-schedule-section",
-                    h3 { "Opening Hours" }
-                    ScheduleSummary { schedule: schedule }
+                div { class: "market-next-event",
+                    h3 { "Next Event" }
+                    p { class: "next-event-date", "{next_event_str}" }
+                }
+
+                div { class: "market-events-section",
+                    h3 { "Scheduled Events ({events.len()})" }
+
+                    div { class: "event-list",
+                        for event in events.iter() {
+                            {
+                                let date_str = event.date.format("%a %d %b %Y").to_string();
+                                let time_str = format!("{} – {}", event.start_time, event.end_time);
+                                let is_past = event.date < today;
+                                let class = if is_past { "event-item event-past" } else { "event-item" };
+                                rsx! {
+                                    div { class: class, key: "{event.date}",
+                                        span { class: "event-date", "{date_str}" }
+                                        span { class: "event-time", "{time_str}" }
+                                        if is_past {
+                                            span { class: "event-badge-past", "Past" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if *editing_events.read() {
+                        div { class: "add-event-form",
+                            label { "Date:" }
+                            input {
+                                r#type: "date",
+                                value: "{new_event_date}",
+                                oninput: move |evt| new_event_date.set(evt.value()),
+                            }
+                            label { "Start:" }
+                            input {
+                                r#type: "time",
+                                value: "{new_event_start}",
+                                oninput: move |evt| new_event_start.set(evt.value()),
+                            }
+                            label { "End:" }
+                            input {
+                                r#type: "time",
+                                value: "{new_event_end}",
+                                oninput: move |evt| new_event_end.set(evt.value()),
+                            }
+                            button {
+                                onclick: {
+                                    let mut current_events = market.events.clone();
+                                    move |_| {
+                                        let date_str = new_event_date.read().clone();
+                                        if let Ok(date) = chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
+                                            current_events.push(MarketEvent {
+                                                date,
+                                                start_time: new_event_start.read().clone(),
+                                                end_time: new_event_end.read().clone(),
+                                                extra: Default::default(),
+                                            });
+                                            current_events.sort_by_key(|e| e.date);
+                                            node_action.send(NodeAction::UpdateMarketEvents {
+                                                events: current_events.clone(),
+                                            });
+                                            new_event_date.set(String::new());
+                                            editing_events.set(false);
+                                        }
+                                    }
+                                },
+                                "Add Event"
+                            }
+                            button {
+                                onclick: move |_| editing_events.set(false),
+                                "Cancel"
+                            }
+                        }
+                    } else {
+                        button {
+                            onclick: move |_| editing_events.set(true),
+                            "Add Event Date"
+                        }
+                    }
                 }
 
                 div { class: "market-stats",
                     h3 { "Activity" }
-                    p { "{total_orders} total orders across {suppliers.len()} suppliers" }
+                    p { "{total_orders} total orders across {accepted_count} accepted suppliers" }
                     if total_reserved > 0 {
                         p { class: "active-orders", "{total_reserved} active reservations" }
                     }
                 }
 
                 div { class: "market-suppliers-section",
-                    h3 { "Participating Suppliers ({suppliers.len()})" }
+                    h3 { "Suppliers ({suppliers.len()})" }
 
                     div { class: "supplier-list",
-                        {suppliers.iter().map(|name| {
-                            let name_clone = name.clone();
-                            let suppliers_set = market.suppliers.clone();
-                            rsx! {
-                                div { class: "supplier-item", key: "{name}",
-                                    span { "{name}" }
-                                    if *editing_suppliers.read() {
-                                        button {
-                                            class: "remove-btn",
-                                            onclick: move |_| {
-                                                let mut updated: BTreeSet<String> = suppliers_set.clone();
-                                                updated.remove(&name_clone);
-                                                node_action.send(NodeAction::UpdateMarketSuppliers {
-                                                    suppliers: updated,
-                                                });
-                                                editing_suppliers.set(false);
-                                            },
-                                            "Remove"
-                                        }
+                        for (name, status) in suppliers.iter() {
+                            {
+                                let status_label = match status {
+                                    SupplierStatus::Invited => "Invited",
+                                    SupplierStatus::Accepted => "Accepted",
+                                };
+                                let status_class = match status {
+                                    SupplierStatus::Invited => "status-invited",
+                                    SupplierStatus::Accepted => "status-accepted",
+                                };
+                                rsx! {
+                                    div { class: "supplier-item", key: "{name}",
+                                        span { "{name}" }
+                                        span { class: "supplier-status {status_class}", "{status_label}" }
                                     }
                                 }
                             }
-                        })}
+                        }
                     }
 
-                    if *editing_suppliers.read() {
-                        div { class: "add-supplier-form",
-                            input {
-                                r#type: "text",
-                                placeholder: "Supplier name...",
-                                value: "{new_supplier_name}",
-                                oninput: move |evt| new_supplier_name.set(evt.value()),
-                            }
-                            button {
-                                onclick: {
-                                    let suppliers_set = market.suppliers.clone();
-                                    move |_| {
-                                        let name = new_supplier_name.read().trim().to_string();
-                                        if !name.is_empty() {
-                                            let mut updated = suppliers_set.clone();
-                                            updated.insert(name);
-                                            node_action.send(NodeAction::UpdateMarketSuppliers {
-                                                suppliers: updated,
-                                            });
-                                            new_supplier_name.set(String::new());
-                                            editing_suppliers.set(false);
-                                        }
-                                    }
-                                },
-                                "Add Supplier"
-                            }
-                            button {
-                                onclick: move |_| editing_suppliers.set(false),
-                                "Cancel"
-                            }
+                    div { class: "invite-supplier-form",
+                        input {
+                            r#type: "text",
+                            placeholder: "Supplier name to invite...",
+                            value: "{invite_name}",
+                            oninput: move |evt| invite_name.set(evt.value()),
                         }
-                    } else {
                         button {
-                            onclick: move |_| editing_suppliers.set(true),
-                            "Edit Suppliers"
+                            disabled: invite_name.read().trim().is_empty(),
+                            onclick: {
+                                let market_name_clone = market.name.clone();
+                                move |_| {
+                                    let name = invite_name.read().trim().to_string();
+                                    if !name.is_empty() {
+                                        // Update directory (add as Invited)
+                                        node_action.send(NodeAction::InviteMarketSupplier {
+                                            supplier_name: name.clone(),
+                                        });
+                                        // Send inbox message
+                                        node_action.send(NodeAction::SendInboxMessage {
+                                            recipient_name: name,
+                                            body: format!("You've been invited to participate in '{}'", market_name_clone),
+                                            kind: MessageKind::MarketInvite {
+                                                market_name: market_name_clone.clone(),
+                                            },
+                                            recipient_pubkey_hex: None,
+                                        });
+                                        invite_name.set(String::new());
+                                    }
+                                }
+                            },
+                            "Invite Supplier"
                         }
                     }
                 }
@@ -157,12 +262,10 @@ pub fn MarketDashboard() -> Element {
         let mut venue_address = use_signal(String::new);
         let mut postcode = use_signal(String::new);
         let mut locality = use_signal(|| None::<String>);
-        let mut supplier_input = use_signal(String::new);
-        let mut suppliers: Signal<BTreeSet<String>> = use_signal(BTreeSet::new);
         let mut submitted = use_signal(|| false);
 
         let postcode_val = postcode.read().clone();
-        let localities = if is_valid_au_postcode(&postcode_val) {
+        let localities = if is_valid_postcode(&postcode_val) {
             lookup_all_localities(&postcode_val)
         } else {
             vec![]
@@ -238,45 +341,6 @@ pub fn MarketDashboard() -> Element {
                     }
                 }
 
-                div { class: "form-group",
-                    label { "Participating Suppliers:" }
-                    div { class: "supplier-chips",
-                        {suppliers.read().iter().map(|s| {
-                            let s_clone = s.clone();
-                            rsx! {
-                                span { class: "supplier-chip", key: "{s}",
-                                    "{s}"
-                                    button {
-                                        class: "chip-remove",
-                                        onclick: move |_| {
-                                            suppliers.write().remove(&s_clone);
-                                        },
-                                        "x"
-                                    }
-                                }
-                            }
-                        })}
-                    }
-                    div { class: "add-supplier-inline",
-                        input {
-                            r#type: "text",
-                            placeholder: "Supplier name...",
-                            value: "{supplier_input}",
-                            oninput: move |evt| supplier_input.set(evt.value()),
-                        }
-                        button {
-                            onclick: move |_| {
-                                let n = supplier_input.read().trim().to_string();
-                                if !n.is_empty() {
-                                    suppliers.write().insert(n);
-                                    supplier_input.set(String::new());
-                                }
-                            },
-                            "Add"
-                        }
-                    }
-                }
-
                 button {
                     disabled: name.read().trim().is_empty() || venue_address.read().trim().is_empty(),
                     onclick: move |_| {
@@ -287,10 +351,7 @@ pub fn MarketDashboard() -> Element {
                             venue_address: venue_address.read().trim().to_string(),
                             postcode: pc.clone(),
                             locality: locality.read().clone(),
-                            schedule: WeeklySchedule::default(),
-                            timezone: cream_common::postcode::timezone_for_postcode(&pc)
-                                .map(|s| s.to_string()),
-                            suppliers: suppliers.read().clone(),
+                            timezone: cream_common::postcode::timezone_for_postcode(&pc),
                         });
                         submitted.set(true);
                     },

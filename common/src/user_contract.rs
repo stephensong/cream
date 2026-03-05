@@ -8,6 +8,11 @@ use crate::identity::UserId;
 use crate::tolls::TollRates;
 use crate::wallet::{TransactionKind, WalletTransaction};
 
+/// Prune when ledger exceeds this many entries.
+pub const PRUNE_THRESHOLD: usize = 500;
+/// Keep this many recent entries after pruning.
+pub const PRUNE_KEEP_RECENT: usize = 50;
+
 /// State for a user's contract on the Freenet network.
 ///
 /// Every transacting user (customer or supplier) gets a user contract that
@@ -37,10 +42,25 @@ pub struct UserContractState {
     /// Guardian-configurable toll rates (only meaningful on root contract).
     #[serde(default)]
     pub toll_rates: TollRates,
+    /// Balance at the time of the last checkpoint (pruned txs folded into this).
+    #[serde(default)]
+    pub checkpoint_balance: u64,
+    /// Number of transactions included in the checkpoint (pruned prefix count).
+    #[serde(default)]
+    pub checkpoint_tx_count: u64,
+    /// Timestamp of the last checkpoint.
+    #[serde(default)]
+    pub checkpoint_at: Option<DateTime<Utc>>,
+    /// Lightning payment hashes from pruned transactions (preserved for double-mint prevention).
+    #[serde(default)]
+    pub pruned_lightning_hashes: HashSet<String>,
     /// Timestamp for LWW merge.
     pub updated_at: DateTime<Utc>,
     /// Owner's signature over the state.
     pub signature: Signature,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Parameters that make each user contract unique (same pattern as StorefrontParameters).
@@ -56,6 +76,12 @@ pub struct UserContractSummary {
     /// Number of ledger entries the summarizer already has.
     #[serde(default)]
     pub ledger_len: usize,
+    /// Number of pruned transactions (checkpoint prefix count).
+    #[serde(default)]
+    pub checkpoint_tx_count: u64,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl UserContractState {
@@ -70,6 +96,9 @@ impl UserContractState {
             invited_by: &self.invited_by,
             ledger_len: self.ledger.len(),
             toll_rates: &self.toll_rates,
+            checkpoint_balance: self.checkpoint_balance,
+            checkpoint_tx_count: self.checkpoint_tx_count,
+            checkpoint_at: &self.checkpoint_at,
             updated_at: &self.updated_at,
         };
         serde_json::to_vec(&signable).expect("serialization should not fail")
@@ -127,13 +156,16 @@ impl UserContractState {
             .filter(|tx| !existing_keys.contains(&(tx.tx_ref.clone(), tx.kind.clone())))
             .collect();
 
-        // Check if metadata changed
+        // Check if metadata changed (includes checkpoint changes)
         let metadata_changed = update.name != self.name
             || update.origin_supplier != self.origin_supplier
             || update.current_supplier != self.current_supplier
             || update.invited_by != self.invited_by
             || update.owner != self.owner
-            || update.toll_rates != self.toll_rates;
+            || update.toll_rates != self.toll_rates
+            || update.checkpoint_balance != self.checkpoint_balance
+            || update.checkpoint_tx_count != self.checkpoint_tx_count
+            || update.checkpoint_at != self.checkpoint_at;
 
         // If all new entries are credits and no metadata changed, accept without sig
         let all_credits = new_entries
@@ -151,12 +183,14 @@ impl UserContractState {
         update.validate(owner)
     }
 
-    /// Derive balance from the transaction ledger.
+    /// Derive balance from the transaction ledger, starting from checkpoint_balance.
     pub fn derive_balance(&self) -> u64 {
-        self.ledger.iter().fold(0u64, |acc, tx| match tx.kind {
-            TransactionKind::Credit => acc.saturating_add(tx.amount),
-            TransactionKind::Debit => acc.saturating_sub(tx.amount),
-        })
+        self.ledger
+            .iter()
+            .fold(self.checkpoint_balance, |acc, tx| match tx.kind {
+                TransactionKind::Credit => acc.saturating_add(tx.amount),
+                TransactionKind::Debit => acc.saturating_sub(tx.amount),
+            })
     }
 
     /// Merge another state into this one.
@@ -167,6 +201,26 @@ impl UserContractState {
     /// - `ledger`: append-only union (dedup by tx_ref + kind)
     /// - `balance_curds`: re-derived from merged ledger
     pub fn merge(&mut self, other: UserContractState) {
+        // Checkpoint LWW: newer checkpoint_at wins
+        let other_cp_at = other.checkpoint_at;
+        match (self.checkpoint_at, other_cp_at) {
+            (Some(mine), Some(theirs)) if theirs > mine => {
+                self.checkpoint_balance = other.checkpoint_balance;
+                self.checkpoint_tx_count = other.checkpoint_tx_count;
+                self.checkpoint_at = other_cp_at;
+            }
+            (None, Some(_)) => {
+                self.checkpoint_balance = other.checkpoint_balance;
+                self.checkpoint_tx_count = other.checkpoint_tx_count;
+                self.checkpoint_at = other_cp_at;
+            }
+            _ => {}
+        }
+        // Pruned lightning hashes: set union (always merge both sides)
+        for hash in &other.pruned_lightning_hashes {
+            self.pruned_lightning_hashes.insert(hash.clone());
+        }
+
         // Append-only ledger union (dedup by tx_ref + kind)
         let existing_keys: HashSet<(String, TransactionKind)> = self
             .ledger
@@ -174,11 +228,12 @@ impl UserContractState {
             .map(|tx| (tx.tx_ref.clone(), tx.kind.clone()))
             .collect();
 
-        // Collect existing Lightning payment hashes to prevent double-minting
+        // Collect existing Lightning payment hashes (live + pruned) to prevent double-minting
         let existing_ln_hashes: HashSet<String> = self
             .ledger
             .iter()
             .filter_map(|tx| tx.lightning_payment_hash.clone())
+            .chain(self.pruned_lightning_hashes.iter().cloned())
             .collect();
 
         for tx in other.ledger {
@@ -186,7 +241,7 @@ impl UserContractState {
             if existing_keys.contains(&key) {
                 continue;
             }
-            // Reject transactions with a lightning_payment_hash already in the ledger
+            // Reject transactions with a lightning_payment_hash already in the ledger or pruned set
             if let Some(ref hash) = tx.lightning_payment_hash {
                 if existing_ln_hashes.contains(hash) {
                     continue;
@@ -235,15 +290,66 @@ impl UserContractState {
         UserContractSummary {
             updated_at: Some(self.updated_at),
             ledger_len: self.ledger.len(),
+            checkpoint_tx_count: self.checkpoint_tx_count,
+            extra: Default::default(),
         }
     }
 
     /// Compute delta: return self if newer than the summary, or None-equivalent empty state.
     pub fn delta(&self, summary: &UserContractSummary) -> Option<UserContractState> {
         match summary.updated_at {
-            Some(ts) if self.updated_at <= ts && self.ledger.len() <= summary.ledger_len => None,
+            Some(ts)
+                if self.updated_at <= ts
+                    && self.ledger.len() <= summary.ledger_len
+                    && self.checkpoint_tx_count <= summary.checkpoint_tx_count =>
+            {
+                None
+            }
             _ => Some(self.clone()),
         }
+    }
+
+    /// Perform a checkpoint: fold current ledger into checkpoint_balance and prune old entries.
+    ///
+    /// Keeps the last `keep_recent` entries for display. Returns the number of pruned entries.
+    pub fn checkpoint(&mut self, keep_recent: usize) -> usize {
+        if self.ledger.is_empty() {
+            return 0;
+        }
+
+        let new_balance = self.derive_balance();
+
+        // Extract lightning hashes from entries that will be pruned
+        let prune_count = self.ledger.len().saturating_sub(keep_recent);
+        for tx in self.ledger.iter().take(prune_count) {
+            if let Some(ref hash) = tx.lightning_payment_hash {
+                self.pruned_lightning_hashes.insert(hash.clone());
+            }
+        }
+
+        // Keep only the last `keep_recent` entries
+        if prune_count > 0 {
+            self.ledger = self.ledger.split_off(prune_count);
+        }
+
+        // Update checkpoint fields: the checkpoint_balance now covers everything
+        // up to (but not including) the remaining ledger entries.
+        // So checkpoint_balance = new_balance - contribution_of_remaining_entries
+        let remaining_contribution =
+            self.ledger
+                .iter()
+                .fold(0i64, |acc, tx| match tx.kind {
+                    TransactionKind::Credit => acc + tx.amount as i64,
+                    TransactionKind::Debit => acc - tx.amount as i64,
+                });
+        self.checkpoint_balance = (new_balance as i64 - remaining_contribution) as u64;
+        self.checkpoint_tx_count += prune_count as u64;
+        self.checkpoint_at = Some(Utc::now());
+
+        // Re-derive to ensure consistency
+        self.balance_curds = self.derive_balance();
+
+        prune_count
     }
 }
 
@@ -257,6 +363,9 @@ struct SignableUserContract<'a> {
     invited_by: &'a str,
     ledger_len: usize,
     toll_rates: &'a TollRates,
+    checkpoint_balance: u64,
+    checkpoint_tx_count: u64,
+    checkpoint_at: &'a Option<DateTime<Utc>>,
     updated_at: &'a DateTime<Utc>,
 }
 
@@ -275,6 +384,10 @@ mod tests {
             balance_curds: 10_000,
             invited_by: "Gary".into(),
             toll_rates: TollRates::default(),
+            checkpoint_balance: 0,
+            checkpoint_tx_count: 0,
+            checkpoint_at: None,
+            pruned_lightning_hashes: HashSet::new(),
             ledger: vec![WalletTransaction {
                 id: 0,
                 kind: TransactionKind::Credit,
@@ -285,10 +398,12 @@ mod tests {
                 tx_ref: "root:1000:42".into(),
                 timestamp: "2026-01-01T00:00:00.000Z".into(),
                 lightning_payment_hash: None,
+                extra: Default::default(),
             }],
             next_tx_id: 1,
             updated_at,
             signature: Signature::from_bytes(&[0u8; 64]),
+            extra: Default::default(),
         }
     }
 
@@ -344,6 +459,7 @@ mod tests {
             tx_ref: "alice:2000:99".into(),
             timestamp: "2026-01-01T00:01:00.000Z".into(),
             lightning_payment_hash: None,
+            extra: Default::default(),
         });
         state.merge(older);
         // Metadata unchanged (older timestamp)
@@ -378,6 +494,7 @@ mod tests {
             tx_ref: "test:1:1".into(),
             timestamp: "2026-01-02T00:00:00.000Z".into(),
             lightning_payment_hash: None,
+            extra: Default::default(),
         });
         assert_eq!(state.derive_balance(), 9_500);
     }
@@ -397,6 +514,7 @@ mod tests {
             tx_ref: "bob:1234:1".into(),
             timestamp: "2026-01-02T00:00:00.000Z".into(),
             lightning_payment_hash: None,
+            extra: Default::default(),
         });
         update.signature = Signature::from_bytes(&[0u8; 64]); // invalid sig
 
@@ -424,6 +542,7 @@ mod tests {
             tx_ref: "eve:1234:1".into(),
             timestamp: "2026-01-02T00:00:00.000Z".into(),
             lightning_payment_hash: None,
+            extra: Default::default(),
         });
         update.signature = Signature::from_bytes(&[0u8; 64]); // invalid sig
 
@@ -455,6 +574,8 @@ mod tests {
         let summary = UserContractSummary {
             updated_at: None,
             ledger_len: 0,
+            checkpoint_tx_count: 0,
+            extra: Default::default(),
         };
         assert!(state.delta(&summary).is_some());
     }
@@ -466,6 +587,8 @@ mod tests {
         let summary = UserContractSummary {
             updated_at: Some(now),
             ledger_len: 1,
+            checkpoint_tx_count: 0,
+            extra: Default::default(),
         };
         assert!(state.delta(&summary).is_none());
     }
@@ -477,7 +600,190 @@ mod tests {
         let summary = UserContractSummary {
             updated_at: Some(now),
             ledger_len: 0, // summary has fewer ledger entries
+            checkpoint_tx_count: 0,
+            extra: Default::default(),
         };
         assert!(state.delta(&summary).is_some());
+    }
+
+    #[test]
+    fn delta_returns_some_when_checkpoint_newer() {
+        let now = Utc::now();
+        let mut state = dummy_state(now);
+        state.checkpoint_tx_count = 5;
+        let summary = UserContractSummary {
+            updated_at: Some(now),
+            ledger_len: 1,
+            checkpoint_tx_count: 0,
+            extra: Default::default(),
+        };
+        assert!(state.delta(&summary).is_some());
+    }
+
+    // ─── Checkpoint tests ───────────────────────────────────────────────────
+
+    fn make_tx(id: u32, kind: TransactionKind, amount: u64, tx_ref: &str) -> WalletTransaction {
+        WalletTransaction {
+            id,
+            kind,
+            amount,
+            description: "test".into(),
+            sender: "Alice".into(),
+            receiver: "Bob".into(),
+            tx_ref: tx_ref.into(),
+            timestamp: format!("2026-01-01T00:{:02}:00.000Z", id),
+            lightning_payment_hash: None,
+            extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn checkpoint_preserves_balance() {
+        let mut state = dummy_state(Utc::now());
+        // Add more transactions
+        for i in 1..10 {
+            state.ledger.push(make_tx(
+                i,
+                TransactionKind::Credit,
+                100,
+                &format!("tx:{}", i),
+            ));
+        }
+        state.balance_curds = state.derive_balance();
+        let balance_before = state.balance_curds;
+        assert_eq!(balance_before, 10_900); // 10_000 + 9*100
+
+        state.checkpoint(3);
+
+        assert_eq!(state.derive_balance(), balance_before);
+        assert_eq!(state.balance_curds, balance_before);
+        assert_eq!(state.ledger.len(), 3); // kept last 3
+        assert_eq!(state.checkpoint_tx_count, 7); // pruned 7
+        assert!(state.checkpoint_at.is_some());
+    }
+
+    #[test]
+    fn checkpoint_empty_ledger_noop() {
+        let mut state = dummy_state(Utc::now());
+        state.ledger.clear();
+        state.balance_curds = 0;
+        let pruned = state.checkpoint(50);
+        assert_eq!(pruned, 0);
+        assert_eq!(state.checkpoint_tx_count, 0);
+    }
+
+    #[test]
+    fn checkpoint_preserves_lightning_hashes() {
+        let mut state = dummy_state(Utc::now());
+        // Add a transaction with a lightning hash
+        let mut ln_tx = make_tx(1, TransactionKind::Credit, 500, "ln:1");
+        ln_tx.lightning_payment_hash = Some("abc123".into());
+        state.ledger.push(ln_tx);
+        state.balance_curds = state.derive_balance();
+
+        state.checkpoint(0); // prune everything
+
+        assert!(state.pruned_lightning_hashes.contains("abc123"));
+        assert_eq!(state.ledger.len(), 0);
+    }
+
+    #[test]
+    fn merge_with_checkpoint_lww() {
+        let t1 = Utc::now() - chrono::Duration::hours(2);
+        let t2 = Utc::now() - chrono::Duration::hours(1);
+        let t3 = Utc::now();
+
+        let mut state = dummy_state(t1);
+        state.checkpoint_at = Some(t2);
+        state.checkpoint_balance = 5_000;
+        state.checkpoint_tx_count = 10;
+
+        let mut other = dummy_state(t3);
+        other.checkpoint_at = Some(t3);
+        other.checkpoint_balance = 8_000;
+        other.checkpoint_tx_count = 20;
+
+        state.merge(other);
+
+        // Newer checkpoint wins
+        assert_eq!(state.checkpoint_balance, 8_000);
+        assert_eq!(state.checkpoint_tx_count, 20);
+        assert_eq!(state.checkpoint_at, Some(t3));
+    }
+
+    #[test]
+    fn merge_pruned_lightning_hashes_union() {
+        let t1 = Utc::now() - chrono::Duration::hours(1);
+        let t2 = Utc::now();
+
+        let mut state = dummy_state(t1);
+        state.pruned_lightning_hashes.insert("hash_a".into());
+
+        let mut other = dummy_state(t2);
+        other.pruned_lightning_hashes.insert("hash_b".into());
+
+        state.merge(other);
+
+        assert!(state.pruned_lightning_hashes.contains("hash_a"));
+        assert!(state.pruned_lightning_hashes.contains("hash_b"));
+    }
+
+    #[test]
+    fn merge_rejects_duplicate_pruned_lightning_hash() {
+        let t1 = Utc::now() - chrono::Duration::hours(1);
+        let t2 = Utc::now();
+
+        let mut state = dummy_state(t1);
+        state.pruned_lightning_hashes.insert("used_hash".into());
+
+        let mut other = dummy_state(t2);
+        // Other has a new transaction with the same lightning hash
+        let mut dup_tx = make_tx(5, TransactionKind::Credit, 999, "sneaky:1");
+        dup_tx.lightning_payment_hash = Some("used_hash".into());
+        other.ledger.push(dup_tx);
+
+        state.merge(other);
+
+        // The duplicate-hash tx should NOT have been added
+        assert!(
+            !state.ledger.iter().any(|tx| tx.tx_ref == "sneaky:1"),
+            "Transaction with pruned lightning hash should be rejected"
+        );
+    }
+
+    #[test]
+    fn derive_balance_uses_checkpoint() {
+        let mut state = dummy_state(Utc::now());
+        state.checkpoint_balance = 5_000;
+        // The existing ledger has a 10_000 credit
+        assert_eq!(state.derive_balance(), 15_000);
+    }
+
+    #[test]
+    fn double_checkpoint_accumulates() {
+        let mut state = dummy_state(Utc::now());
+        for i in 1..20 {
+            state.ledger.push(make_tx(
+                i,
+                TransactionKind::Credit,
+                100,
+                &format!("tx:{}", i),
+            ));
+        }
+        state.balance_curds = state.derive_balance();
+        let expected_balance = state.derive_balance(); // 10_000 + 19*100 = 11_900
+
+        // First checkpoint: keep 5
+        state.checkpoint(5);
+        assert_eq!(state.derive_balance(), expected_balance);
+        assert_eq!(state.ledger.len(), 5);
+        let first_cp_count = state.checkpoint_tx_count;
+        assert_eq!(first_cp_count, 15);
+
+        // Second checkpoint: keep 2
+        state.checkpoint(2);
+        assert_eq!(state.derive_balance(), expected_balance);
+        assert_eq!(state.ledger.len(), 2);
+        assert_eq!(state.checkpoint_tx_count, 18); // 15 + 3
     }
 }

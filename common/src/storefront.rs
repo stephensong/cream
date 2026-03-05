@@ -6,6 +6,8 @@ use ed25519_dalek::Verifier;
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
+use std::collections::BTreeSet;
+
 use crate::identity::UserId;
 use crate::location::GeoLocation;
 use crate::order::{Order, OrderId};
@@ -18,6 +20,9 @@ use crate::order::OrderStatus;
 pub struct SignedProduct {
     pub product: Product,
     pub signature: Signature,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl SignedProduct {
@@ -236,6 +241,13 @@ pub struct StorefrontInfo {
     pub email: Option<String>,
     #[serde(default)]
     pub address: Option<String>,
+    /// Per-market product selection: market_name → set of ProductIds.
+    /// Empty set or missing key = all products.
+    #[serde(default)]
+    pub market_products: BTreeMap<String, BTreeSet<ProductId>>,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Parameters that make each storefront contract unique.
@@ -250,6 +262,9 @@ pub struct StorefrontState {
     pub info: StorefrontInfo,
     pub products: BTreeMap<ProductId, SignedProduct>,
     pub orders: BTreeMap<OrderId, Order>,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl StorefrontState {
@@ -391,6 +406,9 @@ struct SignableOrder<'a> {
 pub struct StorefrontSummary {
     pub product_timestamps: BTreeMap<ProductId, DateTime<Utc>>,
     pub order_timestamps: BTreeMap<OrderId, (DateTime<Utc>, u8)>, // (created_at, status_ordinal)
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl StorefrontState {
@@ -406,6 +424,7 @@ impl StorefrontState {
                 .iter()
                 .map(|(id, o)| (id.clone(), (o.created_at, o.status.ordinal())))
                 .collect(),
+            extra: Default::default(),
         }
     }
 
@@ -439,6 +458,7 @@ impl StorefrontState {
             info: self.info.clone(),
             products,
             orders,
+            extra: Default::default(),
         }
     }
 }
@@ -465,9 +485,12 @@ mod tests {
                 phone: None,
                 email: None,
                 address: None,
+                market_products: BTreeMap::new(),
+                extra: Default::default(),
             },
             products: BTreeMap::new(),
             orders: BTreeMap::new(),
+            extra: Default::default(),
         }
     }
 
@@ -486,6 +509,7 @@ mod tests {
             signature: Signature::from_bytes(&[0u8; 64]),
             escrow_token: None,
             collection_point: None,
+            extra: Default::default(),
         }
     }
 
@@ -661,11 +685,13 @@ mod tests {
             phone: None,
             email: None,
             address: None,
+            market_products: BTreeMap::new(),
+            extra: Default::default(),
         };
         let json = serde_json::to_string(&info_old).unwrap();
         // Remove optional fields to simulate old format
         let old_json = json.replace(
-            ",\"schedule\":null,\"timezone\":null,\"phone\":null,\"email\":null,\"address\":null",
+            ",\"schedule\":null,\"timezone\":null,\"phone\":null,\"email\":null,\"address\":null,\"market_products\":{}",
             "",
         );
         let info: StorefrontInfo = serde_json::from_str(&old_json).unwrap();
@@ -688,5 +714,41 @@ mod tests {
         );
 
         assert!(!sf.expire_orders(Utc::now()));
+    }
+
+    #[test]
+    fn unknown_fields_preserved_on_round_trip() {
+        // Simulate a future version writing a new field into StorefrontInfo
+        let info = StorefrontInfo {
+            owner: UserId(SigningKey::from_bytes(&[1u8; 32]).verifying_key()),
+            name: "Test".into(),
+            description: "".into(),
+            location: GeoLocation::new(0.0, 0.0),
+            schedule: None,
+            timezone: None,
+            phone: None,
+            email: None,
+            address: None,
+            market_products: BTreeMap::new(),
+            extra: Default::default(),
+        };
+
+        // Serialize, inject an unknown field, deserialize, re-serialize
+        let mut json: serde_json::Value = serde_json::to_value(&info).unwrap();
+        json["future_feature"] = serde_json::json!("hello from v2");
+        let round_tripped: StorefrontInfo = serde_json::from_value(json).unwrap();
+        let output = serde_json::to_value(&round_tripped).unwrap();
+
+        // The unknown field must survive the round-trip
+        assert_eq!(
+            output["future_feature"], "hello from v2",
+            "unknown fields must be preserved through deserialize/serialize"
+        );
+
+        // Also verify it lands in the extra map
+        assert_eq!(
+            round_tripped.extra.get("future_feature").unwrap(),
+            &serde_json::json!("hello from v2")
+        );
     }
 }

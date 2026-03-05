@@ -16,6 +16,10 @@ pub enum MessageKind {
     DirectMessage,
     /// A chat invite with a session ID for the relay.
     ChatInvite { session_id: String },
+    /// Market organizer invites a supplier to participate.
+    MarketInvite { market_name: String },
+    /// Supplier accepts a market invitation.
+    MarketAccept { market_name: String },
 }
 
 /// A message delivered to a user's inbox contract.
@@ -32,6 +36,9 @@ pub struct InboxMessage {
     pub body: String,
     pub toll_paid: u64,
     pub created_at: DateTime<Utc>,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The full inbox state stored in a per-user Freenet contract.
@@ -40,6 +47,9 @@ pub struct InboxState {
     pub owner: UserId,
     pub messages: BTreeMap<MessageId, InboxMessage>,
     pub updated_at: DateTime<Utc>,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Parameters that make each inbox contract unique.
@@ -52,6 +62,9 @@ pub struct InboxParameters {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InboxSummary {
     pub message_ids: BTreeSet<MessageId>,
+    /// Extension fields — preserves unknown fields across contract versions.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl InboxState {
@@ -102,6 +115,7 @@ impl InboxState {
     pub fn summarize(&self) -> InboxSummary {
         InboxSummary {
             message_ids: self.messages.keys().cloned().collect(),
+            extra: Default::default(),
         }
     }
 
@@ -122,6 +136,7 @@ impl InboxState {
             owner: self.owner.clone(),
             messages: new_messages,
             updated_at: self.updated_at,
+            extra: Default::default(),
         })
     }
 }
