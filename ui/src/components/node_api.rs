@@ -2743,7 +2743,7 @@ mod wasm_impl {
                         clog("[CREAM] CheckpointLedger: no transactions to checkpoint");
                         return;
                     }
-                    let pruned = uc_state.checkpoint(cream_common::user_contract::PRUNE_KEEP_RECENT);
+                    let pruned = uc_state.checkpoint(cream_common::user_contract::PRUNE_KEEP_RECENT, chrono::Utc::now());
                     uc_state.updated_at = chrono::Utc::now();
                     uc_state.balance_curds = uc_state.derive_balance();
 

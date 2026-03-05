@@ -311,8 +311,9 @@ impl UserContractState {
 
     /// Perform a checkpoint: fold current ledger into checkpoint_balance and prune old entries.
     ///
-    /// Keeps the last `keep_recent` entries for display. Returns the number of pruned entries.
-    pub fn checkpoint(&mut self, keep_recent: usize) -> usize {
+    /// Keeps the last `keep_recent` entries for display. `now` is the checkpoint timestamp.
+    /// Returns the number of pruned entries.
+    pub fn checkpoint(&mut self, keep_recent: usize, now: DateTime<Utc>) -> usize {
         if self.ledger.is_empty() {
             return 0;
         }
@@ -344,7 +345,7 @@ impl UserContractState {
                 });
         self.checkpoint_balance = (new_balance as i64 - remaining_contribution) as u64;
         self.checkpoint_tx_count += prune_count as u64;
-        self.checkpoint_at = Some(Utc::now());
+        self.checkpoint_at = Some(now);
 
         // Re-derive to ensure consistency
         self.balance_curds = self.derive_balance();
@@ -653,7 +654,7 @@ mod tests {
         let balance_before = state.balance_curds;
         assert_eq!(balance_before, 10_900); // 10_000 + 9*100
 
-        state.checkpoint(3);
+        state.checkpoint(3, Utc::now());
 
         assert_eq!(state.derive_balance(), balance_before);
         assert_eq!(state.balance_curds, balance_before);
@@ -667,7 +668,7 @@ mod tests {
         let mut state = dummy_state(Utc::now());
         state.ledger.clear();
         state.balance_curds = 0;
-        let pruned = state.checkpoint(50);
+        let pruned = state.checkpoint(50, Utc::now());
         assert_eq!(pruned, 0);
         assert_eq!(state.checkpoint_tx_count, 0);
     }
@@ -681,7 +682,7 @@ mod tests {
         state.ledger.push(ln_tx);
         state.balance_curds = state.derive_balance();
 
-        state.checkpoint(0); // prune everything
+        state.checkpoint(0, Utc::now()); // prune everything
 
         assert!(state.pruned_lightning_hashes.contains("abc123"));
         assert_eq!(state.ledger.len(), 0);
@@ -774,14 +775,14 @@ mod tests {
         let expected_balance = state.derive_balance(); // 10_000 + 19*100 = 11_900
 
         // First checkpoint: keep 5
-        state.checkpoint(5);
+        state.checkpoint(5, Utc::now());
         assert_eq!(state.derive_balance(), expected_balance);
         assert_eq!(state.ledger.len(), 5);
         let first_cp_count = state.checkpoint_tx_count;
         assert_eq!(first_cp_count, 15);
 
         // Second checkpoint: keep 2
-        state.checkpoint(2);
+        state.checkpoint(2, Utc::now());
         assert_eq!(state.derive_balance(), expected_balance);
         assert_eq!(state.ledger.len(), 2);
         assert_eq!(state.checkpoint_tx_count, 18); // 15 + 3
