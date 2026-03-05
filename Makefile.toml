@@ -158,6 +158,8 @@ script = [
     set -euo pipefail
     pkill -f "dx serve" 2>/dev/null || true
     pkill -f "cream-guardian" 2>/dev/null || true
+    kill $(cat /tmp/cream-dx-serve.pid 2>/dev/null) 2>/dev/null || true
+    rm -f /tmp/cream-dx-serve.pid
     kill $(cat /tmp/cream-relay.pid 2>/dev/null) 2>/dev/null || true
     rm -f /tmp/cream-relay.pid
     # Kill stale cargo-make fixture processes but not the current one ($$=shell, PPID chain)
@@ -323,7 +325,7 @@ script = [
 ]
 
 [tasks.fixture]
-description = "Full manual-testing fixture: build contracts, start network, run tests, start guardians, start rendezvous, launch UI dev server"
+description = "Full manual-testing fixture: build contracts, start network, run tests, start guardians, start rendezvous, launch UI dev server (foreground)"
 dependencies = ["kill-stale", "test-node", "start-guardians", "restart-rendezvous", "start-relay", "tailwind-install", "tailwind-build"]
 cwd = "ui"
 command = "dx"
@@ -332,6 +334,49 @@ args = ["serve"]
 CREAM_RENDEZVOUS_URL = "http://localhost:8787"
 CREAM_GUARDIAN_URLS = "http://localhost:3010,http://localhost:3011,http://localhost:3012"
 CREAM_RELAY_URL = "ws://localhost:3020"
+
+[tasks.fixture-bg]
+description = "Same as fixture but dx serve runs in background; exits once UI is serving on port 8080"
+dependencies = ["kill-stale", "test-node", "start-guardians", "restart-rendezvous", "start-relay", "tailwind-install", "tailwind-build"]
+script = [
+    '''
+    set -euo pipefail
+    LOG="/tmp/cream-dx-serve.log"
+    : > "${LOG}"
+
+    export CREAM_RENDEZVOUS_URL="http://localhost:8787"
+    export CREAM_GUARDIAN_URLS="http://localhost:3010,http://localhost:3011,http://localhost:3012"
+    export CREAM_RELAY_URL="ws://localhost:3020"
+
+    cd ui
+    nohup dx serve >> "${LOG}" 2>&1 &
+    DX_PID=$!
+    echo "${DX_PID}" > /tmp/cream-dx-serve.pid
+    echo "dx serve started (pid=${DX_PID}), waiting for port 8080..."
+
+    for i in $(seq 1 300); do
+        # Check dx serve is still alive
+        if ! kill -0 "${DX_PID}" 2>/dev/null; then
+            echo "ERROR: dx serve exited unexpectedly. Log:"
+            tail -30 "${LOG}"
+            exit 1
+        fi
+        # Check if port 8080 is responding
+        if curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080" 2>/dev/null | grep -q "200"; then
+            echo "dx serve ready on http://localhost:8080 (took ~${i}s)"
+            echo "Log: ${LOG}"
+            echo "PID: ${DX_PID} (kill with: kill $(cat /tmp/cream-dx-serve.pid))"
+            exit 0
+        fi
+        sleep 1
+    done
+
+    echo "ERROR: dx serve did not become ready within 300s. Log tail:"
+    tail -30 "${LOG}"
+    kill "${DX_PID}" 2>/dev/null || true
+    exit 1
+    ''',
+]
 
 [tasks.restart-rendezvous]
 description = "Kill any stale wrangler and start fresh rendezvous service on port 8787"
