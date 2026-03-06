@@ -42,6 +42,16 @@ impl KeyManager {
         Ok(Self { signing_key })
     }
 
+    /// Create a KeyManager for the system root user.
+    ///
+    /// Uses the root signing key so that logging in as "root" gives access
+    /// to the system root contract (the source of all CURD).
+    pub fn for_root() -> Self {
+        Self {
+            signing_key: cream_common::identity::root_signing_key(),
+        }
+    }
+
     pub fn user_id(&self) -> UserId {
         UserId(self.verifying_key())
     }

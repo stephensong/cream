@@ -29,6 +29,7 @@ pub fn ProfileView() -> Element {
     let locality = state.locality.clone();
     let postcode_display = format_postcode(&postcode_raw, locality.as_deref());
     let is_supplier = state.is_supplier;
+    let is_root = state.is_root;
     let supplier_description = state.supplier_description.clone();
     let is_customer = state.connected_supplier.is_some();
     drop(state);
@@ -40,11 +41,13 @@ pub fn ProfileView() -> Element {
         .unwrap_or_default();
 
     let shared_read = shared.read();
-    let balance = shared_read
-        .user_contract
-        .as_ref()
-        .map(|uc| uc.balance_curds)
-        .unwrap_or(0);
+    let balance = if is_root {
+        shared_read.root_user_contract.as_ref()
+    } else {
+        shared_read.user_contract.as_ref()
+    }
+    .map(|uc| uc.balance_curds)
+    .unwrap_or(0);
 
     let has_products = shared_read
         .storefronts

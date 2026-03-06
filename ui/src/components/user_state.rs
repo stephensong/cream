@@ -57,6 +57,9 @@ pub struct UserState {
     /// Base58-encoded ContractKey for this user's own user contract.
     #[serde(default)]
     pub user_contract_key: Option<String>,
+    /// Whether this user is logged in as the system root.
+    #[serde(default)]
+    pub is_root: bool,
 }
 
 impl UserState {
@@ -78,6 +81,7 @@ impl UserState {
             supplier_node_url: None,
             supplier_storefront_key: None,
             user_contract_key: None,
+            is_root: false,
         }
     }
 

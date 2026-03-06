@@ -52,8 +52,10 @@ pub fn WalletView() -> Element {
     let moniker = user_state.read().moniker.clone().unwrap_or_default();
     let is_supplier = user_state.read().is_supplier;
 
-    // Auto-checkpoint when ledger exceeds threshold
-    {
+    let is_root = user_state.read().is_root;
+
+    // Auto-checkpoint when ledger exceeds threshold (not for root — root's ledger is managed by the system)
+    if !is_root {
         let shared_state = shared_state.clone();
         let node_action = node_action.clone();
         use_effect(move || {
@@ -69,9 +71,15 @@ pub fn WalletView() -> Element {
         });
     }
 
-    // Read balance and transactions from the on-network user contract
+    // Read balance and transactions from the on-network contract.
+    // Root user sees the system root contract; everyone else sees their own.
     let shared = shared_state.read();
-    let (base_balance, recent_txs) = if let Some(ref uc) = shared.user_contract {
+    let uc_source = if is_root {
+        shared.root_user_contract.as_ref()
+    } else {
+        shared.user_contract.as_ref()
+    };
+    let (base_balance, recent_txs) = if let Some(uc) = uc_source {
         let txs: Vec<_> = uc.ledger.iter().rev().take(20).cloned().collect();
         (uc.balance_curds, txs)
     } else {

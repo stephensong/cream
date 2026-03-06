@@ -305,9 +305,12 @@ fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_su
 /// Returns Some(km) if moniker + password are available, None otherwise.
 fn auto_derive_key_manager() -> Option<KeyManager> {
     let user_state = UserState::new();
-    let moniker = user_state.moniker.as_deref()?;
+    let _moniker = user_state.moniker.as_deref()?;
+    if user_state.is_root {
+        return Some(KeyManager::for_root());
+    }
     let password = UserState::load_password()?;
-    KeyManager::from_credentials(moniker, &password).ok()
+    KeyManager::from_credentials(_moniker, &password).ok()
 }
 
 /// Manages the WebSocket connection to the chat relay.
@@ -615,19 +618,26 @@ fn AppLayout() -> Element {
     let order_count = state.orders.len();
     let is_customer = state.connected_supplier.is_some();
     let is_supplier = state.is_supplier;
+    let is_root = state.is_root;
     let connected_supplier = state.connected_supplier.clone();
     drop(state);
 
     // Determine user role: Supplier (has products), User, or Guest
     let shared_read = shared.read();
-    // Balance comes from the on-network user contract
-    let balance = shared_read.user_contract.as_ref().map(|uc| uc.balance_curds).unwrap_or(0);
+    // Balance comes from the on-network user contract (root uses root_user_contract)
+    let balance = if is_root {
+        shared_read.root_user_contract.as_ref().map(|uc| uc.balance_curds).unwrap_or(0)
+    } else {
+        shared_read.user_contract.as_ref().map(|uc| uc.balance_curds).unwrap_or(0)
+    };
     let has_products = shared_read
         .storefronts
         .get(&moniker)
         .map(|sf| !sf.products.is_empty())
         .unwrap_or(false);
-    let role_label = if has_products {
+    let role_label = if is_root {
+        "Root"
+    } else if has_products {
         "Supplier"
     } else if is_customer {
         "Guest"
@@ -1207,11 +1217,18 @@ fn SetupScreen() -> Element {
                                 let name = title_case(&name_input.read());
                                 let pw = name.to_lowercase();
 
-                                let km = match KeyManager::from_credentials(&name, &pw) {
-                                    Ok(km) => km,
-                                    Err(e) => {
-                                        setup_error.set(Some(format!("{e}")));
-                                        return;
+                                // Detect root login: "root" uses the system root key
+                                let logging_in_as_root = name.eq_ignore_ascii_case("root");
+
+                                let km = if logging_in_as_root {
+                                    KeyManager::for_root()
+                                } else {
+                                    match KeyManager::from_credentials(&name, &pw) {
+                                        Ok(km) => km,
+                                        Err(e) => {
+                                            setup_error.set(Some(format!("{e}")));
+                                            return;
+                                        }
                                     }
                                 };
 
@@ -1226,6 +1243,7 @@ fn SetupScreen() -> Element {
                                     state.moniker = Some(name.clone());
                                     state.postcode = Some(postcode.clone());
                                     state.locality = locality_val.clone();
+                                    state.is_root = logging_in_as_root;
                                     if let Some(entry) = lookup_result.as_ref() {
                                         state.is_supplier = false;
                                         state.connected_supplier = Some(entry.name.clone());
@@ -1247,7 +1265,11 @@ fn SetupScreen() -> Element {
                                 UserState::save_password(&pw);
                                 key_manager.set(Some(km));
 
-                                if lookup_result.is_none() && is_sup {
+                                // Root user doesn't need a separate user contract — they
+                                // use the system root contract which is already subscribed.
+                                if logging_in_as_root {
+                                    // no RegisterUser, no RegisterSupplier
+                                } else if lookup_result.is_none() && is_sup {
                                     node.send(NodeAction::RegisterSupplier {
                                         name: name.clone(),
                                         postcode,
@@ -1261,9 +1283,7 @@ fn SetupScreen() -> Element {
                                         current_supplier: name.clone(),
                                         invited_by: cream_common::identity::ROOT_USER_NAME.to_string(),
                                     });
-                                }
-
-                                if let Some(entry) = lookup_result.as_ref() {
+                                } else if let Some(entry) = lookup_result.as_ref() {
                                     node.send(NodeAction::SubscribeCustomerStorefront {
                                         storefront_key: entry.storefront_key.clone(),
                                     });
@@ -1274,10 +1294,8 @@ fn SetupScreen() -> Element {
                                         current_supplier: entry.name.clone(),
                                         invited_by: entry.name.clone(),
                                     });
-                                }
-
-                                // Standalone customer (browses directory, not connected to a supplier)
-                                if lookup_result.is_none() && !is_sup {
+                                } else {
+                                    // Standalone customer (browses directory, not connected to a supplier)
                                     node.send(NodeAction::RegisterUser {
                                         name: name.clone(),
                                         origin_supplier: String::new(),
