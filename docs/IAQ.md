@@ -1368,3 +1368,60 @@ CREATE TABLE toll_rates (
 The entire signing infrastructure, the CRDT merge functions, the sync protocol, the `extra` extension fields — all of it exists solely because there is no trusted central server. The actual business logic is just these 13 tables.
 
 ---
+
+## How would contract versioning work if we need it?
+
+Freenet contract keys are derived from the hash of WASM code + parameters. **Change the WASM = different key = different contract.** You cannot patch a deployed contract in place. This is by design (immutability is what makes contracts trustworthy), but it means schema upgrades require careful planning.
+
+### Levels of change
+
+| Level | What changes | Example | Upgrade path |
+|-------|-------------|---------|-------------|
+| 1 — Additive data | New optional fields, new enum variants | Adding `phone` to StorefrontInfo | No WASM change needed. `serde(default)` and `extra` fields handle it transparently. |
+| 2 — Logic change | Validation rules, merge behaviour, new contract features | Changing how order status transitions are validated | New WASM required. Same data format, different contract key. |
+| 3 — Breaking data | Renamed/removed fields, changed types | Splitting `name` into `first_name`/`last_name` | New WASM + data migration. Hardest case. |
+
+### Current defences (Level 1 — what we do today)
+
+- Every struct has `#[serde(flatten, default)] pub extra: serde_json::Map<String, serde_json::Value>` to capture unknown fields from future versions.
+- All new fields use `#[serde(default)]` so old state deserializes cleanly.
+- `Option<T>` for fields that may not exist yet.
+- This handles additive evolution indefinitely without touching the WASM.
+
+### Migration ceremony (Level 2 and 3 — when WASM must change)
+
+When new contract code is deployed:
+
+1. Deploy the new WASM to the network (creates a new contract key).
+2. The UI detects the old contract version on first load after upgrade.
+3. Read the user's old contract state via GET.
+4. Transform the state to the new format (if needed).
+5. PUT it as a new contract instance under the new WASM.
+6. Update the directory / any references to point to the new contract key.
+7. Old contract eventually gets evicted from the network (nobody reads it).
+
+For the directory (1 instance) this is trivial. For storefronts (1 per supplier) it's manageable — each supplier's UI migrates their own. For user contracts (1 per user) it requires coordinated rollout.
+
+### Thin envelope contracts (future option for non-financial contracts)
+
+For contracts where on-chain validation is less critical (directory, storefronts, inbox, markets), the WASM could be reduced to a minimal envelope:
+
+- Verify the owner's signature.
+- Accept the state with the newer timestamp.
+- No understanding of the payload structure.
+
+All business logic (product management, order state machines, etc.) moves to the UI layer, which can be updated freely. The contract becomes a signed, versioned blob store whose WASM almost never changes.
+
+The **user contract** (wallet, balances) should NOT use this approach — contract-level validation that you can't mint CURD out of thin air is important. This is the one contract worth investing in careful, future-proof design.
+
+### Recommended strategy (Strategy D — hybrid)
+
+- **User contract**: full on-chain validation. Design very carefully before first production deploy. Use `serde(default)` and `extra` aggressively. Accept that a Level 2 change here requires a migration ceremony.
+- **All other contracts**: candidates for the thin envelope approach if/when the upgrade burden becomes painful. Not needed yet — current `serde(default)` + `extra` approach handles foreseeable evolution.
+- **Migration ceremony**: build the capability into the UI as latent code. Don't need it on day one, but have the code path ready.
+
+### Alternative considered: guardian-hosted database
+
+Moving non-financial contracts to a relational database (SQLite/Postgres) on the guardian nodes was considered. It would give trivial schema migration via `ALTER TABLE` and rich queryability. However, reliable multi-node replication requires solving the same distributed consensus problems that Freenet contracts already solve (conflict resolution, eventual consistency, leader election). The complexity doesn't disappear — it moves. This remains a fallback option if the contract versioning burden becomes unmanageable.
+
+---
