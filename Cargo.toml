@@ -19,7 +19,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 # Freenet
-freenet-stdlib = "=0.1.39"
+freenet-stdlib = "=0.1.40"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
