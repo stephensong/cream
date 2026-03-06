@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/with-invariants';
 import { completeSetup } from '../helpers/setup-flow';
 import { waitForConnected, waitForSupplierCount } from '../helpers/wait-for-app';
 

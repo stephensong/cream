@@ -777,9 +777,14 @@ script = [
     "if [ -f /tmp/cream-e2e-server.pid ]; then kill $(cat /tmp/cream-e2e-server.pid) 2>/dev/null || true; rm -f /tmp/cream-e2e-server.pid; echo 'Static server stopped'; else echo 'No server PID file found'; fi",
 ]
 
+[tasks.build-check-invariants]
+description = "Build the check-invariants binary for E2E invariant checking"
+command = "cargo"
+args = ["build", "-p", "cream-node-integration", "--bin", "check-invariants", "--release"]
+
 [tasks.e2e]
 description = "Run E2E tests (assumes fixture is already running)"
-dependencies = ["e2e-install"]
+dependencies = ["e2e-install", "build-check-invariants"]
 cwd = "tests/e2e"
 command = "npx"
 args = ["playwright", "test"]

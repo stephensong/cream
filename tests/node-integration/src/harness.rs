@@ -313,6 +313,33 @@ impl Customer {
     }
 }
 
+/// Total CURD in the system. Root starts with this; all transfers are double-entry
+/// through root, so the sum of all user contract balances must always equal this.
+pub const SYSTEM_FLOAT: u64 = 1_000_000;
+
+/// Known user names whose contracts participate in the CURD conservation invariant.
+///
+/// "system_root" is the genesis account (uses `root_user_id()`, holds the float).
+/// "root" is the admin user (uses `make_dummy_user("root")`, holds 10K allocation).
+/// All others use `make_dummy_user(name)`.
+pub const INVARIANT_USERS: &[&str] = &["system_root", "Gary", "Emma", "Iris", "Alice", "Bob", "root"];
+
+/// Compute the ContractKey for a user's contract given their name.
+///
+/// "system_root" uses the well-known `root_user_id()` (FROST dev key).
+/// All others derive via `make_dummy_user(name)`.
+pub fn user_contract_key_for(name: &str) -> ContractKey {
+    let vk = if name == "system_root" {
+        let root_id = cream_common::identity::root_user_id();
+        ed25519_dalek::VerifyingKey::from_bytes(root_id.0.as_bytes()).unwrap()
+    } else {
+        let (_, vk) = crate::make_dummy_user(name);
+        vk
+    };
+    let (_, key) = crate::make_user_contract(&vk);
+    key
+}
+
 /// Top-level test fixture with named participants and a shared directory.
 pub struct TestHarness {
     pub gary: Supplier,
@@ -626,6 +653,125 @@ impl TestHarness {
             root_contract_key: root_key,
             market_directory_key: mkt_dir_key,
         }
+    }
+
+    /// CURD conservation check: the sum of all user contract balances must equal SYSTEM_FLOAT.
+    ///
+    /// Also verifies that each contract's `balance_curds` field matches `derive_balance()`
+    /// (cached balance matches ledger replay). Uses fresh WebSocket connections and retries
+    /// up to 10 times with 1s backoff for Freenet eventual consistency.
+    pub async fn check_invariants(&self, step: usize, phase: &str) {
+        check_curd_conservation(&format!("step {} ({})", step, phase), false).await;
+    }
+}
+
+/// Standalone CURD conservation check. Connects to a Freenet node, GETs all user
+/// contracts, and verifies that balances sum to SYSTEM_FLOAT and each contract's
+/// cached balance matches its ledger replay.
+///
+/// `label` is a human-readable string for log/panic messages (e.g. "step 5 (pre)").
+/// `soft` — if true, only assert cache/ledger consistency; warn (don't panic) on total mismatch.
+///
+/// Retries up to 10 times with 1s backoff for Freenet eventual consistency.
+pub async fn check_curd_conservation(label: &str, soft: bool) {
+    let url = node_url(3002);
+
+    // Compute contract keys deterministically
+    let contracts: Vec<(&str, ContractKey)> = INVARIANT_USERS
+        .iter()
+        .map(|&name| (name, user_contract_key_for(name)))
+        .collect();
+
+    for attempt in 1..=10 {
+        let mut api = connect_to_node_at(&url).await;
+
+        let mut balances: Vec<(&str, u64, u64)> = Vec::new(); // (name, cached, derived)
+        let mut all_ok = true;
+
+        for (name, key) in &contracts {
+            let bytes = match wait_for_get(&mut api, *key.id(), TIMEOUT).await {
+                Some(b) => b,
+                None => {
+                    all_ok = false;
+                    break;
+                }
+            };
+            let state: UserContractState = match serde_json::from_slice(&bytes) {
+                Ok(s) => s,
+                Err(_) => {
+                    all_ok = false;
+                    break;
+                }
+            };
+            balances.push((name, state.balance_curds, state.derive_balance()));
+        }
+
+        if !all_ok {
+            if attempt < 10 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+            panic!(
+                "Invariant check failed at {}: could not GET all user contracts after 10 attempts",
+                label
+            );
+        }
+
+        // Check cached == derived for each contract
+        let mut cache_mismatch = false;
+        for &(name, cached, derived) in &balances {
+            if cached != derived {
+                if attempt < 10 {
+                    cache_mismatch = true;
+                    break;
+                }
+                panic!(
+                    "Invariant FAILED at {}: {}'s balance_curds ({}) != derive_balance() ({})",
+                    label, name, cached, derived
+                );
+            }
+        }
+        if cache_mismatch {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            continue;
+        }
+
+        // Check CURD conservation
+        let total: u64 = balances.iter().map(|&(_, _, derived)| derived).sum();
+        let detail: Vec<String> = balances
+            .iter()
+            .map(|&(name, _, derived)| format!("{}={}", name, derived))
+            .collect();
+
+        if total != SYSTEM_FLOAT {
+            if soft {
+                // Soft mode: warn but don't fail (E2E tests may have UI-driven transfers)
+                println!(
+                    "  [invariant] {} WARN: total={} != {} ({}) — cache/ledger OK",
+                    label, total, SYSTEM_FLOAT, detail.join(", ")
+                );
+                return;
+            }
+            if attempt < 10 {
+                println!(
+                    "  [invariant retry {}/10] {}: total={} (want {})",
+                    attempt, label, total, SYSTEM_FLOAT,
+                );
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+            panic!(
+                "Invariant FAILED at {}: CURD total {} != {} ({})",
+                label, total, SYSTEM_FLOAT, detail.join(", ")
+            );
+        }
+
+        // All checks passed
+        println!(
+            "  [invariant] {} OK: total={} ({})",
+            label, total, detail.join(", ")
+        );
+        return;
     }
 }
 

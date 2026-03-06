@@ -27,6 +27,28 @@ use cream_node_integration::{
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Run a step with pre/post invariant checks (design-by-contract).
+/// Steps 1-4 run before the harness exists and don't use this macro.
+macro_rules! run_step {
+    ($step:expr, $name:expr, $harness:expr, $body:block) => {{
+        println!("\n=== Step {}: {} ===", $step, $name);
+        $harness.check_invariants($step, "pre").await;
+        $body
+        $harness.check_invariants($step, "post").await;
+        println!("=== Step {} PASSED ===", $step);
+    }};
+}
+
+/// Variant for step 5 which creates the harness — only runs post-check.
+macro_rules! run_step_post_only {
+    ($step:expr, $name:expr, $harness:expr, $body:block) => {{
+        println!("\n=== Step {}: {} ===", $step, $name);
+        $body
+        $harness.check_invariants($step, "post").await;
+        println!("=== Step {} PASSED ===", $step);
+    }};
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cumulative_node_tests() {
     tracing_subscriber::fmt::try_init().ok();
@@ -474,9 +496,8 @@ async fn cumulative_node_tests() {
     // ═══════════════════════════════════════════════════════════════════
     // Step 5: Harness — 3 suppliers with products (establishes fixture)
     // ═══════════════════════════════════════════════════════════════════
-    println!("── Step 5: harness — 3 suppliers, products, multi-customer ──");
     let mut h = TestHarness::setup().await;
-    {
+    run_step_post_only!(5, "harness — 3 suppliers, products, multi-customer", h, {
         // Scenario 5a: product count increments for subscriber
         h.alice.subscribe_to_storefront(&h.gary).await;
 
@@ -513,8 +534,7 @@ async fn cumulative_node_tests() {
         let bob_sf = h.bob.recv_storefront_update().await;
         assert_eq!(alice_sf.products.len(), 3, "5c: Alice sees 3 products");
         assert_eq!(bob_sf.products.len(), 3, "5c: Bob sees 3 products");
-    }
-    println!("   PASSED");
+    });
 
     // ═══════════════════════════════════════════════════════════════════
     // Step 6: Order expiry — backdated orders across all deposit tiers
@@ -522,8 +542,7 @@ async fn cumulative_node_tests() {
     // Reuses the harness from Step 5. Alice is already subscribed to
     // Gary's storefront (3 products from 5a/5c).
     // ═══════════════════════════════════════════════════════════════════
-    println!("── Step 6: order_expiry_across_deposit_tiers ──");
-    {
+    run_step!(6, "order_expiry_across_deposit_tiers", h, {
         // Gary adds a product with quantity 10 for the expiry test
         let product = h
             .gary
@@ -640,8 +659,7 @@ async fn cumulative_node_tests() {
             10,
             "6: Alice's available quantity should be 10 after expiry"
         );
-    }
-    println!("   PASSED");
+    });
 
     // ═══════════════════════════════════════════════════════════════════
     // Step 7: Update opening hours schedule → subscriber notification
@@ -649,8 +667,7 @@ async fn cumulative_node_tests() {
     // Reuses the harness from Step 5. Alice is already subscribed to
     // Gary's storefront.
     // ═══════════════════════════════════════════════════════════════════
-    println!("── Step 7: update_schedule_notifies_subscriber ──");
-    {
+    run_step!(7, "update_schedule_notifies_subscriber", h, {
         use cream_common::storefront::WeeklySchedule;
 
         // Build a schedule: Mon–Fri 8:00–17:00, Sat 9:00–12:00
@@ -720,8 +737,7 @@ async fn cumulative_node_tests() {
             !recv_schedule.is_open(6, 18),
             "7: Sun 9:00 should be closed"
         );
-    }
-    println!("   PASSED");
+    });
 
     // ═══════════════════════════════════════════════════════════════════
     // Step 8: Insufficient balance rejects order
@@ -729,8 +745,7 @@ async fn cumulative_node_tests() {
     // Creates a customer with 0 balance and verifies that placing an
     // order is rejected without touching the supplier's storefront.
     // ═══════════════════════════════════════════════════════════════════
-    println!("── Step 8: insufficient_balance_rejects_order ──");
-    {
+    run_step!(8, "insufficient_balance_rejects_order", h, {
         use cream_node_integration::harness::Customer;
         use cream_node_integration::make_dummy_user;
 
@@ -787,8 +802,7 @@ async fn cumulative_node_tests() {
 
         // Zara's balance should still be 0
         assert_eq!(zara.balance, 0, "8: Zara's balance should still be 0");
-    }
-    println!("   PASSED");
+    });
 
     // ═══════════════════════════════════════════════════════════════════
     // Step 9: Root balance accounting — verify double-entry integrity
@@ -796,8 +810,7 @@ async fn cumulative_node_tests() {
     // The root user started with 1,000,000 CURD and gave 10,000 each
     // to Alice and Bob during setup. Verify the debits.
     // ═══════════════════════════════════════════════════════════════════
-    println!("── Step 9: root_balance_accounting ──");
-    {
+    run_step!(9, "root_balance_accounting", h, {
         use cream_common::identity::ROOT_USER_NAME;
         use cream_common::user_contract::UserContractState;
         use cream_common::wallet::TransactionKind;
@@ -905,8 +918,7 @@ async fn cumulative_node_tests() {
         }
 
         drop(probe);
-    }
-    println!("   PASSED");
+    });
 
     // ═══════════════════════════════════════════════════════════════════
     // Step 10: Fulfill order → escrow settlement
@@ -914,8 +926,7 @@ async fn cumulative_node_tests() {
     // Alice places a fresh order on Gary's storefront. Gary fulfills it.
     // We manually settle escrow (root → Gary) and verify balances.
     // ═══════════════════════════════════════════════════════════════════
-    println!("── Step 10: fulfill_order_settles_escrow ──");
-    {
+    run_step!(10, "fulfill_order_settles_escrow", h, {
         use cream_common::user_contract::UserContractState;
         use cream_common::wallet::{TransactionKind, WalletTransaction};
 
@@ -1153,14 +1164,12 @@ async fn cumulative_node_tests() {
         }
 
         drop(probe);
-    }
-    println!("   PASSED");
+    });
 
     // ═══════════════════════════════════════════════════════════════════
     // Step 11: Inbox message — Gary sends DM to Emma, Emma receives it
     // ═══════════════════════════════════════════════════════════════════
-    println!("── Step 11: inbox_message_delivery ──");
-    {
+    run_step!(11, "inbox_message_delivery", h, {
         use cream_common::inbox::{InboxMessage, InboxState, MessageKind};
 
         // Emma subscribes to her own inbox and waits for subscribe confirmation
@@ -1260,14 +1269,12 @@ async fn cumulative_node_tests() {
         assert_eq!(received_msg.from_name, "Gary");
         assert_eq!(received_msg.body, "Hey Emma, got any milk?");
         println!("   Emma received Gary's message via inbox notification");
-    }
-    println!("   PASSED");
+    });
 
     // ═══════════════════════════════════════════════════════════════════
     // Step 12: Market directory — deploy, update, cross-node propagation
     // ═══════════════════════════════════════════════════════════════════
-    println!("── Step 12: market_directory_propagation ──");
-    {
+    run_step!(12, "market_directory_propagation", h, {
         use cream_common::market::MarketDirectoryState;
         use cream_node_integration::{connect_to_node_at, node_url};
 
@@ -1351,8 +1358,7 @@ async fn cumulative_node_tests() {
         );
         assert_eq!(updated_market.suppliers.len(), 3);
         println!("   Probe received market update notification with Iris added");
-    }
-    println!("   PASSED");
+    });
 
     println!("\n══ All node-integration steps passed ══");
 }
