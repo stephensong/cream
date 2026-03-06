@@ -32,6 +32,9 @@ pub fn MarketDashboard() -> Element {
             .map(|(name, _)| name.clone())
             .collect();
 
+        // Collect existing supplier names to avoid duplicate invites
+        let existing_suppliers: Vec<String> = market.suppliers.keys().cloned().collect();
+
         if !pending_invites.is_empty() {
             if let Some(inbox) = &shared.inbox {
                 for msg in inbox.messages.values() {
@@ -42,6 +45,28 @@ pub fn MarketDashboard() -> Element {
                                 supplier_name: msg.from_name.clone(),
                             });
                         }
+                    }
+                }
+            }
+        }
+
+        // Auto-invite suppliers who sent MarketRequest messages
+        if let Some(inbox) = &shared.inbox {
+            for msg in inbox.messages.values() {
+                if let MessageKind::MarketRequest { market_name: ref mn } = msg.kind {
+                    if *mn == market_name && !existing_suppliers.contains(&msg.from_name) {
+                        // Auto-invite this supplier and send them a MarketInvite
+                        node_action.send(NodeAction::InviteMarketSupplier {
+                            supplier_name: msg.from_name.clone(),
+                        });
+                        node_action.send(NodeAction::SendInboxMessage {
+                            recipient_name: msg.from_name.clone(),
+                            body: format!("You've been invited to participate in '{}'", market_name),
+                            kind: MessageKind::MarketInvite {
+                                market_name: market_name.clone(),
+                            },
+                            recipient_pubkey_hex: None,
+                        });
                     }
                 }
             }

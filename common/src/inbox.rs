@@ -20,6 +20,8 @@ pub enum MessageKind {
     MarketInvite { market_name: String },
     /// Supplier accepts a market invitation.
     MarketAccept { market_name: String },
+    /// Supplier requests an invitation to participate in a market.
+    MarketRequest { market_name: String },
 }
 
 /// A message delivered to a user's inbox contract.

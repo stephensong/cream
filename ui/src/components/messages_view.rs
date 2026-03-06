@@ -382,6 +382,7 @@ pub fn MessagesView() -> Element {
                                 (MessageKind::ChatInvite { .. }, false) => "Chat Invite",
                                 (MessageKind::MarketInvite { .. }, false) => "Market Invite",
                                 (MessageKind::MarketAccept { .. }, false) => "Market Accept",
+                                (MessageKind::MarketRequest { .. }, false) => "Market Request",
                             };
                             let peer_label = if let Some(to) = to_name {
                                 format!("To: {to}")

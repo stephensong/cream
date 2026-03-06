@@ -2,14 +2,20 @@ use dioxus::prelude::*;
 
 use cream_common::postcode::format_postcode;
 
+use cream_common::inbox::MessageKind;
+
 use super::app::Route;
+use super::node_api::{use_node_action, NodeAction};
 use super::shared_state::use_shared_state;
+use super::user_state::use_user_state;
 
 /// Lists all markets in the system that have upcoming events scheduled.
 #[component]
 pub fn MarketsListView() -> Element {
     let shared_state = use_shared_state();
+    let user_state = use_user_state();
     let nav = use_navigator();
+    let node_action = use_node_action();
     let mut prefill_recipient: Signal<Option<String>> = use_context();
 
     let today = chrono::Utc::now().date_naive();
@@ -21,7 +27,11 @@ pub fn MarketsListView() -> Element {
         accepted_count: usize,
         next_event: String,
         organizer_name: Option<String>,
+        is_own_market: bool,
     }
+
+    let current_moniker = user_state.read().moniker.clone().unwrap_or_default().to_lowercase();
+    let is_supplier = user_state.read().is_supplier;
 
     let mut markets: Vec<MarketInfo> = Vec::new();
     {
@@ -48,6 +58,10 @@ pub fn MarketsListView() -> Element {
                 .entries
                 .get(&market.organizer)
                 .map(|e| e.name.clone());
+            let is_own_market = organizer_name
+                .as_ref()
+                .map(|n| n.to_lowercase() == current_moniker)
+                .unwrap_or(false);
             markets.push(MarketInfo {
                 name: market.name.clone(),
                 location,
@@ -55,6 +69,7 @@ pub fn MarketsListView() -> Element {
                 accepted_count,
                 next_event,
                 organizer_name,
+                is_own_market,
             });
         }
     }
@@ -79,14 +94,39 @@ pub fn MarketsListView() -> Element {
                                 if let Some(ref org) = m.organizer_name {
                                     div { class: "organizer-row",
                                         span { class: "organizer", "Organizer: {org}" }
-                                        if let Some(org) = organizer_for_msg {
-                                            button {
-                                                class: "send-message-btn",
-                                                onclick: move |_| {
-                                                    prefill_recipient.set(Some(org.clone()));
-                                                    nav.push(Route::Messages {});
-                                                },
-                                                "Send Message"
+                                        if !m.is_own_market {
+                                            if let Some(ref org) = organizer_for_msg {
+                                                {
+                                                    let org_for_msg = org.clone();
+                                                    let org_for_req = org.clone();
+                                                    let market_for_req = market_name.clone();
+                                                    rsx! {
+                                                        button {
+                                                            class: "send-message-btn",
+                                                            onclick: move |_| {
+                                                                prefill_recipient.set(Some(org_for_msg.clone()));
+                                                                nav.push(Route::Messages {});
+                                                            },
+                                                            "Send Message"
+                                                        }
+                                                        if is_supplier {
+                                                            button {
+                                                                class: "request-invite-btn",
+                                                                onclick: move |_| {
+                                                                    node_action.send(NodeAction::SendInboxMessage {
+                                                                        recipient_name: org_for_req.clone(),
+                                                                        body: format!("I'd like to participate in '{}'", market_for_req),
+                                                                        kind: MessageKind::MarketRequest {
+                                                                            market_name: market_for_req.clone(),
+                                                                        },
+                                                                        recipient_pubkey_hex: None,
+                                                                    });
+                                                                },
+                                                                "Request Invitation"
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
