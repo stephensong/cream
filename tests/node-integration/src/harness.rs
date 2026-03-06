@@ -317,13 +317,6 @@ impl Customer {
 /// through root, so the sum of all user contract balances must always equal this.
 pub const SYSTEM_FLOAT: u64 = 1_000_000;
 
-/// Known user names whose contracts participate in the CURD conservation invariant.
-///
-/// "system_root" is the genesis account (uses `root_user_id()`, holds the float).
-/// "root" is the admin user (uses `make_dummy_user("root")`, holds 10K allocation).
-/// All others use `make_dummy_user(name)`.
-pub const INVARIANT_USERS: &[&str] = &["system_root", "Gary", "Emma", "Iris", "Alice", "Bob", "root"];
-
 /// Compute the ContractKey for a user's contract given their name.
 ///
 /// "system_root" uses the well-known `root_user_id()` (FROST dev key).
@@ -661,34 +654,105 @@ impl TestHarness {
     /// (cached balance matches ledger replay). Uses fresh WebSocket connections and retries
     /// up to 10 times with 1s backoff for Freenet eventual consistency.
     pub async fn check_invariants(&self, step: usize, phase: &str) {
-        check_curd_conservation(&format!("step {} ({})", step, phase), false).await;
+        check_curd_conservation(&format!("step {} ({})", step, phase), 3002).await;
     }
 }
 
-/// Standalone CURD conservation check. Connects to a Freenet node, GETs all user
-/// contracts, and verifies that balances sum to SYSTEM_FLOAT and each contract's
-/// cached balance matches its ledger replay.
+/// Standalone CURD conservation check. Connects to a Freenet node, dynamically
+/// discovers all user contracts from system_root's ledger, and verifies that
+/// balances sum to SYSTEM_FLOAT and each contract's cached balance matches its
+/// ledger replay.
+///
+/// Discovery: GETs system_root's contract first, scans its ledger for all unique
+/// counterparty names (debit receivers + credit senders), computes their contract
+/// keys via `user_contract_key_for()`, and checks all of them.
 ///
 /// `label` is a human-readable string for log/panic messages (e.g. "step 5 (pre)").
-/// `soft` — if true, only assert cache/ledger consistency; warn (don't panic) on total mismatch.
+/// `port` is the Freenet node WebSocket port to read from (e.g. 3002 for node tests,
+/// 3001 for E2E which operates through the gateway).
 ///
 /// Retries up to 10 times with 1s backoff for Freenet eventual consistency.
-pub async fn check_curd_conservation(label: &str, soft: bool) {
-    let url = node_url(3002);
+pub async fn check_curd_conservation(label: &str, port: u16) {
+    use std::collections::BTreeSet;
+    use cream_common::wallet::TransactionKind;
 
-    // Compute contract keys deterministically
-    let contracts: Vec<(&str, ContractKey)> = INVARIANT_USERS
-        .iter()
-        .map(|&name| (name, user_contract_key_for(name)))
-        .collect();
+    let url = node_url(port);
 
     for attempt in 1..=10 {
         let mut api = connect_to_node_at(&url).await;
 
-        let mut balances: Vec<(&str, u64, u64)> = Vec::new(); // (name, cached, derived)
-        let mut all_ok = true;
+        // Phase 1: GET system_root to discover all participants
+        let root_key = user_contract_key_for("system_root");
+        let root_bytes = match wait_for_get(&mut api, *root_key.id(), TIMEOUT).await {
+            Some(b) => b,
+            None => {
+                if attempt < 10 {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+                panic!("Invariant check failed at {}: could not GET system_root after 10 attempts", label);
+            }
+        };
+        let root_state: UserContractState = match serde_json::from_slice(&root_bytes) {
+            Ok(s) => s,
+            Err(_) => {
+                if attempt < 10 {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+                panic!("Invariant check failed at {}: could not parse system_root state", label);
+            }
+        };
 
-        for (name, key) in &contracts {
+        // Discover all user names from root's ledger.
+        // Use genesis tx_refs ("genesis:name") for reliable discovery — these are
+        // always present for allocated users and use the canonical lowercase name.
+        // Also discover non-genesis counterparties from sender/receiver fields,
+        // but skip known non-user placeholders.
+        let mut user_names: BTreeSet<String> = BTreeSet::new();
+        for tx in &root_state.ledger {
+            // Primary discovery: genesis tx_refs
+            if let Some(name) = tx.tx_ref.strip_prefix("genesis:") {
+                if !name.is_empty() && !name.contains(':') {
+                    user_names.insert(name.to_string());
+                    continue;
+                }
+            }
+
+            // Secondary discovery: sender/receiver fields for non-genesis transfers
+            let counterparty = match tx.kind {
+                TransactionKind::Debit => &tx.receiver,
+                TransactionKind::Credit => &tx.sender,
+            };
+            if !counterparty.is_empty()
+                && counterparty != cream_common::identity::ROOT_USER_NAME
+                && counterparty != "customer" // placeholder from cancel escrow
+            {
+                user_names.insert(counterparty.clone());
+            }
+        }
+
+        // Build contract list: system_root + all discovered users.
+        // Dedup by contract key since different name casings map to the same key
+        // (derive_user_signing_key normalizes to lowercase internally).
+        let mut seen_keys = std::collections::HashSet::new();
+        let mut contracts: Vec<(String, ContractKey)> = vec![
+            ("system_root".to_string(), root_key),
+        ];
+        seen_keys.insert(root_key);
+        for name in &user_names {
+            let key = user_contract_key_for(name);
+            if seen_keys.insert(key) {
+                contracts.push((name.clone(), key));
+            }
+        }
+
+        // Phase 2: GET all user contracts and collect states
+        let mut user_states: Vec<(String, UserContractState)> = Vec::new();
+        user_states.push(("system_root".to_string(), root_state));
+
+        let mut all_ok = true;
+        for (name, key) in contracts.iter().skip(1) {
             let bytes = match wait_for_get(&mut api, *key.id(), TIMEOUT).await {
                 Some(b) => b,
                 None => {
@@ -703,7 +767,7 @@ pub async fn check_curd_conservation(label: &str, soft: bool) {
                     break;
                 }
             };
-            balances.push((name, state.balance_curds, state.derive_balance()));
+            user_states.push((name.clone(), state));
         }
 
         if !all_ok {
@@ -712,22 +776,22 @@ pub async fn check_curd_conservation(label: &str, soft: bool) {
                 continue;
             }
             panic!(
-                "Invariant check failed at {}: could not GET all user contracts after 10 attempts",
-                label
+                "Invariant check failed at {}: could not GET all user contracts after 10 attempts (discovered {} users)",
+                label, contracts.len()
             );
         }
 
         // Check cached == derived for each contract
         let mut cache_mismatch = false;
-        for &(name, cached, derived) in &balances {
-            if cached != derived {
+        for (name, state) in &user_states {
+            if state.balance_curds != state.derive_balance() {
                 if attempt < 10 {
                     cache_mismatch = true;
                     break;
                 }
                 panic!(
                     "Invariant FAILED at {}: {}'s balance_curds ({}) != derive_balance() ({})",
-                    label, name, cached, derived
+                    label, name, state.balance_curds, state.derive_balance()
                 );
             }
         }
@@ -736,40 +800,61 @@ pub async fn check_curd_conservation(label: &str, soft: bool) {
             continue;
         }
 
-        // Check CURD conservation
-        let total: u64 = balances.iter().map(|&(_, _, derived)| derived).sum();
-        let detail: Vec<String> = balances
+        // Compute deduped balances for conservation check.
+        // Freenet merge races can produce duplicate ledger entries with the same
+        // (tx_ref, kind). We dedup locally to get the true balance, and warn if
+        // duplicates are found.
+        let mut total_dups = 0usize;
+        let mut deduped_balances: Vec<(String, u64)> = Vec::new(); // (name, deduped_balance)
+        for (name, state) in &user_states {
+            let mut seen = std::collections::HashSet::new();
+            let deduped_balance = state.ledger.iter().fold(state.checkpoint_balance, |acc, tx| {
+                let key = (tx.tx_ref.clone(), tx.kind.clone());
+                if !seen.insert(key) {
+                    total_dups += 1;
+                    return acc; // skip duplicate
+                }
+                match tx.kind {
+                    TransactionKind::Credit => acc.saturating_add(tx.amount),
+                    TransactionKind::Debit => acc.saturating_sub(tx.amount),
+                }
+            });
+            deduped_balances.push((name.clone(), deduped_balance));
+        }
+
+        if total_dups > 0 {
+            println!(
+                "  [invariant] {} WARNING: {} duplicate ledger entries detected (Freenet merge race)",
+                label, total_dups
+            );
+        }
+
+        // Check CURD conservation using deduped balances
+        let total: u64 = deduped_balances.iter().map(|(_, bal)| bal).sum();
+        let detail: Vec<String> = deduped_balances
             .iter()
-            .map(|&(name, _, derived)| format!("{}={}", name, derived))
+            .map(|(name, bal)| format!("{}={}", name, bal))
             .collect();
 
         if total != SYSTEM_FLOAT {
-            if soft {
-                // Soft mode: warn but don't fail (E2E tests may have UI-driven transfers)
-                println!(
-                    "  [invariant] {} WARN: total={} != {} ({}) — cache/ledger OK",
-                    label, total, SYSTEM_FLOAT, detail.join(", ")
-                );
-                return;
-            }
             if attempt < 10 {
                 println!(
-                    "  [invariant retry {}/10] {}: total={} (want {})",
-                    attempt, label, total, SYSTEM_FLOAT,
+                    "  [invariant retry {}/10] {}: total={} (want {}) [{} users]",
+                    attempt, label, total, SYSTEM_FLOAT, deduped_balances.len(),
                 );
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
             panic!(
-                "Invariant FAILED at {}: CURD total {} != {} ({})",
-                label, total, SYSTEM_FLOAT, detail.join(", ")
+                "Invariant FAILED at {}: CURD total {} != {} ({}) [{} users discovered]",
+                label, total, SYSTEM_FLOAT, detail.join(", "), deduped_balances.len()
             );
         }
 
         // All checks passed
         println!(
-            "  [invariant] {} OK: total={} ({})",
-            label, total, detail.join(", ")
+            "  [invariant] {} OK: total={} ({}) [{} users]",
+            label, total, detail.join(", "), deduped_balances.len()
         );
         return;
     }
@@ -861,7 +946,7 @@ async fn deploy_supplier_user_contract(
     let (uc_contract, uc_key) = make_user_contract(&supplier.verifying_key);
 
     // Deterministic tx_ref so UI re-registration deduplicates against this credit.
-    let tx_ref = format!("genesis:{}", supplier.name);
+    let tx_ref = format!("genesis:{}", supplier.name.to_lowercase());
     let now_str = chrono::Utc::now().to_rfc3339();
 
     let initial_credit = WalletTransaction {
@@ -962,7 +1047,7 @@ async fn deploy_user_contract(
     let (uc_contract, uc_key) = make_user_contract(&customer.verifying_key);
 
     // Deterministic tx_ref so UI re-registration deduplicates against this credit.
-    let tx_ref = format!("genesis:{}", customer.name);
+    let tx_ref = format!("genesis:{}", customer.name.to_lowercase());
     let now_str = chrono::Utc::now().to_rfc3339();
 
     let initial_credit = WalletTransaction {

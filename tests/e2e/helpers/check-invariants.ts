@@ -7,7 +7,8 @@ const BINARY = path.resolve(__dirname, '../../../target/release/check-invariants
 /**
  * Run the CURD conservation invariant check.
  *
- * Connects to the Freenet node, GETs all user contracts, and verifies:
+ * Dynamically discovers all user contracts from the system root's ledger,
+ * then verifies:
  * 1. Each contract's cached balance matches its ledger replay
  * 2. Total CURD across all contracts == 1,000,000 (SYSTEM_FLOAT)
  *
@@ -15,7 +16,7 @@ const BINARY = path.resolve(__dirname, '../../../target/release/check-invariants
  */
 export function checkInvariants(label: string): void {
   try {
-    const output = execSync(`"${BINARY}" "${label}" --soft`, {
+    const output = execSync(`"${BINARY}" "${label}"`, {
       timeout: 120_000,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],

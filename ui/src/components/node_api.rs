@@ -1158,7 +1158,7 @@ mod wasm_impl {
                     10_000,
                     "Initial CURD allocation".to_string(),
                     name.clone(),
-                    format!("genesis:{}", name),
+                    format!("genesis:{}", name.to_lowercase()),
                 ).await;
 
                 // Now register in the directory with a real signature
@@ -2018,7 +2018,7 @@ mod wasm_impl {
                     10_000,
                     "Initial CURD allocation".to_string(),
                     name.clone(),
-                    format!("genesis:{}", name),
+                    format!("genesis:{}", name.to_lowercase()),
                 ).await;
 
                 // Deploy inbox contract for this user
