@@ -12,6 +12,7 @@ use super::iaq_view::IaqView;
 use super::key_manager::KeyManager;
 use super::market_dashboard::MarketDashboard;
 use super::market_view::MarketView;
+use super::markets_list_view::MarketsListView;
 use super::my_orders::MyOrders;
 use super::node_api::{use_node_action, use_node_coroutine, NodeAction};
 use super::shared_state::{use_shared_state, SharedState};
@@ -103,6 +104,8 @@ pub enum Route {
     #[layout(AppLayout)]
     #[route("/directory")]
     Directory {},
+    #[route("/markets")]
+    Markets {},
     #[route("/supplier/:name")]
     Supplier { name: String },
     #[route("/orders")]
@@ -143,6 +146,7 @@ pub fn App() -> Element {
     use_context_provider(|| Signal::new(super::toll_rates::AdminStatus::default())); // is_admin
     use_context_provider(|| Signal::new(ChatState::default()));
     use_context_provider(|| Signal::new(ChatWsHandle::default()));
+    use_context_provider(|| Signal::new(None::<String>)); // Pre-fill inbox recipient
     #[cfg(target_family = "wasm")]
     use_context_provider(|| Signal::new(WebRtcSessions::default()));
     use_node_coroutine();
@@ -192,35 +196,52 @@ pub fn App() -> Element {
     }
 }
 
+/// Returns "nav-active" if the current route matches, empty string otherwise.
+fn nav_class(current: &Route, target: &Route) -> &'static str {
+    let matches = match (current, target) {
+        (Route::Supplier { .. }, Route::Supplier { .. }) => true,
+        (Route::Market { .. }, Route::Market { .. }) => true,
+        _ => std::mem::discriminant(current) == std::mem::discriminant(target),
+    };
+    if matches { "nav-active" } else { "" }
+}
+
 /// Render the navigation buttons for the app header.
 fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_supplier: bool, connected_supplier: Option<String>, inbox_count: usize, admin_status: super::toll_rates::AdminStatus) -> Element {
+    let current_route = use_route::<Route>();
     if let Some(supplier) = connected_supplier {
         // Customer mode: single-storefront nav
         rsx! {
             nav {
                 {
                     let supplier_clone = supplier.clone();
+                    let cls = nav_class(&current_route, &Route::Supplier { name: String::new() });
                     rsx! {
                         button {
+                            class: cls,
                             onclick: move |_| { nav.push(Route::Supplier { name: supplier_clone.clone() }); },
                             "Storefront"
                         }
                     }
                 }
                 button {
+                    class: nav_class(&current_route, &Route::Orders {}),
                     onclick: move |_| { nav.push(Route::Orders {}); },
                     "My Orders ({order_count})"
                 }
                 button {
+                    class: nav_class(&current_route, &Route::Messages {}),
                     onclick: move |_| { nav.push(Route::Messages {}); },
                     if inbox_count > 0 { "Inbox ({inbox_count})" } else { "Inbox" }
                 }
                 button {
+                    class: nav_class(&current_route, &Route::Wallet {}),
                     onclick: move |_| { nav.push(Route::Wallet {}); },
                     "Wallet ({displayed_balance} CURD)"
                 }
                 if admin_status.admin {
                     button {
+                        class: nav_class(&current_route, &Route::Guardian {}),
                         onclick: move |_| { nav.push(Route::Guardian {}); },
                         if admin_status.root { "Root" } else { "Admin" }
                     }
@@ -232,33 +253,45 @@ fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_su
         rsx! {
             nav {
                 button {
+                    class: nav_class(&current_route, &Route::Directory {}),
                     onclick: move |_| { nav.push(Route::Directory {}); },
-                    "Browse Suppliers"
+                    "Suppliers"
                 }
                 button {
+                    class: nav_class(&current_route, &Route::Markets {}),
+                    onclick: move |_| { nav.push(Route::Markets {}); },
+                    "Markets"
+                }
+                button {
+                    class: nav_class(&current_route, &Route::Orders {}),
                     onclick: move |_| { nav.push(Route::Orders {}); },
                     "My Orders ({order_count})"
                 }
                 button {
+                    class: nav_class(&current_route, &Route::Messages {}),
                     onclick: move |_| { nav.push(Route::Messages {}); },
                     if inbox_count > 0 { "Inbox ({inbox_count})" } else { "Inbox" }
                 }
                 if is_supplier {
                     button {
+                        class: nav_class(&current_route, &Route::Dashboard {}),
                         onclick: move |_| { nav.push(Route::Dashboard {}); },
                         "My Storefront"
                     }
                 }
                 button {
+                    class: nav_class(&current_route, &Route::MyMarket {}),
                     onclick: move |_| { nav.push(Route::MyMarket {}); },
                     "My Market"
                 }
                 button {
+                    class: nav_class(&current_route, &Route::Wallet {}),
                     onclick: move |_| { nav.push(Route::Wallet {}); },
                     "Wallet ({displayed_balance} CURD)"
                 }
                 if admin_status.admin {
                     button {
+                        class: nav_class(&current_route, &Route::Guardian {}),
                         onclick: move |_| { nav.push(Route::Guardian {}); },
                         if admin_status.root { "Root" } else { "Admin" }
                     }
@@ -730,6 +763,12 @@ fn Dashboard() -> Element {
             rsx! { DirectoryView {} }
         }
     }
+}
+
+/// Route component: renders the markets listing (markets with upcoming events).
+#[component]
+fn Markets() -> Element {
+    rsx! { MarketsListView {} }
 }
 
 /// Route component: renders a market detail view.
@@ -1234,6 +1273,16 @@ fn SetupScreen() -> Element {
                                         origin_supplier: entry.name.clone(),
                                         current_supplier: entry.name.clone(),
                                         invited_by: entry.name.clone(),
+                                    });
+                                }
+
+                                // Standalone customer (browses directory, not connected to a supplier)
+                                if lookup_result.is_none() && !is_sup {
+                                    node.send(NodeAction::RegisterUser {
+                                        name: name.clone(),
+                                        origin_supplier: String::new(),
+                                        current_supplier: String::new(),
+                                        invited_by: cream_common::identity::ROOT_USER_NAME.to_string(),
                                     });
                                 }
                             },

@@ -7,6 +7,7 @@ pub mod iaq_view;
 pub mod key_manager;
 pub mod market_dashboard;
 pub mod market_view;
+pub mod markets_list_view;
 pub mod my_orders;
 pub mod node_api;
 pub mod order_form;

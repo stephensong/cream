@@ -82,7 +82,7 @@ for (const vp of MOBILE_VIEWPORTS) {
       await assertWithinViewport(page, '.supplier-dashboard');
 
       // Nav buttons visible
-      await expect(page.locator('button:has-text("Browse Suppliers")')).toBeVisible();
+      await expect(page.locator('button:has-text("Suppliers")')).toBeVisible();
       await expect(page.locator('button:has-text("Wallet")')).toBeVisible();
 
       // Product cards don't overflow

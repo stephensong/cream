@@ -27,7 +27,8 @@ test.describe('Market Order Flow', () => {
     await waitForConnected(alicePage);
     await waitForSupplierCount(alicePage, 3);
 
-    // Alice clicks the harness market
+    // Alice navigates to Markets and clicks the harness market
+    await alicePage.click('button:has-text("Markets")');
     const marketCard = alicePage.locator('.market-card', { hasText: 'Coffs Harbour Farmers Market' });
     await expect(marketCard).toBeVisible({ timeout: 30_000 });
     await marketCard.locator('a:has-text("View Market")').click();
@@ -41,14 +42,18 @@ test.describe('Market Order Flow', () => {
       expect(count).toBeGreaterThanOrEqual(1);
     }).toPass({ timeout: 15_000 });
 
-    // Find an in-stock product from Gary and click the order link
-    const garyProduct = alicePage.locator('.product-card', { hasText: 'Gary' }).first();
-    await expect(garyProduct).toBeVisible();
-    await garyProduct.locator('a:has-text("Order from Gary")').click();
+    // Find any in-stock product with an order link and click it
+    // (stock depletes across cumulative E2E runs, so don't target a specific supplier)
+    const orderableProduct = alicePage.locator('.product-card:has(.order-link)').first();
+    await expect(orderableProduct).toBeVisible({ timeout: 15_000 });
+    const orderLink = orderableProduct.locator('.order-link');
+    const linkText = await orderLink.textContent();
+    const supplierName = linkText!.replace('Order from ', '');
+    await orderLink.click();
 
-    // Alice should be on Gary's storefront now
+    // Alice should be on the supplier's storefront now
     await expect(alicePage.locator('.storefront-view')).toBeVisible({ timeout: 10_000 });
-    await expect(alicePage.locator('.storefront-view h2')).toHaveText('Gary');
+    await expect(alicePage.locator('.storefront-view h2')).toHaveText(supplierName);
 
     // Cleanup
     await garyContext.close();

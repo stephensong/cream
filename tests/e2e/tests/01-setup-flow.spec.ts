@@ -17,7 +17,7 @@ test.describe('Setup Flow', () => {
 
     // Verify nav has supplier-specific button
     await expect(page.locator('button:has-text("My Storefront")')).toBeVisible();
-    await expect(page.locator('button:has-text("Browse Suppliers")')).toBeVisible();
+    await expect(page.locator('button:has-text("Suppliers")')).toBeVisible();
     await expect(page.locator('button:has-text("Wallet")')).toBeVisible();
   });
 

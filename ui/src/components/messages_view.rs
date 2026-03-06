@@ -31,6 +31,7 @@ pub fn MessagesView() -> Element {
     let mut chat = use_context::<Signal<ChatState>>();
     let ws_handle = use_context::<Signal<ChatWsHandle>>();
     let node_action = use_node_action();
+    let mut prefill_recipient: Signal<Option<String>> = use_context();
     let mut compose_to = use_signal(String::new);
     let mut compose_body = use_signal(String::new);
     let mut send_error = use_signal(|| None::<String>);
@@ -178,6 +179,20 @@ pub fn MessagesView() -> Element {
 
         by_name.into_values().collect()
     };
+
+    // Apply prefill from context (e.g. "Send Message" from markets view).
+    // Build the display name map so the effect can resolve it.
+    let recipient_display_map: std::collections::HashMap<String, String> = recipients.iter()
+        .map(|r| (r.recipient_name.clone(), r.display_name.clone()))
+        .collect();
+    use_effect(move || {
+        let prefill = prefill_recipient.read().clone();
+        if let Some(name) = prefill {
+            let display = recipient_display_map.get(&name).cloned().unwrap_or(name);
+            compose_to.set(display);
+            prefill_recipient.set(None);
+        }
+    });
 
     let connected = chat.read().connected;
 

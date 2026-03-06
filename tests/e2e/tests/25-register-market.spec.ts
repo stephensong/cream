@@ -3,8 +3,8 @@ import { completeSetup } from '../helpers/setup-flow';
 import { waitForConnected, waitForSupplierCount } from '../helpers/wait-for-app';
 
 test.describe('Farmer\'s Market', () => {
-  test('market from harness appears in directory view', async ({ page }) => {
-    // Register as a customer to see the directory
+  test('market from harness appears in markets view', async ({ page }) => {
+    // Register as a user to see the nav
     await completeSetup(page, {
       name: 'MarketBrowser',
       postcode: '2000',
@@ -12,6 +12,9 @@ test.describe('Farmer\'s Market', () => {
 
     await waitForConnected(page);
     await waitForSupplierCount(page, 3);
+
+    // Navigate to the Markets page
+    await page.click('button:has-text("Markets")');
 
     // The harness deploys "Coffs Harbour Farmers Market" — check it appears
     const marketCard = page.locator('.market-card', { hasText: 'Coffs Harbour Farmers Market' });

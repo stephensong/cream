@@ -24,7 +24,7 @@ pub fn MarketView(market_organizer: String) -> Element {
             div { class: "market-view",
                 h2 { "Market Not Found" }
                 p { "The market '{market_organizer}' could not be found." }
-                Link { to: Route::Directory {}, "Back to Directory" }
+                Link { to: Route::Markets {}, "Back to Markets" }
             }
         };
     };
@@ -180,7 +180,7 @@ pub fn MarketView(market_organizer: String) -> Element {
                 }
             }
 
-            Link { to: Route::Directory {}, class: "back-link", "Back to Directory" }
+            Link { to: Route::Markets {}, class: "back-link", "Back to Markets" }
         }
     }
 }

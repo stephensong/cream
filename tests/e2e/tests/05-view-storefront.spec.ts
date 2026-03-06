@@ -26,10 +26,9 @@ test.describe('View Storefront', () => {
       expect(count).toBeGreaterThanOrEqual(5);
     }).toPass({ timeout: 15_000 });
 
-    // Guest users (no user contract) should see "Register to place orders" hint, not Order button
+    // Registered users (with user contract) should see Order button
     const firstProduct = page.locator('.product-card').first();
-    await expect(firstProduct.locator('.guest-hint')).toBeVisible();
-    await expect(firstProduct.locator('button:has-text("Order")')).not.toBeVisible();
+    await expect(firstProduct.locator('button:has-text("Order")')).toBeVisible({ timeout: 15_000 });
 
     // Verify product details are shown
     await expect(firstProduct.locator('.category')).toBeVisible();

@@ -53,7 +53,7 @@ test.describe('Customer Rendezvous Flow', () => {
 
     // ── Assertions: customer UI shows single-storefront nav ──────────────────
     await expect(customerPage.locator('button:has-text("Storefront")')).toBeVisible();
-    await expect(customerPage.locator('button:has-text("Browse Suppliers")')).not.toBeVisible();
+    await expect(customerPage.locator('button:text-is("Suppliers")')).not.toBeVisible();
     await expect(customerPage.locator('button:has-text("My Storefront")')).not.toBeVisible();
 
     // Navigate to the storefront

@@ -50,7 +50,7 @@ test.describe('Admin Grant', () => {
     await expect(rootPage.locator('.profile-pubkey')).toBeVisible({ timeout: 10_000 });
     const rootPubkey = (await rootPage.locator('.profile-pubkey').textContent())!.trim();
     // Navigate back from profile
-    await rootPage.click('button:has-text("Browse Suppliers")');
+    await rootPage.click('button:has-text("Suppliers")');
 
     // ── Step 2: Log in as Alice (existing harness user) ──
     await completeSetup(userPage, {
