@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { completeSetup } from '../helpers/setup-flow';
 import { waitForAppLoadAt, waitForConnected, waitForSupplierCount } from '../helpers/wait-for-app';
-// Note: waitForConnected only works on pages with directory_view (supplier mode)
+// Note: waitForConnected checks the nav bar connection badge (visible on all pages)
 
 const APP_URL = 'http://localhost:8080';
 

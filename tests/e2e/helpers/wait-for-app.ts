@@ -25,11 +25,11 @@ export async function waitForAppLoadAt(page: Page, url: string): Promise<void> {
 }
 
 /**
- * Wait for the Freenet connection status to show "Connected".
+ * Wait for the Freenet connection badge in the nav bar to show "Connected".
  */
 export async function waitForConnected(page: Page): Promise<void> {
   await expect(
-    page.locator('.connection-status.connected')
+    page.locator('.connection-badge.connected')
   ).toBeVisible({ timeout: 15_000 });
 }
 

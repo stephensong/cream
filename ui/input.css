@@ -158,6 +158,24 @@
     color: #34d399;
   }
 
+  .connection-badge {
+    font-size: 0.7rem;
+    margin-left: 0.5rem;
+    padding: 0.1rem 0.5rem;
+    border-radius: 9999px;
+    font-weight: 600;
+  }
+
+  .connection-badge.connected {
+    background: #065f46;
+    color: #34d399;
+  }
+
+  .connection-badge.disconnected {
+    background: #7f1d1d;
+    color: #fca5a5;
+  }
+
   .iaq-btn {
     font-size: 0.75rem;
     margin-left: 0.75rem;

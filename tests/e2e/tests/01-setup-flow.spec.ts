@@ -12,7 +12,6 @@ test.describe('Setup Flow', () => {
 
     // Verify header shows correct user info
     await expect(page.locator('.user-moniker')).toHaveText('Testsupplier');
-    await expect(page.locator('.user-postcode')).toContainText('2000');
     await expect(page.locator('.role-badge')).toBeVisible();
 
     // Verify nav has supplier-specific button

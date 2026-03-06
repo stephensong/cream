@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use dioxus_router::Navigator;
 
 use cream_common::postcode::{
-    format_postcode, is_valid_postcode, lookup_all_localities, lookup_postcode, PostcodeInfo,
+    is_valid_postcode, lookup_all_localities, lookup_postcode, PostcodeInfo,
 };
 
 use super::directory_view::DirectoryView;
@@ -612,9 +612,6 @@ fn AppLayout() -> Element {
 
     let state = user_state.read();
     let moniker = state.moniker.clone().unwrap_or_default();
-    let postcode_raw = state.postcode.clone().unwrap_or_default();
-    let locality = state.locality.clone();
-    let postcode_display = format_postcode(&postcode_raw, locality.as_deref());
     let order_count = state.orders.len();
     let is_customer = state.connected_supplier.is_some();
     let is_supplier = state.is_supplier;
@@ -667,6 +664,7 @@ fn AppLayout() -> Element {
     } else {
         0
     };
+    let is_connected = shared_read.connected;
     drop(shared_read);
     let displayed_balance = balance + incoming_deposits;
 
@@ -684,8 +682,12 @@ fn AppLayout() -> Element {
                             to: Route::Profile {},
                             "{moniker}"
                         }
-                        span { class: "user-postcode", " - {postcode_display}" }
                         span { class: "role-badge", " [{role_label}]" }
+                        if is_connected {
+                            span { class: "connection-badge connected", "Connected" }
+                        } else {
+                            span { class: "connection-badge disconnected", "Disconnected" }
+                        }
                         button {
                             class: "iaq-btn",
                             onclick: move |_| { nav.push(Route::Faq {}); },
