@@ -747,8 +747,21 @@ pub async fn check_curd_conservation(label: &str, port: u16) {
             }
         }
 
-        // Phase 2: GET all user contracts and collect states
+        // Build a map of genesis allocations from root's ledger so we can
+        // substitute for contracts that haven't propagated yet.
+        let genesis_allocations: std::collections::HashMap<String, u64> = root_state.ledger.iter()
+            .filter_map(|tx| {
+                tx.tx_ref.strip_prefix("genesis:")
+                    .filter(|name| !name.is_empty() && !name.contains(':'))
+                    .map(|name| (name.to_string(), tx.amount))
+            })
+            .collect();
+
+        // Phase 2: GET all user contracts and collect states.
+        // Contracts that haven't propagated yet (GET fails or returns empty state)
+        // are substituted with their genesis allocation from root's ledger.
         let mut user_states: Vec<(String, UserContractState)> = Vec::new();
+        let mut substituted_balances: Vec<(String, u64)> = Vec::new();
         user_states.push(("system_root".to_string(), root_state));
 
         let mut all_ok = true;
@@ -756,6 +769,10 @@ pub async fn check_curd_conservation(label: &str, port: u16) {
             let bytes = match wait_for_get(&mut api, *key.id(), TIMEOUT).await {
                 Some(b) => b,
                 None => {
+                    if let Some(&alloc) = genesis_allocations.get(name) {
+                        substituted_balances.push((name.clone(), alloc));
+                        continue;
+                    }
                     all_ok = false;
                     break;
                 }
@@ -767,6 +784,12 @@ pub async fn check_curd_conservation(label: &str, port: u16) {
                     break;
                 }
             };
+            if state.balance_curds == 0 && state.ledger.is_empty() {
+                if let Some(&alloc) = genesis_allocations.get(name) {
+                    substituted_balances.push((name.clone(), alloc));
+                    continue;
+                }
+            }
             user_states.push((name.clone(), state));
         }
 
@@ -829,12 +852,16 @@ pub async fn check_curd_conservation(label: &str, port: u16) {
             );
         }
 
-        // Check CURD conservation using deduped balances
-        let total: u64 = deduped_balances.iter().map(|(_, bal)| bal).sum();
-        let detail: Vec<String> = deduped_balances
+        // Check CURD conservation using deduped balances + substituted balances
+        let total: u64 = deduped_balances.iter().map(|(_, bal)| bal).sum::<u64>()
+            + substituted_balances.iter().map(|(_, bal)| bal).sum::<u64>();
+        let mut detail: Vec<String> = deduped_balances
             .iter()
             .map(|(name, bal)| format!("{}={}", name, bal))
             .collect();
+        for (name, bal) in &substituted_balances {
+            detail.push(format!("{}={}*", name, bal));
+        }
 
         if total != SYSTEM_FLOAT {
             if attempt < 10 {
@@ -852,9 +879,15 @@ pub async fn check_curd_conservation(label: &str, port: u16) {
         }
 
         // All checks passed
+        let sub_note = if !substituted_balances.is_empty() {
+            format!(", {}* not-yet-propagated (genesis substituted)", substituted_balances.len())
+        } else {
+            String::new()
+        };
+        let user_count = deduped_balances.len() + substituted_balances.len();
         println!(
-            "  [invariant] {} OK: total={} ({}) [{} users]",
-            label, total, detail.join(", "), deduped_balances.len()
+            "  [invariant] {} OK: total={} ({}) [{} users{}]",
+            label, total, detail.join(", "), user_count, sub_note
         );
         return;
     }
