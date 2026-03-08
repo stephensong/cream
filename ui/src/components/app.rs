@@ -282,7 +282,7 @@ fn nav_buttons(nav: Navigator, order_count: usize, displayed_balance: u64, is_su
                 button {
                     class: nav_class(&current_route, &Route::MyMarket {}),
                     onclick: move |_| { nav.push(Route::MyMarket {}); },
-                    "My Market"
+                    "My Markets"
                 }
                 button {
                     class: nav_class(&current_route, &Route::Wallet {}),

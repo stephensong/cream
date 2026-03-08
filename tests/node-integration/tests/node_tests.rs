@@ -1319,7 +1319,7 @@ async fn cumulative_node_tests() {
         updated_entry.updated_at = chrono::Utc::now();
 
         let mut entries = BTreeMap::new();
-        entries.insert(h.gary.id.clone(), updated_entry);
+        entries.insert("Coffs Harbour Farmers Market".to_string(), updated_entry);
         let update = MarketDirectoryState { entries, extra: Default::default() };
         let update_bytes = serde_json::to_vec(&update).unwrap();
 

@@ -28,7 +28,7 @@ pub enum SupplierStatus {
 }
 
 /// A single market listing in the market directory.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MarketEntry {
     pub organizer: UserId,
     pub name: String,
@@ -120,10 +120,10 @@ struct SignableMarketEntry<'a> {
     updated_at: &'a DateTime<Utc>,
 }
 
-/// The full market directory state: one market per organizer (v1).
+/// The full market directory state: markets keyed by name.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MarketDirectoryState {
-    pub entries: BTreeMap<UserId, MarketEntry>,
+    pub entries: BTreeMap<String, MarketEntry>,
     /// Extension fields — preserves unknown fields across contract versions.
     #[serde(flatten, default)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -149,10 +149,10 @@ impl MarketDirectoryState {
     }
 }
 
-/// Summary of market directory state: organizer ID -> last updated timestamp.
+/// Summary of market directory state: market name -> last updated timestamp.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MarketDirectorySummary {
-    pub timestamps: BTreeMap<UserId, DateTime<Utc>>,
+    pub timestamps: BTreeMap<String, DateTime<Utc>>,
     /// Extension fields — preserves unknown fields across contract versions.
     #[serde(flatten, default)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -227,60 +227,54 @@ mod tests {
 
     #[test]
     fn test_merge_lww() {
-        let user_id = crate::identity::UserId(
-            ed25519_dalek::VerifyingKey::from_bytes(&[1u8; 32]).unwrap(),
-        );
+        let key = "Test Market".to_string();
         let t1 = Utc::now() - chrono::Duration::seconds(10);
         let t2 = Utc::now();
 
         let mut state = MarketDirectoryState::default();
-        state.entries.insert(user_id.clone(), dummy_market("Old", t1));
+        state.entries.insert(key.clone(), dummy_market("Old", t1));
 
         let mut other = MarketDirectoryState::default();
-        other.entries.insert(user_id.clone(), dummy_market("New", t2));
+        other.entries.insert(key.clone(), dummy_market("New", t2));
 
         state.merge(other);
-        assert_eq!(state.entries[&user_id].name, "New");
+        assert_eq!(state.entries[&key].name, "New");
     }
 
     #[test]
     fn test_merge_keeps_newer() {
-        let user_id = crate::identity::UserId(
-            ed25519_dalek::VerifyingKey::from_bytes(&[1u8; 32]).unwrap(),
-        );
+        let key = "Test Market".to_string();
         let t1 = Utc::now();
         let t2 = Utc::now() - chrono::Duration::seconds(10);
 
         let mut state = MarketDirectoryState::default();
-        state.entries.insert(user_id.clone(), dummy_market("Existing", t1));
+        state.entries.insert(key.clone(), dummy_market("Existing", t1));
 
         let mut other = MarketDirectoryState::default();
-        other.entries.insert(user_id.clone(), dummy_market("Older", t2));
+        other.entries.insert(key.clone(), dummy_market("Older", t2));
 
         state.merge(other);
-        assert_eq!(state.entries[&user_id].name, "Existing");
+        assert_eq!(state.entries[&key].name, "Existing");
     }
 
     #[test]
     fn test_summarize_and_delta() {
-        let user_id = crate::identity::UserId(
-            ed25519_dalek::VerifyingKey::from_bytes(&[1u8; 32]).unwrap(),
-        );
+        let key = "Test Market".to_string();
         let t1 = Utc::now() - chrono::Duration::seconds(10);
         let t2 = Utc::now();
 
         let mut state = MarketDirectoryState::default();
-        state.entries.insert(user_id.clone(), dummy_market("Market", t2));
+        state.entries.insert(key.clone(), dummy_market("Market", t2));
 
         // Summary with older timestamp → delta should include the entry
         let mut summary = MarketDirectorySummary::default();
-        summary.timestamps.insert(user_id.clone(), t1);
+        summary.timestamps.insert(key.clone(), t1);
 
         let delta = state.delta(&summary);
         assert_eq!(delta.entries.len(), 1);
 
         // Summary with same timestamp → delta should be empty
-        summary.timestamps.insert(user_id.clone(), t2);
+        summary.timestamps.insert(key.clone(), t2);
         let delta = state.delta(&summary);
         assert_eq!(delta.entries.len(), 0);
     }

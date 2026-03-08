@@ -119,8 +119,9 @@ pub enum NodeAction {
         locality: Option<String>,
         timezone: Option<String>,
     },
-    /// Invite a supplier to participate in the organizer's market.
+    /// Invite a supplier to participate in a market.
     InviteMarketSupplier {
+        market_name: String,
         supplier_name: String,
     },
     /// Supplier accepts a market invitation (sends MarketAccept inbox to organizer).
@@ -129,20 +130,28 @@ pub enum NodeAction {
     },
     /// Auto-confirm: flip Invited → Accepted for a supplier (organizer-side).
     ConfirmMarketAcceptance {
+        market_name: String,
         supplier_name: String,
     },
     /// Update market event dates.
     UpdateMarketEvents {
+        market_name: String,
         events: Vec<cream_common::market::MarketEvent>,
     },
     /// Update market details (name, description, venue, location, timezone).
     UpdateMarketDetails {
+        market_name: String,
         name: String,
         description: String,
         venue_address: String,
         postcode: String,
         locality: Option<String>,
         timezone: Option<String>,
+    },
+    /// Remove a supplier from a market (organizer-side).
+    RemoveMarketSupplier {
+        market_name: String,
+        supplier_name: String,
     },
     /// Supplier sets which of their products are available at a specific market.
     UpdateMarketProducts {
@@ -2547,8 +2556,9 @@ mod wasm_impl {
                     ..entry
                 };
 
+                let market_key = signed_entry.name.clone();
                 let mut entries = std::collections::BTreeMap::new();
-                entries.insert(organizer, signed_entry.clone());
+                entries.insert(market_key.clone(), signed_entry.clone());
                 let delta = cream_common::market::MarketDirectoryState { entries, extra: Default::default() };
                 let delta_bytes = serde_json::to_vec(&delta).unwrap();
 
@@ -2559,17 +2569,15 @@ mod wasm_impl {
                 if let Err(e) = api.send(update).await {
                     clog(&format!("[CREAM] ERROR: Failed to update market directory: {:?}", e));
                 } else {
-                    let organizer_clone = key_manager.user_id();
-                    shared.write().market_directory.entries.insert(organizer_clone, signed_entry);
+                    shared.write().market_directory.entries.insert(market_key, signed_entry);
                     clog("[CREAM] RegisterMarket: sent to network");
                 }
             }
 
-            NodeAction::InviteMarketSupplier { supplier_name } => {
-                clog(&format!("[CREAM] InviteMarketSupplier: '{}'", supplier_name));
-                let organizer = key_manager.user_id();
+            NodeAction::InviteMarketSupplier { market_name, supplier_name } => {
+                clog(&format!("[CREAM] InviteMarketSupplier: '{}' → '{}'", market_name, supplier_name));
 
-                let existing = shared.read().market_directory.entries.get(&organizer).cloned();
+                let existing = shared.read().market_directory.entries.get(&market_name).cloned();
                 if let Some(mut entry) = existing {
                     entry.suppliers.insert(
                         supplier_name.clone(),
@@ -2581,7 +2589,7 @@ mod wasm_impl {
                     entry.signature = ed25519_dalek::Signature::from_bytes(&key_manager.sign_raw(&msg));
 
                     let mut entries = std::collections::BTreeMap::new();
-                    entries.insert(organizer.clone(), entry.clone());
+                    entries.insert(market_name.clone(), entry.clone());
                     let delta = cream_common::market::MarketDirectoryState { entries, extra: Default::default() };
                     let delta_bytes = serde_json::to_vec(&delta).unwrap();
 
@@ -2592,7 +2600,7 @@ mod wasm_impl {
                     if let Err(e) = api.send(update).await {
                         clog(&format!("[CREAM] ERROR: Failed to invite market supplier: {:?}", e));
                     } else {
-                        shared.write().market_directory.entries.insert(organizer, entry);
+                        shared.write().market_directory.entries.insert(market_name, entry);
                         clog("[CREAM] InviteMarketSupplier: updated directory (UI sends inbox separately)");
                     }
                 } else {
@@ -2606,11 +2614,10 @@ mod wasm_impl {
                 clog(&format!("[CREAM] AcceptMarketInvite: '{}' (inbox sent by UI)", market_name));
             }
 
-            NodeAction::ConfirmMarketAcceptance { supplier_name } => {
-                clog(&format!("[CREAM] ConfirmMarketAcceptance: '{}'", supplier_name));
-                let organizer = key_manager.user_id();
+            NodeAction::ConfirmMarketAcceptance { market_name, supplier_name } => {
+                clog(&format!("[CREAM] ConfirmMarketAcceptance: '{}' in '{}'", supplier_name, market_name));
 
-                let existing = shared.read().market_directory.entries.get(&organizer).cloned();
+                let existing = shared.read().market_directory.entries.get(&market_name).cloned();
                 if let Some(mut entry) = existing {
                     if let Some(status) = entry.suppliers.get_mut(&supplier_name) {
                         if *status == cream_common::market::SupplierStatus::Invited {
@@ -2621,7 +2628,7 @@ mod wasm_impl {
                             entry.signature = ed25519_dalek::Signature::from_bytes(&key_manager.sign_raw(&msg));
 
                             let mut entries = std::collections::BTreeMap::new();
-                            entries.insert(organizer.clone(), entry.clone());
+                            entries.insert(market_name.clone(), entry.clone());
                             let delta = cream_common::market::MarketDirectoryState { entries, extra: Default::default() };
                             let delta_bytes = serde_json::to_vec(&delta).unwrap();
 
@@ -2632,7 +2639,7 @@ mod wasm_impl {
                             if let Err(e) = api.send(update).await {
                                 clog(&format!("[CREAM] ERROR: Failed to confirm acceptance: {:?}", e));
                             } else {
-                                shared.write().market_directory.entries.insert(organizer, entry);
+                                shared.write().market_directory.entries.insert(market_name, entry);
                                 clog("[CREAM] ConfirmMarketAcceptance: sent to network");
                             }
                         }
@@ -2640,11 +2647,10 @@ mod wasm_impl {
                 }
             }
 
-            NodeAction::UpdateMarketEvents { events } => {
-                clog(&format!("[CREAM] UpdateMarketEvents: {} events", events.len()));
-                let organizer = key_manager.user_id();
+            NodeAction::UpdateMarketEvents { market_name, events } => {
+                clog(&format!("[CREAM] UpdateMarketEvents: '{}' {} events", market_name, events.len()));
 
-                let existing = shared.read().market_directory.entries.get(&organizer).cloned();
+                let existing = shared.read().market_directory.entries.get(&market_name).cloned();
                 if let Some(mut entry) = existing {
                     entry.events = events;
                     entry.updated_at = chrono::Utc::now();
@@ -2653,7 +2659,7 @@ mod wasm_impl {
                     entry.signature = ed25519_dalek::Signature::from_bytes(&key_manager.sign_raw(&msg));
 
                     let mut entries = std::collections::BTreeMap::new();
-                    entries.insert(organizer.clone(), entry.clone());
+                    entries.insert(market_name.clone(), entry.clone());
                     let delta = cream_common::market::MarketDirectoryState { entries, extra: Default::default() };
                     let delta_bytes = serde_json::to_vec(&delta).unwrap();
 
@@ -2664,13 +2670,14 @@ mod wasm_impl {
                     if let Err(e) = api.send(update).await {
                         clog(&format!("[CREAM] ERROR: Failed to update market events: {:?}", e));
                     } else {
-                        shared.write().market_directory.entries.insert(organizer, entry);
+                        shared.write().market_directory.entries.insert(market_name, entry);
                         clog("[CREAM] UpdateMarketEvents: sent to network");
                     }
                 }
             }
 
             NodeAction::UpdateMarketDetails {
+                market_name,
                 name,
                 description,
                 venue_address,
@@ -2678,11 +2685,11 @@ mod wasm_impl {
                 locality,
                 timezone,
             } => {
-                clog(&format!("[CREAM] UpdateMarketDetails: '{}'", name));
-                let organizer = key_manager.user_id();
+                clog(&format!("[CREAM] UpdateMarketDetails: '{}' → '{}'", market_name, name));
 
-                let existing = shared.read().market_directory.entries.get(&organizer).cloned();
+                let existing = shared.read().market_directory.entries.get(&market_name).cloned();
                 if let Some(mut entry) = existing {
+                    let new_key = name.clone();
                     entry.name = name;
                     entry.description = description;
                     entry.venue_address = venue_address;
@@ -2697,7 +2704,14 @@ mod wasm_impl {
                     entry.signature = ed25519_dalek::Signature::from_bytes(&key_manager.sign_raw(&msg));
 
                     let mut entries = std::collections::BTreeMap::new();
-                    entries.insert(organizer.clone(), entry.clone());
+                    entries.insert(new_key.clone(), entry.clone());
+                    // If name changed, remove old key
+                    if market_name != new_key {
+                        // Send an empty/tombstone for old name by not including it
+                        // The merge is LWW per key, so the old key remains on other nodes.
+                        // For now, just update local state; old key will age out or we accept duplicates.
+                        shared.write().market_directory.entries.remove(&market_name);
+                    }
                     let delta = cream_common::market::MarketDirectoryState { entries, extra: Default::default() };
                     let delta_bytes = serde_json::to_vec(&delta).unwrap();
 
@@ -2708,8 +2722,41 @@ mod wasm_impl {
                     if let Err(e) = api.send(update).await {
                         clog(&format!("[CREAM] ERROR: Failed to update market details: {:?}", e));
                     } else {
-                        shared.write().market_directory.entries.insert(organizer, entry);
+                        shared.write().market_directory.entries.insert(new_key, entry);
                         clog("[CREAM] UpdateMarketDetails: sent to network");
+                    }
+                }
+            }
+
+            NodeAction::RemoveMarketSupplier { market_name, supplier_name } => {
+                clog(&format!("[CREAM] RemoveMarketSupplier: '{}' from '{}'", supplier_name, market_name));
+
+                let existing = shared.read().market_directory.entries.get(&market_name).cloned();
+                if let Some(mut entry) = existing {
+                    if entry.organizer == key_manager.user_id() {
+                        entry.suppliers.remove(&supplier_name);
+                        entry.updated_at = chrono::Utc::now();
+
+                        let msg = entry.signable_bytes();
+                        entry.signature = ed25519_dalek::Signature::from_bytes(&key_manager.sign_raw(&msg));
+
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert(market_name.clone(), entry.clone());
+                        let delta = cream_common::market::MarketDirectoryState { entries, extra: Default::default() };
+                        let delta_bytes = serde_json::to_vec(&delta).unwrap();
+
+                        let update = ClientRequest::ContractOp(ContractRequest::Update {
+                            key: *market_directory_key,
+                            data: UpdateData::Delta(StateDelta::from(delta_bytes)),
+                        });
+                        if let Err(e) = api.send(update).await {
+                            clog(&format!("[CREAM] ERROR: Failed to remove market supplier: {:?}", e));
+                        } else {
+                            shared.write().market_directory.entries.insert(market_name, entry);
+                            clog("[CREAM] RemoveMarketSupplier: sent to network");
+                        }
+                    } else {
+                        clog("[CREAM] RemoveMarketSupplier: not the organizer");
                     }
                 }
             }

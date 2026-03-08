@@ -620,7 +620,7 @@ impl TestHarness {
             ]),
         );
         let mut mkt_entries = BTreeMap::new();
-        mkt_entries.insert(gary.id.clone(), market_entry);
+        mkt_entries.insert("Coffs Harbour Farmers Market".to_string(), market_entry);
         let mkt_delta = cream_common::market::MarketDirectoryState { entries: mkt_entries, extra: Default::default() };
         let mkt_delta_bytes = serde_json::to_vec(&mkt_delta).unwrap();
 
