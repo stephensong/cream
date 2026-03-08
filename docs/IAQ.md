@@ -725,6 +725,78 @@ The user doesn't need to trust the supplier — the guardian federation held the
 
 ---
 
+## What is CREAM‑lite and how does the Fedimint escrow module work?
+
+CREAM has two deployment tiers:
+
+- **CREAM‑full**: Custom FROST guardian federation, CURD e‑cash, Lightning gateway — fully self‑contained. This is the primary architecture described throughout this document.
+- **CREAM‑lite**: Freenet marketplace contracts + a custom **Fedimint escrow module**. No CREAM‑specific guardian infrastructure — the community rides an existing Fedimint federation for custody, e‑cash, and Lightning.
+
+### Why CREAM‑lite?
+
+Fedimint federations are already deployed in the wild. Communities running them have threshold custody, e‑cash issuance, and Lightning settlement out of the box. What they *don't* have is a decentralised marketplace. CREAM‑lite fills that gap: Freenet provides the censorship‑resistant product listings, orders, and coordination; Fedimint provides the money layer.
+
+This also lowers the barrier to entry. Standing up a 3‑guardian FROST federation with DKG, share resharing, and Lightning is non‑trivial. CREAM‑lite lets a community start with "just add Freenet nodes" on top of infrastructure they already operate.
+
+### The Fedimint escrow module
+
+Fedimint supports custom modules compiled into the `fedimintd` binary. The escrow module adds three operations that map directly to CREAM's order lifecycle:
+
+| Operation | Fedimint concept | What happens |
+|-----------|-----------------|--------------|
+| **Reserve** | `EscrowInput` (process_input) | Customer's e‑cash is consumed; federation creates an `EscrowRecord` with status `Reserved`, holding the funds |
+| **Fulfil** | `EscrowOutput` (process_output) | Order completed — federation releases escrowed amount as new e‑cash to the supplier |
+| **Cancel** | `EscrowOutput` (process_output) | Order cancelled — federation refunds escrowed amount as new e‑cash to the customer |
+
+The module lives in three crates following Fedimint's standard pattern:
+
+```
+fedimint-escrow-common/   — shared types (EscrowInput, EscrowOutput, EscrowStatus, errors)
+fedimint-escrow-server/   — server module (process_input, process_output, audit)
+fedimint-escrow-client/   — client module (reserve, fulfil, cancel, list_escrows)
+```
+
+### Key design decisions
+
+- **Zero fees**: The escrow module charges no additional fees. The federation's existing fee structure applies to the underlying transactions.
+- **Audit**: Reserved escrows are negative liabilities (the federation owes these funds). Fulfilled and cancelled escrows are zero (settled). This integrates with Fedimint's built‑in audit system.
+- **No consensus items**: Escrow operations are single‑step — they don't require multi‑round consensus beyond what Fedimint's HBBFT already provides for transaction processing.
+- **Keyed by order ID**: Each escrow record is identified by a string order ID that the CREAM marketplace assigns. The escrow module doesn't need to understand order semantics — it just holds and releases funds.
+
+### How CREAM‑lite talks to Fedimint
+
+The CREAM UI (Dioxus/WASM) calls the Fedimint client library to:
+
+1. Create an `EscrowInput` transaction when a customer places an order (locks funds).
+2. Create an `EscrowOutput` transaction when the supplier marks the order fulfilled (pays supplier) or the order is cancelled (refunds customer).
+
+The marketplace contracts on Freenet track order state (products, status progression, supplier/customer identity). The Fedimint federation tracks the money (who has how much e‑cash, what's locked in escrow). Neither system needs to trust the other — they share the order ID as a join key, and the UI orchestrates the two‑sided state transitions.
+
+### StartOS deployment
+
+A community running Fedimint on StartOS would install a modified `fedimintd` package that includes the escrow module. Stock Fedimint packages from Start9 won't have the escrow module — it requires either:
+
+1. **Upstream acceptance**: PR the escrow module to the Fedimint project. If accepted, all Fedimint deployments get escrow support.
+2. **Custom package**: Build and distribute a `fedimintd` with the escrow module compiled in, packaged as a custom `.s9pk`.
+
+Option 1 is the preferred path. The escrow module is general‑purpose (not CREAM‑specific) and could benefit any Fedimint‑based marketplace.
+
+### Comparison: CREAM‑full vs CREAM‑lite
+
+| Aspect | CREAM‑full | CREAM‑lite |
+|--------|-----------|------------|
+| **E‑cash** | CURDs (FROST threshold, custom) | Fedimint e‑cash (HBBFT, established) |
+| **Custody** | 3+ CREAM guardians | Existing Fedimint federation |
+| **Escrow** | Root user contract + FROST signing | Fedimint escrow module |
+| **Lightning** | Guardian‑hosted LND | Fedimint's built‑in Lightning gateway |
+| **Setup complexity** | Higher (DKG, guardian nodes, Lightning) | Lower (Freenet nodes + existing Fedimint) |
+| **Independence** | Fully self‑contained | Depends on external Fedimint federation |
+| **Marketplace** | Freenet contracts | Freenet contracts (identical) |
+
+The marketplace layer (Freenet contracts, UI, product listings, order management) is identical in both tiers. Only the money layer differs.
+
+---
+
 ## How do guardian nodes run in production? (StartOS)
 
 CREAM guardian nodes are packaged as a service for **StartOS** (from [Start9 Labs](https://start9.com)) — a self-hosting Linux OS where each service runs in an isolated Docker container. StartOS provides a web UI for service management (no CLI needed), automatic Tor hidden services for every installed service, a dependency system that auto-wires services together, health checks, backups, and updates. StartOS itself is written primarily in Rust.

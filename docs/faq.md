@@ -262,7 +262,29 @@ Guardians use a threshold‑signing protocol called FROST (Flexible Round‑Opti
 
 In the future, CREAM may optionally support Fedimint e‑cash wallets for communities that prefer that model, but this is not required. CREAM's native FROST‑based guardian federation provides all the same guarantees — threshold custody, escrow, and Lightning settlement — without the additional dependency.
 
+---
 
+## What is CREAM‑lite?
+
+CREAM‑lite is a lighter way to run CREAM for communities that already use **Fedimint**.
+
+With the full version of CREAM, your community runs its own guardian federation (FROST threshold signing, CURD e‑cash, Lightning gateway — the works). That gives you maximum independence, but it also means setting up and maintaining those guardians yourself.
+
+CREAM‑lite takes a different approach: instead of running its own e‑cash layer, it plugs into an **existing Fedimint federation** that your community already trusts. CREAM provides the marketplace — product listings, orders, pickup coordination, all running on Freenet — while Fedimint handles the money side (e‑cash issuance, custody, and Lightning).
+
+For escrow (holding deposits until an order is fulfilled or cancelled), CREAM‑lite uses a custom **Fedimint escrow module** that locks and releases funds within the federation. The marketplace tells the federation "hold these funds for this order," and later "release them to the supplier" or "refund the customer." The federation's existing threshold consensus ensures no single party can steal the deposit.
+
+### Who is CREAM‑lite for?
+
+- Communities that already run a Fedimint federation and want to add a marketplace.
+- Groups that want CREAM's privacy and decentralisation but don't want to stand up their own guardian infrastructure from scratch.
+- Early adopters who want to try CREAM with minimal setup — just Freenet nodes and an existing Fedimint.
+
+### Do I have to choose one or the other?
+
+No. A community could start with CREAM‑lite (riding an existing Fedimint) and later migrate to the full CREAM guardian setup if they want more independence. Or they could stay on CREAM‑lite permanently — it depends on what suits the community.
+
+---
 
 ## What CREAM is *not*
 
