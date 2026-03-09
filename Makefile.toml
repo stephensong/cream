@@ -158,8 +158,11 @@ script = [
     set -euo pipefail
     pkill -f "dx serve" 2>/dev/null || true
     pkill -f "cream-guardian" 2>/dev/null || true
+    pkill -f "cream-node" 2>/dev/null || true
     kill $(cat /tmp/cream-dx-serve.pid 2>/dev/null) 2>/dev/null || true
     rm -f /tmp/cream-dx-serve.pid
+    kill $(cat /tmp/cream-node.pid 2>/dev/null) 2>/dev/null || true
+    rm -f /tmp/cream-node.pid
     kill $(cat /tmp/cream-relay.pid 2>/dev/null) 2>/dev/null || true
     rm -f /tmp/cream-relay.pid
     # Kill stale cargo-make fixture processes but not the current one ($$=shell, PPID chain)
@@ -1100,6 +1103,185 @@ script = [
 
     kill ${PIDS} ${REDEAL_PID} 2>/dev/null || true
     echo "=== test-redeal PASSED ==="
+    ''',
+]
+
+# ─── cream-node (Postgres backend) ───────────────────────────────────────────
+
+[tasks.build-cream-node]
+description = "Build cream-node binary"
+command = "cargo"
+args = ["build", "-p", "cream-node"]
+
+[tasks.reset-cream-db]
+description = "Drop and recreate the cream_dev Postgres database"
+script = [
+    '''
+    set -euo pipefail
+    dropdb --if-exists cream_dev 2>/dev/null || true
+    createdb cream_dev
+    echo "Database cream_dev created"
+    ''',
+]
+
+[tasks.start-cream-node]
+description = "Start cream-node on ports 3001-3004 (all sharing same Postgres)"
+dependencies = ["build-cream-node", "reset-cream-db"]
+script = [
+    '''
+    set -euo pipefail
+    pkill -f "cream-node" 2>/dev/null || true
+    sleep 1
+
+    LOG="/tmp/cream-node.log"
+    : > "${LOG}"
+
+    nohup ./target/debug/cream-node \
+        --port 3001,3002,3003,3004 \
+        --database-url "host=/var/run/postgresql dbname=cream_dev" \
+        >> "${LOG}" 2>&1 &
+    echo $! > /tmp/cream-node.pid
+
+    # Wait for all ports to be listening
+    for port in 3001 3002 3003 3004; do
+        for i in $(seq 1 15); do
+            if ss -tlnp 2>/dev/null | grep -q ":${port} "; then
+                break
+            fi
+            if [ "${i}" -eq 15 ]; then
+                echo "ERROR: cream-node not listening on port ${port}"
+                tail -10 "${LOG}"
+                exit 1
+            fi
+            sleep 1
+        done
+    done
+    echo "cream-node ready on ports 3001,3002,3003,3004"
+    ''',
+]
+
+[tasks.stop-cream-node]
+description = "Stop cream-node"
+script = [
+    '''
+    if [ -f /tmp/cream-node.pid ]; then
+        kill $(cat /tmp/cream-node.pid) 2>/dev/null || true
+        rm -f /tmp/cream-node.pid
+    fi
+    pkill -f "cream-node" 2>/dev/null || true
+    echo "cream-node stopped"
+    ''',
+]
+
+[tasks.test-node-pg]
+description = "Build contracts, start cream-node, run integration tests against Postgres backend"
+dependencies = ["build-contracts-dev", "start-cream-node"]
+command = "cargo"
+args = ["test", "-p", "cream-node-integration", "--features", "node-tests", "--test", "node_tests", "--", "--nocapture"]
+
+[tasks.start-guardians-pg]
+description = "Start 3 FROST guardian daemons for cream-node (no Freenet node connection)"
+dependencies = ["build-guardian"]
+script = [
+    '''
+    set -euo pipefail
+    PIDS_DIR="${HOME}/.cache/freenet/pids"
+    LOGS_DIR="${HOME}/.cache/freenet/logs"
+    KEYS_BASE="${HOME}/.cache/freenet"
+    mkdir -p "${PIDS_DIR}" "${LOGS_DIR}"
+
+    GUARDIAN_BIN="./target/debug/cream-guardian"
+
+    # Clear previous DKG keys so a fresh ceremony runs
+    rm -rf "${KEYS_BASE}/guardian-1" "${KEYS_BASE}/guardian-2" "${KEYS_BASE}/guardian-3"
+
+    # Compute the "root" user's pubkey for admin pre-seeding
+    ROOT_ADMIN_PUBKEY=$(cargo run -p cream-node-integration --features node-tests --bin pubkey -- root 2>/dev/null)
+    echo "Root admin pubkey: ${ROOT_ADMIN_PUBKEY}"
+
+    PEERS_1="http://localhost:3011,http://localhost:3012"
+    PEERS_2="http://localhost:3010,http://localhost:3012"
+    PEERS_3="http://localhost:3010,http://localhost:3011"
+
+    for i in 1 2 3; do
+        PORT=$((3009 + i))
+        eval "PEERS=\$PEERS_${i}"
+        echo "Starting guardian ${i} on port ${PORT} (no Freenet node)..."
+        : > "${LOGS_DIR}/guardian-${i}.log"
+        nohup "${GUARDIAN_BIN}" --share-index "${i}" --port "${PORT}" --peers "${PEERS}" \
+            --admin-pubkeys "${ROOT_ADMIN_PUBKEY}" \
+            >> "${LOGS_DIR}/guardian-${i}.log" 2>&1 &
+        echo $! > "${PIDS_DIR}/guardian-${i}.pid"
+    done
+
+    # Wait for all 3 to be ready (DKG only — no node_connected check)
+    for i in 1 2 3; do
+        PORT=$((3009 + i))
+        for attempt in $(seq 1 60); do
+            HEALTH=$(curl -s "http://localhost:${PORT}/health" 2>/dev/null || echo "")
+            if echo "${HEALTH}" | grep -q '"ready":true'; then
+                echo "Guardian ${i} ready on port ${PORT}"
+                break
+            fi
+            if [ "${attempt}" -eq 60 ]; then
+                echo "ERROR: Guardian ${i} failed to become ready on port ${PORT}"
+                echo "Last health: ${HEALTH}"
+                cat "${LOGS_DIR}/guardian-${i}.log" 2>/dev/null | tail -20
+                exit 1
+            fi
+            sleep 1
+        done
+    done
+
+    curl -s "http://localhost:3010/public-key" > "${KEYS_BASE}/guardian-public-key.json"
+    echo "All 3 guardians ready (DKG complete, public key saved)"
+    '''
+]
+
+[tasks.fixture-bg-pg]
+description = "Full fixture with cream-node (Postgres) instead of Freenet: contracts + cream-node + guardians + rendezvous + relay + UI"
+dependencies = ["kill-stale", "test-node-pg", "start-guardians-pg", "restart-rendezvous", "start-relay", "tailwind-install", "tailwind-build"]
+script = [
+    '''
+    set -euo pipefail
+    LOG="/tmp/cream-dx-serve.log"
+    : > "${LOG}"
+
+    export CREAM_RENDEZVOUS_URL="http://localhost:8787"
+    export CREAM_GUARDIAN_URLS="http://localhost:3010,http://localhost:3011,http://localhost:3012"
+    export CREAM_RELAY_URL="ws://localhost:3020"
+
+    cd ui
+    nohup dx serve >> "${LOG}" 2>&1 &
+    DX_PID=$!
+    echo "${DX_PID}" > /tmp/cream-dx-serve.pid
+    echo "dx serve started (pid=${DX_PID}), waiting for port 8080..."
+
+    for i in $(seq 1 300); do
+        if ! kill -0 "${DX_PID}" 2>/dev/null; then
+            echo "ERROR: dx serve exited unexpectedly. Log:"
+            tail -30 "${LOG}"
+            exit 1
+        fi
+        BODY=$(curl -s "http://localhost:8080" 2>/dev/null || true)
+        if echo "${BODY}" | grep -q "cream-ui.js"; then
+            echo "dx serve ready on http://localhost:8080 (took ~${i}s)"
+            echo "Log: ${LOG}"
+            echo "PID: ${DX_PID} (kill with: kill $(cat /tmp/cream-dx-serve.pid))"
+            exit 0
+        elif echo "${BODY}" | grep -q "The build failed"; then
+            echo "ERROR: dx serve WASM build failed. Log:"
+            tail -30 "${LOG}"
+            kill "${DX_PID}" 2>/dev/null || true
+            exit 1
+        fi
+        sleep 1
+    done
+
+    echo "ERROR: dx serve did not become ready within 300s. Log tail:"
+    tail -30 "${LOG}"
+    kill "${DX_PID}" 2>/dev/null || true
+    exit 1
     ''',
 ]
 

@@ -11,6 +11,7 @@ members = [
     "guardian",
     "tests/node-integration",
     "tests/fedimint-integration",
+    "tools/cream-node",
 ]
 exclude = ["ui"]
 

@@ -797,6 +797,418 @@ The marketplace layer (Freenet contracts, UI, product listings, order management
 
 ---
 
+## How does cream‑node work? (Postgres backend)
+
+cream‑node (`tools/cream-node/`) is a lightweight axum WebSocket server that implements the Freenet node protocol over Postgres instead of a distributed hash table. It exists for fast deterministic testing and for CREAM‑lite single‑supplier production deployments.
+
+### Wire protocol compatibility
+
+cream‑node listens on the same URL path (`/v1/contract/command?encodingProtocol=native`) and speaks the same bincode‑over‑WebSocket protocol as a Freenet node. Clients send `bincode::serialize(&ClientRequest)` and receive `bincode::serialize(&Ok::<HostResponse, ClientError>(response))`. The UI, test harness, and invariant checker all connect identically — no code changes needed.
+
+### Contract execution
+
+Instead of loading WASM blobs into a sandbox, cream‑node calls the native Rust merge/validate methods from `cream-common` directly:
+
+| Contract | Validation | Merge |
+|----------|-----------|-------|
+| Directory | `validate_all_signatures()` | LWW by `updated_at` |
+| Storefront | `validate(owner)` — products signed, orders signed + deposit | LWW products, monotonic orders |
+| User Contract | `validate_update()` — conditional (credits‑only bypass) | Append‑only ledger union, LWW metadata |
+| Inbox | `validate_update()` — append‑only, no signature | Union by message ID |
+| Market Directory | `validate_all_signatures()` | LWW by `updated_at` |
+
+Contract type is classified at PUT time by attempting to deserialize the parameters as `StorefrontParameters`, `UserContractParameters`, or `InboxParameters`. Empty params default to Directory (with a heuristic to distinguish Market Directory by the presence of `venue_address` in state entries).
+
+### Postgres schema
+
+Two tables:
+
+- **`contracts`** — current state of each contract: instance ID, type, parameters, raw state bytes, JSONB state, WASM code (for key derivation), code hash.
+- **`audit_log`** — append‑only log of every PUT and UPDATE, with old state, new state, and update data as JSONB. Protected by Postgres RULES that block UPDATE and DELETE.
+
+Both are written atomically within a single transaction on every state mutation.
+
+### Subscription delivery
+
+Subscriptions use in‑process `tokio::broadcast` channels per contract key. When an UPDATE succeeds, cream‑node serializes an `UpdateNotification` and broadcasts it to all subscribers immediately (sub‑millisecond latency, vs Freenet's 1–5 second propagation delay).
+
+### Differences from Freenet
+
+| Aspect | Freenet | cream‑node |
+|--------|---------|------------|
+| Storage | Distributed hash table | Postgres |
+| Contract execution | WASM sandbox | Native Rust |
+| Subscription delivery | Network propagation (1–5s) | In‑process broadcast (< 1ms) |
+| Dev cluster | 7 nodes | Single process |
+| Audit trail | None | Immutable append‑only |
+| Time travel | Not possible | Reconstruct any past state |
+| Key derivation | hash(WASM + params) | Identical |
+| Wire protocol | bincode over WebSocket | Identical |
+
+---
+
+## Time travel — temporal audit trail
+
+Adapted from the IronClaw sibling project's temporal database pattern.
+
+### Core principle
+
+The `audit_log` table is **append‑only**: rows are only ever INSERTed, never UPDATEd or DELETEd. Postgres RULES enforce this at the database level — even a superuser running `UPDATE audit_log` will silently do nothing.
+
+### What is recorded
+
+Every contract state mutation records:
+
+| Field | Description |
+|-------|-------------|
+| `entity_type` | Contract type: directory, storefront, user_contract, inbox, market_directory |
+| `entity_id` | Contract instance ID (base58) |
+| `action` | `put` (initial creation) or `update` (merge) |
+| `old_state` | JSONB snapshot before the change (NULL for puts) |
+| `new_state` | JSONB snapshot after the change |
+| `update_data` | The raw update payload (JSONB, NULL for puts) |
+| `ts` | Transaction timestamp (when recorded) |
+
+### Transaction time only
+
+cream‑node records **transaction time** (when the database saw the change), not **valid time** (when the change was "true" in the real world). This is simpler and sufficient for debugging and dispute resolution. Bi‑temporal support (tracking both) is a potential future enhancement.
+
+### Point‑in‑time reconstruction
+
+To reconstruct any contract's state at a past point in time:
+
+1. Query `audit_log` for all entries matching the contract's `entity_id`, ordered by `ts ASC`, up to the desired timestamp.
+2. The `new_state` of the last entry is the contract's state at that point.
+
+This is a simple query — no event sourcing replay needed, because we store full snapshots (not just deltas).
+
+### Phased approach
+
+- **Phase 1** (current): Audit log with full state snapshots on every mutation.
+- **Phase 2** (planned): `/admin/audit` HTTP endpoint for querying history and point‑in‑time reconstruction.
+- **Phase 3** (future): Native Postgres temporal tables (`PERIOD FOR` / `SYSTEM_TIME`) for richer temporal queries, when Postgres adds full SQL:2011 temporal support.
+
+---
+
+## Hybrid architecture: Postgres for ledgers, Freenet for public data? (Future idea)
+
+A production deployment could split contract storage across two backends, using each where it is strongest.
+
+### The problem with all‑Freenet
+
+Multi‑step operations on Freenet are not atomic. Placing an order requires three separate UPDATEs — storefront (add order), customer user contract (escrow debit), root user contract (escrow credit). Any of those UPDATEs can timeout, fail to propagate, or arrive out of order. This is the root cause of the CURD conservation invariant violations we've seen in testing: a debit is recorded but the corresponding credit is lost, and 50 CURD vanishes.
+
+Freenet has no concept of a transaction spanning multiple contracts.
+
+### The problem with all‑Postgres
+
+cream‑node solves the atomicity problem — wrap all three UPDATEs in a single Postgres transaction, roll back on any failure. But a single Postgres instance is a single point of failure, a single point of censorship, and a single point of data custody. Every user's balance and ledger sits on one server.
+
+### The hybrid split
+
+| Contract type | Backend | Rationale |
+|---|---|---|
+| **User contracts** (balances, ledgers) | **Postgres** | ACID transactions prevent lost updates. Audit trail for dispute resolution. Instant balance queries. Multi‑contract operations (escrow debit + credit) can be atomic. |
+| **Directory** (supplier listings) | **Freenet** | Public, read‑heavy, low write contention. LWW merge handles concurrent updates naturally. Censorship‑resistant distribution. |
+| **Storefronts** (products, orders) | **Freenet** | Supplier's public face — censorship resistance matters. Each storefront is mostly single‑writer (the supplier). Orders flow through the ledger for settlement. |
+| **Inbox** (messages) | **Freenet** | Privacy benefits from distributed storage. Messages are append‑only, naturally convergent. |
+| **Market directory** | **Freenet** | Public registry, same rationale as directory. |
+
+The key insight: **user contracts are bank ledgers** — you want ACID guarantees. **Storefronts and directories are bulletin boards** — you want censorship resistance and availability.
+
+### How it would work
+
+1. The UI connects to both a Freenet node (for directory/storefront/inbox) and a cream‑node (for user contracts).
+2. Placing an order:
+   - UPDATE storefront on Freenet (add order entry) — can be retried idempotently.
+   - UPDATE customer + root user contracts on cream‑node in a single Postgres transaction (escrow debit + credit) — atomic, all‑or‑nothing.
+3. If the Freenet UPDATE fails, the Postgres transaction hasn't happened, so no CURD is moved. Retry safely.
+4. If the Postgres transaction fails, the order entry on the storefront is harmless (no funds moved). The order can be retried or will expire.
+
+### Transaction isolation for multi‑step operations
+
+Even without the full hybrid split, cream‑node already enables transactional grouping of related contract updates. The `get_and_update_contract` method uses `SELECT FOR UPDATE` to prevent lost updates on a single contract. Extending this to multi‑contract transactions is straightforward:
+
+```
+BEGIN;
+  SELECT ... FROM contracts WHERE instance_id = $customer_id FOR UPDATE;
+  SELECT ... FROM contracts WHERE instance_id = $root_id FOR UPDATE;
+  -- merge escrow debit into customer state
+  -- merge escrow credit into root state
+  UPDATE contracts SET state_bytes = ... WHERE instance_id = $customer_id;
+  UPDATE contracts SET state_bytes = ... WHERE instance_id = $root_id;
+  INSERT INTO audit_log ...;
+  INSERT INTO audit_log ...;
+COMMIT;
+```
+
+If either merge fails validation, the entire transaction rolls back. No partial state. No lost CURD.
+
+### Why user contracts on Freenet is the wrong split
+
+It might seem natural to put the privacy‑critical data (user contracts / balances) on Freenet for distributed storage. But user contracts are where the *most* write contention lives — escrow debits/credits from multiple orders, CURD allocations, toll payments, checkpoint updates. Putting the most contention‑prone data on the least reliable backend (no transactions, eventual consistency, propagation timeouts) maximises corruption risk.
+
+Privacy for user contracts is better achieved through encryption at rest and threshold access control (FROST guardians), not through distributing unencrypted state across a DHT.
+
+### Deployment scenarios
+
+- **CREAM‑lite (single supplier)**: All contracts on cream‑node. Simplest. One process, one database, full ACID.
+- **Community deployment**: User contracts on cream‑node (run by guardians), public contracts on Freenet. Best of both.
+- **Full decentralisation**: All contracts on Freenet. Maximum censorship resistance, but accept the atomicity trade‑offs.
+
+The hybrid model is not an all‑or‑nothing choice — communities can start with cream‑node for everything and selectively migrate public contracts to Freenet as the network matures.
+
+---
+
+## Cross‑backend atomicity: read‑after‑write, sagas, and why you need both
+
+The hybrid architecture (Postgres for ledgers, Freenet for public contracts) introduces a fundamental distributed systems problem: how do you make a multi‑step operation atomic when the steps span two different backends with different consistency guarantees?
+
+### The order placement problem
+
+Placing an order requires three writes that must all succeed or all be reversed:
+
+1. **Storefront** (Freenet): add the order entry
+2. **Customer user contract** (Postgres): escrow debit — lock the deposit
+3. **Root user contract** (Postgres): escrow credit — receive the locked funds
+
+If step 1 succeeds but step 2 fails, there's an order on the storefront with no funds backing it. If steps 1–2 succeed but step 3 fails, 50 CURD has been debited from the customer but never credited to escrow — the CURD conservation invariant is violated and 50 CURD vanishes.
+
+This is the exact failure mode we've observed in testing with Freenet: UPDATE timeouts mid‑sequence leave the system in a half‑written state.
+
+### Read‑after‑write: the confirmation gate
+
+**Read‑after‑write** answers a narrow question: *did this single write actually land?*
+
+After sending an UPDATE to Freenet, you GET the contract and verify your write is reflected in the returned state. If it isn't, you wait and retry. The retry‑with‑backoff logic in the current codebase is a rough form of this — keep GETting until the state matches expectations.
+
+Read‑after‑write is necessary because Freenet's UPDATE response only confirms the local node accepted the write, not that it has propagated or will be visible on a subsequent GET (the "stale GET after UpdateResponse" issue, freenet‑core#3357).
+
+Without read‑after‑write, you cannot reliably sequence dependent operations. You might proceed to step 2 believing step 1 succeeded, when it actually didn't.
+
+### Saga pattern: the compensation plan
+
+**A saga** answers a broader question: *what do I do when step N fails after steps 1 through N−1 already succeeded?*
+
+Each step in a saga has a corresponding **compensating action** — a reverse operation that undoes its effect. When a step fails, the saga walks backwards through the completed steps, executing their compensations.
+
+For the order flow with the hybrid architecture:
+
+```
+Step 1: UPDATE storefront (Freenet) — add order as PendingEscrow
+  ↓ read‑after‑write confirms order visible
+Step 2: BEGIN Postgres transaction
+          UPDATE customer contract — escrow debit
+          UPDATE root contract     — escrow credit
+        COMMIT
+  ↓ transaction committed
+Step 3: UPDATE storefront (Freenet) — transition PendingEscrow → Reserved
+  ↓ read‑after‑write confirms Reserved status
+Done.
+```
+
+Compensation table:
+
+| Failure point | What happened | Compensation |
+|---|---|---|
+| Step 1 fails | Nothing written | None needed — retry or abort |
+| Step 2 fails | Order is PendingEscrow on storefront, no funds moved | UPDATE storefront to cancel the PendingEscrow order |
+| Step 3 fails | Funds locked in Postgres, order stuck at PendingEscrow | Retry step 3 (idempotent); or after timeout, reverse the Postgres transaction and cancel the order |
+
+### Why you need both, not either‑or
+
+Read‑after‑write and sagas are complementary — they solve different layers of the same problem.
+
+- **Read‑after‑write without saga**: You can confirm each step landed, but when one fails permanently you have no plan. The system is stuck in an inconsistent state with no automated recovery.
+- **Saga without read‑after‑write**: You have compensation logic, but you can't reliably tell *when* to trigger it. Is the Freenet write still propagating (wait longer) or did it genuinely fail (compensate now)? Without confirmation gates, you'll either compensate too early (undoing a write that would have succeeded) or too late (leaving the system inconsistent while you wait).
+
+The retry‑with‑backoff logic we have today is the read‑after‑write half. What's missing is the saga half — the compensation logic that kicks in when a step fails after previous steps succeeded. Currently, when step 2 times out, we just… lose 50 CURD.
+
+### Why the hybrid architecture simplifies this dramatically
+
+In the all‑Freenet world, every step requires read‑after‑write confirmation and every step needs its own compensation. That's six read‑after‑write cycles and three compensation paths, all against an unreliable backend.
+
+The hybrid split collapses the hard part. Steps 2 and 3 (escrow debit + credit) become a single Postgres transaction — no read‑after‑write needed (ACID guarantees it), no compensation needed (it either commits or rolls back atomically). The saga reduces to:
+
+1. Write PendingEscrow to Freenet (read‑after‑write to confirm)
+2. Atomic Postgres transaction for funds
+3. Write Reserved to Freenet (read‑after‑write to confirm)
+
+Only the Freenet steps need the distributed systems machinery. And those steps are *idempotent* storefront updates where compensation is trivial (cancel the order).
+
+### Background reconciler
+
+Even with read‑after‑write and compensation logic, edge cases remain: the process crashes between step 2 and step 3, or a compensation itself fails. A background reconciler provides the safety net:
+
+- Periodically scan for `PendingEscrow` orders older than a threshold (e.g. 60 seconds).
+- Check Postgres: do matching escrow entries exist?
+  - **Yes**: the saga stalled between steps 2 and 3 — retry the Reserved transition.
+  - **No**: step 2 failed or was never attempted — cancel the order on the storefront.
+- The reconciler is idempotent and convergent. Run it as often as you like.
+
+This is the standard pattern in event‑driven architectures: optimistic fast path (saga) plus pessimistic slow path (reconciler). The saga handles 99% of cases instantly. The reconciler catches the 1% that fall through the cracks.
+
+---
+
+## Could multiple cream‑node instances sync via gossip? (Future idea)
+
+Yes. The CRDT properties of CREAM's contract types make multi‑node Postgres replication viable with high confidence. This would be a "Freenet‑lite" — decentralized replication without the full Freenet DHT.
+
+This design is a shared concern with the sibling project **FreeClawdia** (IronClaw), which faces the same problem: multiple autonomous Postgres instances (Gary, Emma, Iris) that need to sync without a central coordinator. Both projects use append‑only audit logs, temporal reconstruction, and LWW merge semantics. The gossip protocol design should work for both — the contract‑level merge layer is CREAM‑specific, but the audit log replication layer is project‑agnostic.
+
+### Why it works
+
+1. **Deterministic merge** — all 5 contract types use CRDTs: LWW by timestamp (directory, storefront products, market directory, user contract metadata), monotonic status ordinals (orders), set‑union (ledger entries, inbox messages). Given the same set of updates, any two nodes converge to identical state regardless of delivery order.
+2. **Idempotent merges** — applying the same update twice is a no‑op. Gossip can safely re‑deliver without corruption.
+3. **Built‑in anti‑entropy** — the existing `summarize()` / `delta()` methods on each contract type are purpose‑built for efficient diffing. A periodic "give me what I'm missing" exchange uses these directly.
+4. **Append‑only audit log** — only grows, never mutates. Sync is just "send entries after my latest `ts`".
+
+### The audit log as a replication stream
+
+The `audit_log` table is append‑only with timestamps and UUIDs (or serial IDs) — exactly the properties needed for conflict‑free replication. This insight emerged from both CREAM and FreeClawdia arriving at the same temporal database design independently:
+
+- **CREAM's audit_log**: records every contract state change (PUT, UPDATE) with `old_state`, `new_state`, `entity_type`, `entity_id`, and immutability enforced by Postgres RULES.
+- **FreeClawdia's audit_log**: records every mutation (settings, conversations, extensions, skills, routines) with JSON diffs, also append‑only with timestamp ordering.
+
+Both are structurally identical: append‑only, timestamped, entity‑keyed, JSON‑valued. A gossip layer that works for one works for both.
+
+**Replication mechanics:**
+
+1. Each instance periodically asks peers: "what's your latest audit_log timestamp?"
+2. Send all entries newer than the peer's watermark.
+3. Receiving instance inserts entries idempotently (`INSERT ... ON CONFLICT DO NOTHING` on the entry ID).
+4. For CREAM: after ingesting audit entries, replay the contract merges they describe to update materialized state. The `new_state` in each entry provides the post‑merge snapshot, but re‑merging from the `update_data` field provides verification.
+5. For FreeClawdia: after ingesting audit entries, the temporal reconstruction layer (`audit_as_at()`) works identically whether entries originated locally or arrived via gossip.
+
+The audit log is a **CRDT by construction** — append‑only with unique IDs means any set‑union of entries from multiple nodes converges to the same log (modulo ordering, which is resolved by timestamp).
+
+### Gossip protocol sketch
+
+- Each node broadcasts raw UPDATE payloads (not merged state) to peers.
+- Receiving node applies `merge()` locally via the same native Rust logic.
+- Periodic anti‑entropy: exchange `summarize()` digests, compute `delta()`, send missing data.
+- Audit log replication via watermark polling.
+
+### Two layers of replication
+
+The gossip protocol operates at two distinct layers, and it's important to understand what each provides:
+
+**Layer 1: Audit log sync (append‑only, conflict‑free)**
+
+This is the easy part. Audit entries have unique IDs and timestamps. Replication is pure set‑union — no conflicts possible. Every entry that exists on any node eventually exists on all nodes. This gives you a complete, globally consistent history of what happened and when, which is sufficient for temporal queries ("what was this contract's state at 3pm Tuesday?").
+
+**Layer 2: Materialized state sync (merge‑dependent, convergent)**
+
+This is the harder part. Each cream‑node maintains a `contracts` table with the current materialized state. When an audit entry arrives from a peer describing an UPDATE, the receiving node must apply the same merge logic to its local state. Because the merges are CRDTs, the result converges regardless of application order — but the intermediate states may differ between nodes until all entries have propagated.
+
+FreeClawdia only needs Layer 1 — its entities (settings, conversations, extensions) are simple key‑value pairs where LWW on the audit entries is sufficient. CREAM needs both layers because contract state is the product of accumulated merges, not just the latest write.
+
+### Transport and discovery
+
+**Open design questions** (shared with FreeClawdia):
+
+| Question | Options | Notes |
+|---|---|---|
+| **Transport** | HTTP polling, WebSocket push, Postgres logical replication | HTTP polling is simplest; WebSocket gives real‑time; logical replication is Postgres‑native but tightly coupled |
+| **Discovery** | Static config (`--peers`), mDNS for LAN, rendezvous service | CREAM already has a rendezvous service; static config is simplest for small deployments |
+| **Selective sync** | All audit entries, or filtered by entity type? | FreeClawdia may want to share settings but not conversation content; CREAM may want to share directory but not user contracts |
+| **Privacy** | Some instances may not want to share all data with all peers | Encryption at rest, per‑entity access control, or separate gossip channels per data classification |
+| **Topology** | Full mesh, star (one hub), or random fanout | Full mesh is fine for 3–7 nodes; random fanout needed at scale |
+
+For both projects, the initial implementation would likely be **HTTP polling with static peer configuration** — the guardian nodes already use this pattern for FROST DKG and signing rounds. A peer list via `--peers` CLI arg, periodic polling via `tokio::interval`, and idempotent INSERT on the receiving end.
+
+### Known risks
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| **Clock skew** | LWW picks wrong winner | NTP discipline, or hybrid logical clocks (HLC) |
+| **Partition healing** | Conflicting metadata — LWW resolves but loser silently disappears | Same as Freenet behavior; acceptable for CREAM's use case |
+| **Audit log divergence** | Nodes applying updates in different order have different `old_state` snapshots | Each node's log is locally correct; not globally identical but acceptable |
+| **Append‑only ledger ordering** | `UserContractState.ledger` entries arrive out of order | Merge deduplicates by `(tx_ref, kind)` and re‑sorts by timestamp — converges correctly |
+| **Unbounded growth** | Append‑only means the audit log grows forever | Retention policies: compact entries older than N days, keep only latest snapshot per entity |
+| **Entity‑level conflicts** | Two nodes rename the same thread (FreeClawdia) or update the same product (CREAM) concurrently | LWW by timestamp — one wins, one loses silently. Acceptable for both projects' use cases |
+
+### Relationship to existing sync approaches
+
+| Approach | Topology | Conflict resolution | Offline support | Complexity |
+|---|---|---|---|---|
+| **Freenet DHT** | Fully decentralized P2P mesh | Contract‑level merge (CRDT) | No (requires network) | High |
+| **Turso cloud replica** (FreeClawdia current) | Star (Turso cloud hub) | LWW at Turso layer | Yes (local replica) | Low |
+| **Gossip over audit log** (this proposal) | Peer‑to‑peer mesh | CRDT merge + LWW | Yes (fully autonomous) | Medium |
+| **Postgres logical replication** | Primary → replica | Write‑ahead log replay | No (streaming required) | Medium |
+
+The gossip approach occupies the sweet spot: fully decentralized like Freenet but without the DHT complexity, and peer‑to‑peer like logical replication but without requiring a designated primary. Each instance is a full read‑write peer.
+
+### Status
+
+**Design stage** — architecture documented, not yet implemented. The merge semantics are already proven (they're the same ones Freenet uses). The audit log infrastructure exists in both CREAM and FreeClawdia. The engineering work is the gossip layer itself: peer discovery, reliable delivery, anti‑entropy protocol, and connection management.
+
+**Shared design** — this is actively coordinated between CREAM (Henry) and FreeClawdia (Clawdia) via their respective IAQ files. Implementation in either project would validate the design for both.
+
+---
+
+## Testing strategy: cream‑node as control environment
+
+cream‑node's most immediate and valuable role is as a **control environment** for isolating bugs. Before cream‑node, every test failure was ambiguous — is it our contract logic? A Freenet subscription timeout? A stale GET? A propagation delay? Diagnosing a single failure could consume hours of log trawling across 7 nodes. With cream‑node, the diagnostic flow is binary.
+
+### The two‑backend diagnostic
+
+| Fails against cream‑node? | Fails against Freenet? | Diagnosis |
+|---|---|---|
+| Yes | — | **Our bug.** Fix it. Don't touch Freenet. |
+| No | Yes | **Freenet bug** (or a distributed systems edge case). Investigate with confidence that our logic is sound. |
+| No | No | Working correctly. |
+| Yes | No | Shouldn't happen (cream‑node is stricter), but would indicate a cream‑node implementation gap. |
+
+### Why this works
+
+cream‑node eliminates every source of non‑determinism that Freenet introduces:
+
+- **No network propagation** — writes are visible immediately via Postgres ACID.
+- **No DHT routing** — no "could not find peer" failures, no routing through a gateway bottleneck.
+- **No subscription broadcast timing** — in‑process `tokio::broadcast`, sub‑millisecond delivery.
+- **No stale GET after UpdateResponse** — `SELECT FOR UPDATE` guarantees read‑your‑writes.
+- **No merge race conditions** — serialized Postgres transactions, not concurrent distributed merges.
+- **Full audit trail** — every state change recorded immutably, reconstructible at any point in time.
+
+If a test passes against cream‑node, the contract logic, merge semantics, UI behavior, CURD conservation invariants, and subscription flows are all verified correct. Any failure against Freenet is therefore attributable to the network layer.
+
+### Freenet upgrade workflow
+
+When a new Freenet release arrives:
+
+1. **Baseline**: `cargo make test-node-pg` — confirm all 12 integration steps + 6 stress tests pass against cream‑node. Our code is clean.
+2. **Upgrade**: bump `freenet` and `freenet-stdlib` versions.
+3. **Test**: `cargo make test-node` — run the identical tests against a live 7‑node Freenet cluster.
+4. **Diagnose**: any new failures are almost certainly Freenet regressions. We already have:
+   - The exact test case that reproduces the bug.
+   - The expected behavior (from the cream‑node run).
+   - The audit trail showing what *should* have happened.
+   - A concrete, minimal reproduction to attach to a PR.
+
+This is the workflow that produced our Freenet contributions: the piped stream overflow bug (PR #3455, eliminated ~40% PUT failure rate), the stale GET issue (#3357), and the gateway topology problem (#3362). Each was found because we were exercising the system hard enough to hit edge cases, and could definitively rule out our own code as the cause.
+
+### Performance comparison
+
+| Metric | Freenet (7 nodes) | cream‑node |
+|---|---|---|
+| Integration tests (12 steps) | 2–5 minutes | **1.6 seconds** |
+| Stress tests (6 tests) | 30–60 seconds | **5 seconds** |
+| Full fixture startup | 60–90 seconds | **33 seconds** |
+| E2E tests (47 tests) | 8–15 minutes | **4 minutes** |
+| Subscription notification latency | 1–5 seconds | **< 1 millisecond** |
+| Flaky test rate | ~10–15% | **0%** |
+
+The speed difference means developers can run the full test suite on every change, not just before commits. The zero flakiness means a red test always means a real bug, never "just retry it."
+
+### Cumulative fixture testing
+
+Both backends support CREAM's cumulative fixture pattern: integration tests populate the database with realistic data (3 suppliers, 6 customers, products, orders, CURD allocations, market directory entries), and E2E tests run on top of that state. cream‑node's `ON CONFLICT` PUT semantics and merge‑on‑PUT behavior ensure the E2E fixture builds correctly on the integration test state, exactly as Freenet's merge semantics would.
+
+The CURD conservation invariant checker (`check-invariants`) works identically against both backends — it connects via the same WebSocket protocol and verifies the same `total == 1,000,000 CURD` invariant. A passing invariant check against cream‑node is a guarantee that the contract logic conserves funds correctly; a failing check against Freenet with the same test sequence is proof of a network‑level issue.
+
+---
+
 ## How do guardian nodes run in production? (StartOS)
 
 CREAM guardian nodes are packaged as a service for **StartOS** (from [Start9 Labs](https://start9.com)) — a self-hosting Linux OS where each service runs in an isolated Docker container. StartOS provides a web UI for service management (no CLI needed), automatic Tor hidden services for every installed service, a dependency system that auto-wires services together, health checks, backups, and updates. StartOS itself is written primarily in Rust.

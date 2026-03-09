@@ -286,6 +286,38 @@ No. A community could start with CREAM‑lite (riding an existing Fedimint) and 
 
 ---
 
+## Can CREAM run without Freenet?
+
+Yes. CREAM ships a lightweight alternative backend called **cream‑node** — a single‑process server that speaks the exact same WebSocket protocol as a Freenet node but stores contract state in Postgres instead of a distributed hash table.
+
+Because the wire protocol is identical (bincode over WebSocket, same `ClientRequest` / `HostResponse` types), the UI connects to cream‑node with **zero code changes** — it just points at a different port.
+
+cream‑node is useful in three scenarios:
+
+1. **Development and testing** — no 7‑node Freenet cluster to start, no network propagation delays, no flakiness from distributed consensus. Tests run in seconds instead of minutes.
+2. **CREAM‑lite single‑supplier deployments** — a farmer who just wants to run their own online storefront can run cream‑node + the guardian on a single machine (or a Start9 server) without needing Freenet at all.
+3. **Auditing and compliance** — cream‑node maintains an immutable audit trail of every contract state change, which Freenet does not provide.
+
+The same contract validation logic runs in both modes — cream‑node calls the native Rust merge/validate methods from `cream-common` directly, bypassing the WASM sandbox but producing identical results.
+
+---
+
+## What is Time Travel in CREAM?
+
+Every time a contract's state changes (a supplier updates a product, an order status advances, a CURD transfer is recorded), cream‑node writes an immutable entry to an **audit log** in Postgres. These entries can never be modified or deleted.
+
+This means you can **reconstruct the state of any contract at any point in the past** — what products were listed last Tuesday, what an order's status was before it was cancelled, what a user's CURD balance was at midnight.
+
+This is useful for:
+
+- **Dispute resolution** — proving what was agreed, what was paid, and when.
+- **Debugging** — replaying the exact sequence of state changes that led to a problem.
+- **Accountability** — an auditor can verify that the system behaved correctly by examining the full history.
+
+Time travel is only available on cream‑node (the Postgres backend). Freenet's distributed storage does not maintain history.
+
+---
+
 ## What CREAM is *not*
 
 - It is not a get‑rich‑quick token or speculative scheme.
