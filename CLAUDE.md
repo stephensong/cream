@@ -113,6 +113,10 @@ Dioxus mobile renders the UI in a platform WebView, so the existing WASM code wo
 - The remote Freenet node must be network-accessible from the device
 - No offline/caching support yet
 
+## Git
+
+When asked to "push", use `git push-safe` (silent no-op if no remote is configured).
+
 ## Bridge Protocol v2
 
 ### Inbox
