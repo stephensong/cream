@@ -116,7 +116,7 @@ Dioxus mobile renders the UI in a platform WebView, so the existing WASM code wo
 ## Bridge Protocol v2
 
 ### Inbox
-Your inbox is at `/home/gary/dev/bridge/inbox/henry/pending/`.
+Your inbox is at `/home/gary/dev/sandy/bridge/inbox/henry/pending/`.
 A SessionStart hook surfaces pending messages automatically.
 
 ### Assignments
@@ -125,9 +125,9 @@ They include sequence number, dependencies, objective, steps, and acceptance cri
 Execute the assignment, update your TODO, and post a completion report to the bridge.
 
 ### Sending Messages
-Use: `bash /home/gary/dev/bridge/scripts/send.sh <from> <to> <depth> <type> <reply-to> <subject>`
+Use: `bash /home/gary/dev/sandy/bridge/scripts/send.sh <from> <to> <depth> <type> <reply-to> <subject>`
 Message body on stdin. Depth cap: 3. At depth 3, escalate to Gary.
 
 ### Status
-`/home/gary/dev/bridge/STATUS.md` -- maintained by hooks.
+`/home/gary/dev/sandy/bridge/STATUS.md` -- maintained by hooks.
 BUSY on session start, IDLE on session end. Report BLOCKED to Gary if stuck.
