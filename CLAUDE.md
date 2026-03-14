@@ -1,9 +1,9 @@
-# CREAM - CURD Retail Exchange And Marketplace
+# CREAM - CLAM Retail Exchange And Marketplace
 
 
 A decentralized peer-to-peer raw dairy marketplace built on Freenet. Suppliers list products, customers browse and order, all coordinated with strong privacy through cryptographically signed contracts with no central server.
 
-CURD (Completely Uncensorable Raw Dairy) is Bitcoin-backed e-cash managed by CREAM's FROST threshold guardian federation, allowing for private transactions within CREAM. CURD tokens can be exchanged for Bitcoin via Lightning (TODO: link forthcoming)
+CLAM (Completely Lawful Artificial Money) is Bitcoin-backed e-cash managed by CREAM's FROST threshold guardian federation, allowing for private transactions within CREAM. CLAM tokens can be exchanged for Bitcoin via Lightning (TODO: link forthcoming)
 
 
 ## Project Structure
@@ -38,7 +38,7 @@ cream/
 - `DirectoryState` — BTreeMap of supplier listings (LWW merge)
 - `StorefrontState` — products + orders for one supplier
 - `UserContractState` — per-user contract: identity, supplier affiliation, wallet balance (LWW merge)
-- `Product` — dairy product with category, price (CURD), quantity, expiry
+- `Product` — dairy product with category, price (CLAM), quantity, expiry
 - `Order` — customer purchase with deposit tier and monotonic status progression
 - `GeoLocation` — lat/lon with Haversine distance; Australian postcode lookup
 
@@ -112,3 +112,22 @@ Dioxus mobile renders the UI in a platform WebView, so the existing WASM code wo
 - iOS is more stable but still not production-ready for app stores
 - The remote Freenet node must be network-accessible from the device
 - No offline/caching support yet
+
+## Bridge Protocol v2
+
+### Inbox
+Your inbox is at `/home/gary/dev/bridge/inbox/henry/pending/`.
+A SessionStart hook surfaces pending messages automatically.
+
+### Assignments
+Messages with `type: assignment` are sub-plans from a planning session.
+They include sequence number, dependencies, objective, steps, and acceptance criteria.
+Execute the assignment, update your TODO, and post a completion report to the bridge.
+
+### Sending Messages
+Use: `bash /home/gary/dev/bridge/scripts/send.sh <from> <to> <depth> <type> <reply-to> <subject>`
+Message body on stdin. Depth cap: 3. At depth 3, escalate to Gary.
+
+### Status
+`/home/gary/dev/bridge/STATUS.md` -- maintained by hooks.
+BUSY on session start, IDLE on session end. Report BLOCKED to Gary if stuck.
